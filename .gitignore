@@ -134,9 +134,10 @@ results/
 *_output/
 *_results/
 
-# Test files
+# Test files (but allow test_basic.py)
 test_*.py
 *_test.py
+!test_basic.py
 
 # Temporary files
 *.tmp
