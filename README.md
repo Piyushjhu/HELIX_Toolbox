@@ -38,14 +38,35 @@ HELIX Toolbox is a comprehensive graphical user interface (GUI) that combines AL
 - Enhanced summary tables with all uncertainties
 - Individual and combined analysis plots
 
+### 🖥️ **Cross-Platform Compatibility**
+- **Windows**: Native Windows GUI with Explorer integration
+- **macOS**: Optimized for macOS with native file dialogs
+- **Linux**: Full Linux support with X11 integration
+- **Unified Interface**: Same features across all platforms
+
 ## Installation
 
-### Prerequisites
-- Python 3.7+
-- PyQt5
-- Required scientific packages (see requirements.txt)
+### System Requirements
+- **Python**: 3.7 or higher
+- **Operating System**: Windows 10+, macOS 10.14+, or Linux
+- **Memory**: 4GB RAM minimum, 8GB recommended
+- **Storage**: 1GB free space
 
 ### Quick Start
+
+#### Windows
+```cmd
+# Method 1: Using batch file (easiest)
+# Double-click run_helix_toolbox.bat
+
+# Method 2: Command line
+git clone https://github.com/Piyushjhu/HELIX_Toolbox.git
+cd HELIX_Toolbox
+pip install -r requirements.txt
+python alpss_spade_gui.py
+```
+
+#### macOS/Linux
 ```bash
 # Clone the repository
 git clone https://github.com/Piyushjhu/HELIX_Toolbox.git
@@ -57,6 +78,12 @@ pip install -r requirements.txt
 # Run the GUI
 python alpss_spade_gui.py
 ```
+
+### Platform-Specific Installation
+
+- **[Windows Installation Guide](docs/WINDOWS_INSTALLATION.md)** - Detailed Windows setup and troubleshooting
+- **macOS**: Install Xcode Command Line Tools if needed
+- **Linux**: Install system dependencies: `sudo apt-get install python3-dev python3-pip`
 
 ## Usage
 
@@ -112,6 +139,24 @@ python alpss_spade_gui.py
 - **ALPSS Smoothing**: Applied to raw velocity data
 - **SPADE Smoothing**: Automatically skipped in combined mode (uses ALPSS smoothed data)
 
+## Platform-Specific Features
+
+### Windows
+- **Native Explorer Integration**: "Open Output Directory" opens Windows Explorer
+- **Segoe UI Font**: Native Windows styling
+- **Batch File Launcher**: Easy one-click startup
+- **High DPI Support**: Optimized for modern displays
+
+### macOS
+- **Native Finder Integration**: File dialogs use macOS Finder
+- **Dark Mode Support**: Automatic theme switching
+- **Retina Display**: High-resolution graphics support
+
+### Linux
+- **X11 Integration**: Native Linux desktop integration
+- **Package Manager Support**: Easy installation via pip
+- **Terminal Friendly**: Full command-line interface
+
 ## Credits
 
 ### ALPSS (Automated Laser Photonic Doppler Velocimetry Signal Processing)
@@ -160,4 +205,4 @@ For questions, issues, or feature requests, please:
 
 ---
 
-**HELIX Toolbox** - Advancing single point PDV data analysis for shock physics research. 
+**HELIX Toolbox** - Advancing single point PDV data analysis for shock physics research across all platforms. 🖥️💻📱 
