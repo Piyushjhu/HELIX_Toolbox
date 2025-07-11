@@ -13,11 +13,18 @@ scikit-learn>=1.0.0
 # Plotting and Visualization
 matplotlib>=3.3.0
 
+# Signal Processing and Image Analysis
+findiff>=0.8.0
+opencv-python>=4.5.0
+
 # File Handling
 pathlib2>=2.3.0; python_version<"3.4"
 
 # Optional: For enhanced plotting (if available)
 # seaborn>=0.11.0
+
+# Optional: For Jupyter notebook integration
+# ipython>=7.0.0
 
 # Development and Testing (optional)
 # pytest>=6.0.0

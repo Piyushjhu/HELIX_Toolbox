@@ -1,7 +1,6 @@
 # %%
 from datetime import datetime
 import traceback
-from IPython.display import display
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend to prevent windows
 import matplotlib.pyplot as plt
