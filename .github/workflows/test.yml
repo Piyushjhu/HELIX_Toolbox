@@ -1,0 +1,70 @@
+name: Test HELIX Toolbox
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: [3.8, 3.9, "3.10", "3.11"]
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Test import
+      run: |
+        python -c "import alpss_spade_gui; print('HELIX Toolbox imported successfully!')"
+    
+    - name: Test GUI creation (headless)
+      run: |
+        python -c "
+        import sys
+        from PyQt5.QtWidgets import QApplication
+        from alpss_spade_gui import ALPSSSPADEGUI
+        
+        app = QApplication([])
+        gui = ALPSSSPADEGUI()
+        print('GUI created successfully!')
+        app.quit()
+        "
+    
+    - name: Test parameter collection
+      run: |
+        python -c "
+        from PyQt5.QtWidgets import QApplication
+        from alpss_spade_gui import ALPSSSPADEGUI
+        
+        app = QApplication([])
+        gui = ALPSSSPADEGUI()
+        
+        # Test ALPSS parameters
+        alpss_params = gui.get_alpss_params()
+        print(f'ALPSS parameters: {len(alpss_params)} items')
+        
+        # Test SPADE parameters
+        spade_params = gui.get_spade_params()
+        print(f'SPADE parameters: {len(spade_params)} items')
+        
+        # Test specific parameters
+        assert 'use_notch_filter' in alpss_params
+        assert 'density' in spade_params
+        print('Parameter collection tests passed!')
+        
+        app.quit()
+        " 
