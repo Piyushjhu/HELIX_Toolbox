@@ -1,0 +1,9 @@
+pandas>=1.5.0
+numpy>=1.21.0
+scipy>=1.7.0
+matplotlib>=3.4.0
+scikit-learn>=1.0.0
+imageio>=2.9.0 # For GIF generation in original script 10 (optional if not used)
+plotly>=5.18.0 # For interactive HTML plots
+PyQt5>=5.15.0
+# Add specific versions if needed based on testing

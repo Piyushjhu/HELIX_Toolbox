@@ -1,0 +1,25 @@
+Main Function: alpss_main
+
+The main function that orchestrates the entire process is alpss_main. It calls the following functions in order:
+
+spall_doi_finder: Finds the specific domain of interest in the larger signal.
+carrier_frequency: Calculates the carrier frequency.
+carrier_filter: Filters out the carrier frequency after the signal has started.
+velocity_calculation: Calculates the velocity from the filtered voltage signal.
+instantaneous_uncertainty_analysis: Estimates the instantaneous uncertainty for all points in time.
+spall_analysis: Finds points of interest on the velocity trace.
+full_uncertainty_analysis: Calculates uncertainties in the spall strength and strain rate due to external uncertainties.
+plotting: Generates the final figure.
+saving: Saves the output files if desired.
+
+
+Supporting Functions
+These functions are called within the main execution flow:
+gaussian_window: Used in various functions for smoothing and filtering.
+stft: Calculates the short-time Fourier transform.
+num_derivative: Takes the numerical derivative of input array.
+smoothing: Smooths the padded velocity data.
+hl_envelopes_idx: Gets the indices for the upper and lower envelope of the voltage signal.
+sin_func: General function for a sinusoid, used in curve fitting.
+gauss: Gaussian distribution function.
+fwhm: Calculates the full width at half maximum of a Gaussian distribution.
