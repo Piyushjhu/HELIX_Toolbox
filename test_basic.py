@@ -161,7 +161,7 @@ def test_sklearn_functionality():
 
 def main():
     """Run all tests"""
-    print("🧪 HELIX Toolbox Basic Tests")
+    print("HELIX Toolbox Basic Tests")
     print("=" * 40)
     
     tests = [
