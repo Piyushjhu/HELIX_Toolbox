@@ -348,20 +348,32 @@ class AnalysisThread(QThread):
                         print(f"[WARNING] Could not plot {file}: {e}")
                 
                 # Calculate adaptive y-axis limits based on velocity data (ignoring noise/uncertainty)
-                if all_velocities:
-                    max_velocity = np.nanmax(all_velocities)
-                    min_velocity = np.nanmin(all_velocities)
-                    velocity_range = max_velocity - min_velocity
-                    y_margin = velocity_range * 0.1  # 10% margin
-                    y_min = max(0, min_velocity - y_margin)
-                    y_max = max_velocity + y_margin
+                if self.spade_params.get('auto_calculate_limits', True):
+                    if all_velocities:
+                        max_velocity = np.nanmax(all_velocities)
+                        min_velocity = np.nanmin(all_velocities)
+                        velocity_range = max_velocity - min_velocity
+                        y_margin = velocity_range * 0.1  # 10% margin
+                        y_min = max(0, min_velocity - y_margin)
+                        y_max = max_velocity + y_margin
+                    else:
+                        y_min, y_max = 0, 700  # fallback values
                 else:
-                    y_min, y_max = 0, 700  # fallback values
+                    # Use user-defined limits
+                    y_min = self.spade_params.get('y_min_main', 0)
+                    y_max = self.spade_params.get('y_max_main', 700)
                 
                 # Configure main plot (ax1)
                 ax1.set_xlabel('Time (ns)', fontsize=12)
                 ax1.set_ylabel('Velocity (m/s)', fontsize=12)
                 ax1.set_ylim(y_min, y_max)
+                
+                # Set x-axis limits for main plot
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    x_min_main = self.spade_params.get('x_min_main', 0)
+                    x_max_main = self.spade_params.get('x_max_main', 100)
+                    ax1.set_xlim(x_min_main, x_max_main)
+                
                 ax1.set_title('All Smoothed Free Surface Velocity Traces (Aligned)', fontsize=14, fontweight='bold')
                 ax1.legend(fontsize='small', loc='best')
                 ax1.grid(True, linestyle='--', alpha=0.5)
@@ -377,9 +389,24 @@ class AnalysisThread(QThread):
                 # Configure zoomed subplot (ax2) - 0 to 20 ns region
                 ax2.set_xlabel('Time (ns)', fontsize=12)
                 ax2.set_ylabel('Velocity (m/s)', fontsize=12)
-                ax2.set_xlim(0, 20)
-                ax2.set_ylim(y_min, y_max)
-                ax2.set_title('Zoomed Region: 0-20 ns', fontsize=12, fontweight='bold')
+                
+                # Set x-axis limits for zoomed plot
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    x_min_zoom = self.spade_params.get('x_min_zoom', 0)
+                    x_max_zoom = self.spade_params.get('x_max_zoom', 20)
+                    ax2.set_xlim(x_min_zoom, x_max_zoom)
+                    ax2.set_title(f'Zoomed Region: {x_min_zoom}-{x_max_zoom} ns', fontsize=12, fontweight='bold')
+                else:
+                    ax2.set_xlim(0, 20)
+                    ax2.set_title('Zoomed Region: 0-20 ns', fontsize=12, fontweight='bold')
+                
+                # Set y-axis limits for zoomed plot
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    y_min_zoom = self.spade_params.get('y_min_zoom', 0)
+                    y_max_zoom = self.spade_params.get('y_max_zoom', 700)
+                    ax2.set_ylim(y_min_zoom, y_max_zoom)
+                else:
+                    ax2.set_ylim(y_min, y_max)
                 ax2.legend(fontsize='small', loc='best')
                 ax2.grid(True, linestyle='--', alpha=0.5)
                 ax2.tick_params(axis='both', which='major', labelsize=10)
@@ -568,12 +595,12 @@ class ALPSSSPADEGUI(QMainWindow):
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
         
-        # Increase tab size for better text fit
+        # Increase tab size for better text fit (increased font size by 25%)
         self.tab_widget.setStyleSheet("""
             QTabBar::tab {
                 min-width: 200px;
                 min-height: 40px;
-                font-size: 13px;
+                font-size: 16px;
                 padding: 10px 20px;
             }
         """)
@@ -626,7 +653,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     color: #f0f0f0;
                     min-width: 200px;
                     min-height: 40px;
-                    font-size: 13px;
+                    font-size: 16px;
                     padding: 10px 20px;
                 }
                 QTabBar::tab:selected {
@@ -636,7 +663,7 @@ class ALPSSSPADEGUI(QMainWindow):
                 }
                 QGroupBox {
                     font-weight: bold;
-                    font-size: 12px;
+                    font-size: 15px;
                     border: 2px solid #444;
                     border-radius: 6px;
                     margin-top: 10px;
@@ -651,7 +678,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     padding: 0 5px 0 5px;
                 }
                 QLabel {
-                    font-size: 11px;
+                    font-size: 14px;
                     color: #f0f0f0;
                     background: transparent;
                 }
@@ -661,7 +688,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     border-radius: 4px;
                     background-color: #232629;
                     color: #f0f0f0;
-                    font-size: 11px;
+                    font-size: 14px;
                 }
                 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
                     border: 2px solid #0078d4;
@@ -673,7 +700,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     padding: 8px 16px;
                     border-radius: 4px;
                     font-weight: bold;
-                    font-size: 11px;
+                    font-size: 14px;
                 }
                 QPushButton:hover {
                     background-color: #106ebe;
@@ -686,7 +713,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     color: #888;
                 }
                 QCheckBox {
-                    font-size: 11px;
+                    font-size: 14px;
                     color: #f0f0f0;
                     spacing: 8px;
                     background: transparent;
@@ -700,7 +727,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     border-radius: 4px;
                     background-color: #232629;
                     color: #f0f0f0;
-                    font-size: 11px;
+                    font-size: 14px;
                 }
                 QScrollArea {
                     border: none;
@@ -737,7 +764,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     color: #2c2c2c;
                     min-width: 200px;
                     min-height: 40px;
-                    font-size: 13px;
+                    font-size: 16px;
                     padding: 10px 20px;
                 }
                 QTabBar::tab:selected {
@@ -747,7 +774,7 @@ class ALPSSSPADEGUI(QMainWindow):
                 }
                 QGroupBox {
                     font-weight: bold;
-                    font-size: 12px;
+                    font-size: 15px;
                     border: 2px solid #c0c0c0;
                     border-radius: 6px;
                     margin-top: 10px;
@@ -762,7 +789,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     padding: 0 5px 0 5px;
                 }
                 QLabel {
-                    font-size: 11px;
+                    font-size: 14px;
                     color: #2c2c2c;
                     background: transparent;
                 }
@@ -772,7 +799,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     border-radius: 4px;
                     background-color: white;
                     color: #2c2c2c;
-                    font-size: 11px;
+                    font-size: 14px;
                 }
                 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
                     border: 2px solid #0078d4;
@@ -797,7 +824,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     color: #666666;
                 }
                 QCheckBox {
-                    font-size: 11px;
+                    font-size: 14px;
                     color: #2c2c2c;
                     spacing: 8px;
                     background: transparent;
@@ -811,7 +838,7 @@ class ALPSSSPADEGUI(QMainWindow):
                     border-radius: 4px;
                     background-color: white;
                     color: #2c2c2c;
-                    font-size: 11px;
+                    font-size: 14px;
                 }
                 QScrollArea {
                     border: none;
@@ -982,11 +1009,11 @@ class ALPSSSPADEGUI(QMainWindow):
         basic_layout.addWidget(self.display_plots, 0, 3)
         
         # Row 1
-        basic_layout.addWidget(QLabel("Save ALPSS Combined Plot:"), 1, 0)
+        basic_layout.addWidget(QLabel("Save ALPSS Plots:"), 1, 0)
         self.save_all_plots = QComboBox()
-        self.save_all_plots.addItems(["yes", "no"])
+        self.save_all_plots.addItems(["no", "subfolder", "main_dir"])
         self.save_all_plots.setCurrentText("no")
-        self.save_all_plots.setToolTip("If 'yes', saves the original comprehensive ALPSS combined plot with all subplots. CSV data files are always saved when 'Save data' is 'yes'.")
+        self.save_all_plots.setToolTip("'no': Only save CSV data files. 'subfolder': Save plots in individual subfolders. 'main_dir': Save plots in main output directory.")
         basic_layout.addWidget(self.save_all_plots, 1, 1)
         
         # Row 2
@@ -1504,6 +1531,91 @@ class ALPSSSPADEGUI(QMainWindow):
         
         layout.addWidget(output_group)
         
+        # Plot axis limits
+        axis_group = QGroupBox("Combined Plot Axis Limits")
+        axis_layout = QGridLayout(axis_group)
+        axis_layout.setSpacing(10)  # Increase spacing between elements
+        
+        # X-axis limits for main plot
+        axis_layout.addWidget(QLabel("Main Plot X-Limits (ns):"), 0, 0)
+        x_limits_layout = QHBoxLayout()
+        self.x_min_main = QDoubleSpinBox()
+        self.x_min_main.setRange(-1000, 1000)
+        self.x_min_main.setValue(0)
+        self.x_min_main.setSuffix(" ns")
+        x_limits_layout.addWidget(self.x_min_main)
+        
+        x_limits_layout.addWidget(QLabel("to"))
+        
+        self.x_max_main = QDoubleSpinBox()
+        self.x_max_main.setRange(-1000, 1000)
+        self.x_max_main.setValue(100)
+        self.x_max_main.setSuffix(" ns")
+        x_limits_layout.addWidget(self.x_max_main)
+        axis_layout.addLayout(x_limits_layout, 0, 1)
+        
+        # Y-axis limits for main plot
+        axis_layout.addWidget(QLabel("Main Plot Y-Limits (m/s):"), 1, 0)
+        y_limits_layout = QHBoxLayout()
+        self.y_min_main = QDoubleSpinBox()
+        self.y_min_main.setRange(-1000, 1000)
+        self.y_min_main.setValue(0)
+        self.y_min_main.setSuffix(" m/s")
+        y_limits_layout.addWidget(self.y_min_main)
+        
+        y_limits_layout.addWidget(QLabel("to"))
+        
+        self.y_max_main = QDoubleSpinBox()
+        self.y_max_main.setRange(0, 2000)
+        self.y_max_main.setValue(700)
+        self.y_max_main.setSuffix(" m/s")
+        y_limits_layout.addWidget(self.y_max_main)
+        axis_layout.addLayout(y_limits_layout, 1, 1)
+        
+        # X-axis limits for zoomed plot
+        axis_layout.addWidget(QLabel("Zoomed Plot X-Limits (ns):"), 2, 0)
+        x_zoom_layout = QHBoxLayout()
+        self.x_min_zoom = QDoubleSpinBox()
+        self.x_min_zoom.setRange(-1000, 1000)
+        self.x_min_zoom.setValue(0)
+        self.x_min_zoom.setSuffix(" ns")
+        x_zoom_layout.addWidget(self.x_min_zoom)
+        
+        x_zoom_layout.addWidget(QLabel("to"))
+        
+        self.x_max_zoom = QDoubleSpinBox()
+        self.x_max_zoom.setRange(-1000, 1000)
+        self.x_max_zoom.setValue(20)
+        self.x_max_zoom.setSuffix(" ns")
+        x_zoom_layout.addWidget(self.x_max_zoom)
+        axis_layout.addLayout(x_zoom_layout, 2, 1)
+        
+        # Y-axis limits for zoomed plot
+        axis_layout.addWidget(QLabel("Zoomed Plot Y-Limits (m/s):"), 3, 0)
+        y_zoom_layout = QHBoxLayout()
+        self.y_min_zoom = QDoubleSpinBox()
+        self.y_min_zoom.setRange(-1000, 1000)
+        self.y_min_zoom.setValue(0)
+        self.y_min_zoom.setSuffix(" m/s")
+        y_zoom_layout.addWidget(self.y_min_zoom)
+        
+        y_zoom_layout.addWidget(QLabel("to"))
+        
+        self.y_max_zoom = QDoubleSpinBox()
+        self.y_max_zoom.setRange(0, 2000)
+        self.y_max_zoom.setValue(700)
+        self.y_max_zoom.setSuffix(" m/s")
+        y_zoom_layout.addWidget(self.y_max_zoom)
+        axis_layout.addLayout(y_zoom_layout, 3, 1)
+        
+        # Auto-calculate checkbox
+        self.auto_calculate_limits = QCheckBox("Auto-calculate limits from data")
+        self.auto_calculate_limits.setChecked(True)
+        self.auto_calculate_limits.setToolTip("Automatically calculate axis limits from the data. Uncheck to use custom limits above.")
+        axis_layout.addWidget(self.auto_calculate_limits, 4, 0, 1, 2)
+        
+        layout.addWidget(axis_group)
+        
         # SPADE input mode
         spade_input_group = QGroupBox("SPADE Input Mode")
         spade_input_layout = QVBoxLayout(spade_input_group)
@@ -1572,7 +1684,7 @@ ALPSS Parameter Key:
 
 filename:                   str; filename for the data to run
 save_data:                  str; 'yes' or 'no' to save output data
-        save_all_plots:             str; 'yes' or 'no' to save the original comprehensive ALPSS combined plot with all subplots (CSV data files are always saved when save_data='yes')
+save_all_plots:             str; 'no', 'subfolder', or 'main_dir' to control plot saving location (CSV data files are always saved when save_data='yes')
 start_time_user:            str or float; if 'none' the program will attempt to find the
                                              signal start time automatically. if float then
                                              the program will use that as the signal start time
@@ -1978,7 +2090,8 @@ Output Files:
         return {
             'filename': 'example_file.csv',  # Will be updated per file in thread
             'save_data': self.save_data.currentText(),
-            'save_all_plots': self.save_all_plots.currentText(),
+            'save_all_plots': 'yes' if self.save_all_plots.currentText() in ['subfolder', 'main_dir'] else 'no',
+            'save_plots_in_subfolder': self.save_all_plots.currentText() == 'subfolder',
             'start_time_user': self.start_time_user.text(),
             'header_lines': self.header_lines.value(),
             'time_to_skip': self.time_to_skip.value(),
@@ -2047,6 +2160,16 @@ Output Files:
             'plot_individual': self.plot_individual.isChecked(),
             'save_summary_table': self.save_summary.isChecked(),
             'show_plots': self.show_plots.isChecked(),
+            # Axis limits for combined plots
+            'auto_calculate_limits': self.auto_calculate_limits.isChecked(),
+            'x_min_main': self.x_min_main.value(),
+            'x_max_main': self.x_max_main.value(),
+            'y_min_main': self.y_min_main.value(),
+            'y_max_main': self.y_max_main.value(),
+            'x_min_zoom': self.x_min_zoom.value(),
+            'x_max_zoom': self.x_max_zoom.value(),
+            'y_min_zoom': self.y_min_zoom.value(),
+            'y_max_zoom': self.y_max_zoom.value(),
         }
         
     def run_analysis(self):
@@ -2258,12 +2381,12 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # Use Fusion style for better cross-platform appearance
     
-    # Set application font with larger size and better readability
-    font = QFont("Segoe UI", 11)  # Changed from Arial 9 to Segoe UI 11
+    # Set application font with larger size and better readability (increased by 25%)
+    font = QFont("Segoe UI", 14)  # Increased from 11 to 14 (25% increase)
     font.setWeight(QFont.Normal)
     app.setFont(font)
     
-    # Set application style sheet for modern look
+    # Set application style sheet for modern look (increased font sizes by 25%)
     app.setStyleSheet("""
         QMainWindow {
             background-color: #f5f5f5;
@@ -2280,6 +2403,7 @@ def main():
             border-top-left-radius: 4px;
             border-top-right-radius: 4px;
             font-weight: bold;
+            font-size: 16px;
         }
         QTabBar::tab:selected {
             background-color: white;
@@ -2287,7 +2411,7 @@ def main():
         }
         QGroupBox {
             font-weight: bold;
-            font-size: 12px;
+            font-size: 15px;
             border: 2px solid #c0c0c0;
             border-radius: 6px;
             margin-top: 10px;
@@ -2300,7 +2424,7 @@ def main():
             color: #2c2c2c;
         }
         QLabel {
-            font-size: 11px;
+            font-size: 14px;
             color: #2c2c2c;
         }
         QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
@@ -2308,7 +2432,7 @@ def main():
             border: 1px solid #c0c0c0;
             border-radius: 4px;
             background-color: white;
-            font-size: 11px;
+            font-size: 14px;
         }
         QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
             border: 2px solid #0078d4;
@@ -2320,7 +2444,7 @@ def main():
             padding: 8px 16px;
             border-radius: 4px;
             font-weight: bold;
-            font-size: 11px;
+            font-size: 14px;
         }
         QPushButton:hover {
             background-color: #106ebe;
@@ -2333,7 +2457,7 @@ def main():
             color: #666666;
         }
         QCheckBox {
-            font-size: 11px;
+            font-size: 14px;
             spacing: 8px;
         }
         QCheckBox::indicator {
@@ -2344,7 +2468,7 @@ def main():
             border: 1px solid #c0c0c0;
             border-radius: 4px;
             background-color: white;
-            font-size: 11px;
+            font-size: 14px;
         }
         QScrollArea {
             border: none;

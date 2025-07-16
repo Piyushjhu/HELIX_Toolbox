@@ -86,25 +86,11 @@ def alpss_main(**inputs):
         
         # Check if user wants to save plots
         save_plots = inputs.get("save_all_plots", "no")
+        save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
+        
         if save_plots == "yes":
-            try:
-                fig = plotting(
-                    sdf_out,
-                    cen,
-                    cf_out,
-                    vc_out,
-                    sa_out,
-                    iua_out,
-                    fua_out,
-                    start_time,
-                    end_time,
-                    **inputs,
-                )
-                print(f"[{datetime.now()}] DEBUG: original ALPSS plotting completed successfully.")
-            except Exception as e:
-                print(f"[{datetime.now()}] ERROR in original ALPSS plotting: {e}\n{traceback.format_exc()}")
-            
-            # Also call simple_plotting to create individual plots in subfolder
+            # Only call simple_plotting to avoid duplication
+            # simple_plotting handles both subfolder and main directory saving
             try:
                 simple_plotting(
                     sdf_out,
@@ -1089,18 +1075,24 @@ def simple_plotting(
     
     # Check if user wants to save all plots in subfolder
     save_all_plots = inputs.get("save_all_plots", "no")
+    save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
     base_filename = inputs["filename"][0:-4]  # Remove file extension
     
     if save_all_plots == "yes":
-        # Create subfolder for this file's plots
-        plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
-        os.makedirs(plots_subfolder, exist_ok=True)
-        print(f"[{datetime.now()}] Saving all plots in subfolder: {plots_subfolder}")
-        plot_dir = plots_subfolder
+        if save_in_subfolder:
+            # Create subfolder for this file's plots
+            plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
+            os.makedirs(plots_subfolder, exist_ok=True)
+            print(f"[{datetime.now()}] Saving all plots in subfolder: {plots_subfolder}")
+            plot_dir = plots_subfolder
+        else:
+            # Save plots in main output directory
+            plot_dir = inputs["out_files_dir"]
+            print(f"[{datetime.now()}] Saving plots in main output directory")
     else:
-        # Save plots in main output directory
+        # No plots to save
         plot_dir = inputs["out_files_dir"]
-        print(f"[{datetime.now()}] Saving plots in main output directory")
+        print(f"[{datetime.now()}] No plots to save")
     
     try:
         # 1. Velocity plot with uncertainty
@@ -1342,18 +1334,24 @@ def saving(
     
     # Check if user wants to save all plots in subfolder
     save_all_plots = inputs.get("save_all_plots", "no")
+    save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
     base_filename = inputs["filename"][0:-4]  # Remove file extension
     
     if save_all_plots == "yes":
-        # Create subfolder for this file's plots
-        plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
-        os.makedirs(plots_subfolder, exist_ok=True)
-        print(f"[{datetime.now()}] Saving main plots in subfolder: {plots_subfolder}")
-        plot_dir = plots_subfolder
+        if save_in_subfolder:
+            # Create subfolder for this file's plots
+            plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
+            os.makedirs(plots_subfolder, exist_ok=True)
+            print(f"[{datetime.now()}] Saving main plots in subfolder: {plots_subfolder}")
+            plot_dir = plots_subfolder
+        else:
+            # Save plots in main output directory
+            plot_dir = inputs["out_files_dir"]
+            print(f"[{datetime.now()}] Saving main plots in main output directory")
     else:
-        # Save plots in main output directory
+        # No plots to save
         plot_dir = inputs["out_files_dir"]
-        print(f"[{datetime.now()}] Saving main plots in main output directory")
+        print(f"[{datetime.now()}] No plots to save")
     
     try:
         # Save the main plots.png if figure exists and user wants plots
