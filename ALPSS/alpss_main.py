@@ -195,7 +195,9 @@ def alpss_main(**inputs):
             fig.suptitle("ERROR: Program Failed", c="r", fontsize=16)
 
             plt.tight_layout()
-            plt.savefig(f"{inputs['filename'][0:-4]}--error_plot.png", dpi=300, bbox_inches='tight')
+            # Save error plot in output directory, not current directory
+            error_plot_path = os.path.join(inputs.get('out_files_dir', '.'), f"{inputs['filename'][0:-4]}--error_plot.png")
+            plt.savefig(error_plot_path, dpi=300, bbox_inches='tight')
             plt.close(fig)
 
         # if that also fails then print the traceback and stop running the program
@@ -1045,7 +1047,8 @@ def plotting(
         if handles:
             ax_sub.legend(handles, labels, fontsize=12)
         plt.tight_layout()
-        fig_sub.savefig(os.path.join(out_dir, f"{fname_prefix}--{tag}.png"), dpi=inputs.get('plot_dpi', 300), format='png', facecolor='w')
+        # Disable individual subplot saving to avoid duplication with simple_plotting
+        # fig_sub.savefig(os.path.join(out_dir, f"{fname_prefix}--{tag}.png"), dpi=inputs.get('plot_dpi', 300), format='png', facecolor='w')
         plt.close(fig_sub)
 
     # display the plots if desired. if this is turned off the plots will still save
@@ -1736,22 +1739,35 @@ def spall_doi_finder(**inputs):
     ax1.legend(fontsize=12)
     ax1.tick_params(axis='both', labelsize=20)
 
-    # Save IQ amplitude plot as a separate figure
-    out_dir = inputs.get('out_files_dir', '.')
-    fname_prefix = os.path.splitext(inputs.get('filename', 'ALPSS'))[0]
-    fig_iq, ax_iq = plt.subplots(figsize=(8, 8))
-    ax_iq.plot(time_us, amplitude_mV, label='Complex Amplitude')
-    ax_iq.plot(time_us, initial_amplitude * 1e3 * np.where(time_us < t_start_detected_iq * 1e6, 1, 0.5), 
-            label='Step Function')
-    ax_iq.axvline(x=t_start_detected_iq * 1e6, color='r', linestyle='--', 
-                label='Start Time (IQ)')
-    ax_iq.set_ylabel('Amplitude (mV)', fontsize=20)
-    ax_iq.set_xlabel('Time (μs)', fontsize=20)
-    ax_iq.legend(fontsize=12)
-    ax_iq.tick_params(axis='both', labelsize=20)
-    plt.tight_layout()
-    fig_iq.savefig(os.path.join(out_dir, f"{fname_prefix}--IQ_amplitude.png"), dpi=inputs.get('plot_dpi', 300), format='png', facecolor='w')
-    plt.close(fig_iq)
+    # Save IQ amplitude plot as a separate figure (only if plots are enabled)
+    save_all_plots = inputs.get("save_all_plots", "no")
+    save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
+    
+    if save_all_plots == "yes":
+        if save_in_subfolder:
+            # Create subfolder for this file's plots
+            base_filename = inputs["filename"][0:-4]  # Remove file extension
+            plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
+            os.makedirs(plots_subfolder, exist_ok=True)
+            plot_dir = plots_subfolder
+        else:
+            # Save plots in main output directory
+            plot_dir = inputs["out_files_dir"]
+        
+        fname_prefix = os.path.splitext(inputs.get('filename', 'ALPSS'))[0]
+        fig_iq, ax_iq = plt.subplots(figsize=(8, 8))
+        ax_iq.plot(time_us, amplitude_mV, label='Complex Amplitude')
+        ax_iq.plot(time_us, initial_amplitude * 1e3 * np.where(time_us < t_start_detected_iq * 1e6, 1, 0.5), 
+                label='Step Function')
+        ax_iq.axvline(x=t_start_detected_iq * 1e6, color='r', linestyle='--', 
+                    label='Start Time (IQ)')
+        ax_iq.set_ylabel('Amplitude (mV)', fontsize=20)
+        ax_iq.set_xlabel('Time (μs)', fontsize=20)
+        ax_iq.legend(fontsize=12)
+        ax_iq.tick_params(axis='both', labelsize=20)
+        plt.tight_layout()
+        fig_iq.savefig(os.path.join(plot_dir, f"{fname_prefix}--IQ_amplitude.png"), dpi=inputs.get('plot_dpi', 300), format='png', facecolor='w')
+        plt.close(fig_iq)
 
     # Adjust phase plotting similarly
     ax2.plot(time_us, phase, label='Phase', color='green')
