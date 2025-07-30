@@ -1098,229 +1098,279 @@ def simple_plotting(
         print(f"[{datetime.now()}] No plots to save")
     
     try:
+        # Get image selection parameters (default to True if not specified)
+        save_velocity_plot = inputs.get('save_velocity_plot', True)
+        save_stft_plot = inputs.get('save_stft_plot', True)
+        save_filtered_plot = inputs.get('save_filtered_plot', True)
+        save_phase_plot = inputs.get('save_phase_plot', True)
+        save_amplitude_plot = inputs.get('save_amplitude_plot', True)
+        save_peak_detection_plot = inputs.get('save_peak_detection_plot', True)
+        save_uncertainty_plot = inputs.get('save_uncertainty_plot', True)
+        
         # 1. Velocity plot with uncertainty
-        fig1 = plt.figure(figsize=(12, 8))
-        plt.plot(vc_out["time_f"] * 1e6, vc_out["velocity_f_smooth"], 'b-', linewidth=2, label='Smoothed Velocity')
-        plt.fill_between(vc_out["time_f"] * 1e6, 
-                         vc_out["velocity_f_smooth"] - iua_out["vel_uncert"] * inputs["uncert_mult"],
-                         vc_out["velocity_f_smooth"] + iua_out["vel_uncert"] * inputs["uncert_mult"],
-                         alpha=0.3, color='blue', label=f'Uncertainty (multiplied by {inputs["uncert_mult"]})')
-        plt.xlabel('Time (μs)', fontsize=14)
-        plt.ylabel('Velocity (m/s)', fontsize=14)
-        plt.title('Velocity vs Time with Uncertainty', fontsize=16)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--velocity_with_uncertainty.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig1)
+        if save_velocity_plot:
+            fig1 = plt.figure(figsize=(12, 8))
+            plt.plot(vc_out["time_f"] * 1e6, vc_out["velocity_f_smooth"], 'b-', linewidth=2, label='Smoothed Velocity')
+            plt.fill_between(vc_out["time_f"] * 1e6, 
+                             vc_out["velocity_f_smooth"] - iua_out["vel_uncert"] * inputs["uncert_mult"],
+                             vc_out["velocity_f_smooth"] + iua_out["vel_uncert"] * inputs["uncert_mult"],
+                             alpha=0.3, color='blue', label=f'Uncertainty (multiplied by {inputs["uncert_mult"]})')
+            plt.xlabel('Time (μs)', fontsize=14)
+            plt.ylabel('Velocity (m/s)', fontsize=14)
+            plt.title('Velocity vs Time with Uncertainty', fontsize=16)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--velocity_with_uncertainty.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig1)
         
-        # 2. IQ Analysis plot
-        fig2 = plt.figure(figsize=(12, 8))
-        plt.subplot(2, 1, 1)
-        plt.plot(sdf_out["time"] * 1e6, np.real(cf_out["voltage_filt"]), 'b-', label='Real Part')
-        plt.plot(sdf_out["time"] * 1e6, np.imag(cf_out["voltage_filt"]), 'r-', label='Imaginary Part')
-        plt.xlabel('Time (μs)', fontsize=12)
-        plt.ylabel('Amplitude', fontsize=12)
-        plt.title('IQ Signal Components', fontsize=14)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        # 2. IQ Analysis plot (STFT/Amplitude)
+        if save_stft_plot or save_amplitude_plot:
+            fig2 = plt.figure(figsize=(12, 8))
+            plt.subplot(2, 1, 1)
+            plt.plot(sdf_out["time"] * 1e6, np.real(cf_out["voltage_filt"]), 'b-', label='Real Part')
+            plt.plot(sdf_out["time"] * 1e6, np.imag(cf_out["voltage_filt"]), 'r-', label='Imaginary Part')
+            plt.xlabel('Time (μs)', fontsize=12)
+            plt.ylabel('Amplitude', fontsize=12)
+            plt.title('IQ Signal Components', fontsize=14)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            plt.subplot(2, 1, 2)
+            iq_magnitude = np.sqrt(np.real(cf_out["voltage_filt"])**2 + np.imag(cf_out["voltage_filt"])**2)
+            plt.plot(sdf_out["time"] * 1e6, iq_magnitude, 'g-', linewidth=2)
+            plt.xlabel('Time (μs)', fontsize=12)
+            plt.ylabel('Magnitude', fontsize=12)
+            plt.title('IQ Signal Magnitude', fontsize=14)
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--iq_analysis.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig2)
         
-        plt.subplot(2, 1, 2)
-        iq_magnitude = np.sqrt(np.real(cf_out["voltage_filt"])**2 + np.imag(cf_out["voltage_filt"])**2)
-        plt.plot(sdf_out["time"] * 1e6, iq_magnitude, 'g-', linewidth=2)
-        plt.xlabel('Time (μs)', fontsize=12)
-        plt.ylabel('Magnitude', fontsize=12)
-        plt.title('IQ Signal Magnitude', fontsize=14)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--iq_analysis.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig2)
+        # 3. Smoothed vs Raw Velocity comparison (Filtered)
+        if save_filtered_plot:
+            fig3 = plt.figure(figsize=(12, 8))
+            plt.plot(vc_out["time_f"] * 1e6, vc_out["velocity_f"], 'r-', alpha=0.7, label='Raw Velocity', linewidth=1)
+            plt.plot(vc_out["time_f"] * 1e6, vc_out["velocity_f_smooth"], 'b-', linewidth=2, label='Smoothed Velocity')
+            plt.xlabel('Time (μs)', fontsize=14)
+            plt.ylabel('Velocity (m/s)', fontsize=14)
+            plt.title('Raw vs Smoothed Velocity Comparison', fontsize=16)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--velocity_comparison.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig3)
         
-        # 3. Smoothed vs Raw Velocity comparison
-        fig3 = plt.figure(figsize=(12, 8))
-        plt.plot(vc_out["time_f"] * 1e6, vc_out["velocity_f"], 'r-', alpha=0.7, label='Raw Velocity', linewidth=1)
-        plt.plot(vc_out["time_f"] * 1e6, vc_out["velocity_f_smooth"], 'b-', linewidth=2, label='Smoothed Velocity')
-        plt.xlabel('Time (μs)', fontsize=14)
-        plt.ylabel('Velocity (m/s)', fontsize=14)
-        plt.title('Raw vs Smoothed Velocity Comparison', fontsize=16)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--velocity_comparison.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig3)
-        
-        # 4. Noise analysis plot
-        fig4 = plt.figure(figsize=(12, 8))
-        plt.subplot(2, 1, 1)
-        plt.plot(vc_out["time_f"] * 1e6, iua_out["inst_noise"], 'r-', linewidth=2)
-        plt.xlabel('Time (μs)', fontsize=12)
-        plt.ylabel('Noise Fraction', fontsize=12)
-        plt.title('Instantaneous Noise Analysis', fontsize=14)
-        plt.grid(True, alpha=0.3)
-        
-        plt.subplot(2, 1, 2)
-        plt.hist(iua_out["inst_noise"], bins=50, alpha=0.7, color='blue', edgecolor='black')
-        plt.xlabel('Noise Fraction', fontsize=12)
-        plt.ylabel('Frequency', fontsize=12)
-        plt.title('Noise Distribution', fontsize=14)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--noise_analysis.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig4)
+        # 4. Noise analysis plot (Uncertainty)
+        if save_uncertainty_plot:
+            fig4 = plt.figure(figsize=(12, 8))
+            plt.subplot(2, 1, 1)
+            plt.plot(vc_out["time_f"] * 1e6, iua_out["inst_noise"], 'r-', linewidth=2)
+            plt.xlabel('Time (μs)', fontsize=12)
+            plt.ylabel('Noise Fraction', fontsize=12)
+            plt.title('Instantaneous Noise Analysis', fontsize=14)
+            plt.grid(True, alpha=0.3)
+            
+            plt.subplot(2, 1, 2)
+            plt.hist(iua_out["inst_noise"], bins=50, alpha=0.7, color='blue', edgecolor='black')
+            plt.xlabel('Noise Fraction', fontsize=12)
+            plt.ylabel('Frequency', fontsize=12)
+            plt.title('Noise Distribution', fontsize=14)
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--noise_analysis.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig4)
         
         print(f"[{datetime.now()}] Simplified plots created successfully")
         
         # Create original ALPSS spectrogram plots
         print(f"[{datetime.now()}] Creating original ALPSS spectrogram plots...")
         
-        # 1. Original voltage data plot
-        fig5 = plt.figure(figsize=(12, 8))
-        plt.plot(sdf_out["time"] / 1e-9, sdf_out["voltage"] * 1e3, label="Original Signal", c="tab:blue")
-        plt.plot(sdf_out["time"] / 1e-9, np.real(vc_out["voltage_filt"]) * 1e3, label="Filtered Signal", c="tab:orange")
-        plt.axvspan(sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9, 
-                    color="tab:red", alpha=0.35, label="ROI")
-        plt.xlabel("Time (ns)")
-        plt.ylabel("Voltage (mV)")
-        plt.legend()
-        plt.title("Voltage Data")
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--voltage_data.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig5)
+        # 1. Original voltage data plot (Filtered)
+        if save_filtered_plot:
+            fig5 = plt.figure(figsize=(12, 8))
+            plt.plot(sdf_out["time"] / 1e-9, sdf_out["voltage"] * 1e3, label="Original Signal", c="tab:blue")
+            plt.plot(sdf_out["time"] / 1e-9, np.real(vc_out["voltage_filt"]) * 1e3, label="Filtered Signal", c="tab:orange")
+            plt.axvspan(sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9, 
+                        color="tab:red", alpha=0.35, label="ROI")
+            plt.xlabel("Time (ns)")
+            plt.ylabel("Voltage (mV)")
+            plt.legend()
+            plt.title("Voltage Data")
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--voltage_data.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig5)
         
-        # 2. Imported spectrogram
-        fig6 = plt.figure(figsize=(12, 8))
-        plt.imshow(10 * np.log10(sdf_out["mag"] ** 2), aspect="auto", origin="lower", 
-                   extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
-                          sdf_out["f"][0] / 1e9, sdf_out["f"][-1] / 1e9], cmap=inputs["cmap"])
-        plt.colorbar(label="Power (dBm)")
-        plt.xlabel("Time (ns)")
-        plt.ylabel("Frequency (GHz)")
-        plt.title("Spectrogram Original Signal")
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--imported_spectrogram.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig6)
+        # 2. Imported spectrogram (STFT)
+        if save_stft_plot:
+            fig6 = plt.figure(figsize=(12, 8))
+            plt.imshow(10 * np.log10(sdf_out["mag"] ** 2), aspect="auto", origin="lower", 
+                       extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
+                              sdf_out["f"][0] / 1e9, sdf_out["f"][-1] / 1e9], cmap=inputs["cmap"])
+            plt.colorbar(label="Power (dBm)")
+            plt.xlabel("Time (ns)")
+            plt.ylabel("Frequency (GHz)")
+            plt.title("Spectrogram Original Signal")
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--imported_spectrogram.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig6)
+            
+            # 3. ROI spectrogram (STFT)
+            fig7 = plt.figure(figsize=(12, 8))
+            plt.imshow(10 * np.log10(sdf_out["mag"] ** 2), aspect="auto", origin="lower", 
+                       extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
+                              sdf_out["f"][0] / 1e9, sdf_out["f"][-1] / 1e9], cmap=inputs["cmap"])
+            plt.colorbar(label="Power (dBm)")
+            plt.axvline(sdf_out["t_start_corrected"] / 1e-9, ls="-", c="r", linewidth=2)
+            plt.ylim([inputs["freq_min"] / 1e9, inputs["freq_max"] / 1e9])
+            plt.xlim([sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9])
+            plt.xlabel("Time (ns)")
+            plt.ylabel("Frequency (GHz)")
+            plt.title("Spectrogram ROI")
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--roi_spectrogram.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig7)
+            
+            # 4. Filtered spectrogram (STFT)
+            fig8 = plt.figure(figsize=(12, 8))
+            plt.imshow(cf_out["power_filt"], aspect="auto", origin="lower", 
+                       extent=[cf_out["t_filt"][0] / 1e-9, cf_out["t_filt"][-1] / 1e-9, 
+                              cf_out["f_filt"][0] / 1e9, cf_out["f_filt"][-1] / 1e9], cmap=inputs["cmap"])
+            plt.colorbar(label="Power (dBm)")
+            plt.axvline(sdf_out["t_start_corrected"] / 1e-9, ls="-", c="r", linewidth=2)
+            plt.ylim([inputs["freq_min"] / 1e9, inputs["freq_max"] / 1e9])
+            plt.xlim([sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9])
+            plt.xlabel("Time (ns)")
+            plt.ylabel("Frequency (GHz)")
+            plt.title("Filtered Spectrogram ROI")
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--filtered_roi_spectrogram.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig8)
+            
+            # 5. Thresholded spectrogram (STFT)
+            fig9 = plt.figure(figsize=(12, 8))
+            plt.imshow(sdf_out["th3"], aspect="auto", origin="lower", 
+                       extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
+                              sdf_out["f_doi"][0] / 1e9, sdf_out["f_doi"][-1] / 1e9], cmap=inputs["cmap"])
+            plt.axvline(sdf_out["t_start_corrected"] / 1e-9, ls="-", c="r", linewidth=2)
+            plt.ylim([inputs["freq_min"] / 1e9, inputs["freq_max"] / 1e9])
+            plt.xlim([sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9])
+            plt.xlabel("Time (ns)")
+            plt.ylabel("Frequency (GHz)")
+            plt.title("Thresholded Spectrogram")
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--thresholded_spectrogram.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig9)
         
-        # 3. ROI spectrogram
-        fig7 = plt.figure(figsize=(12, 8))
-        plt.imshow(10 * np.log10(sdf_out["mag"] ** 2), aspect="auto", origin="lower", 
-                   extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
-                          sdf_out["f"][0] / 1e9, sdf_out["f"][-1] / 1e9], cmap=inputs["cmap"])
-        plt.colorbar(label="Power (dBm)")
-        plt.axvline(sdf_out["t_start_corrected"] / 1e-9, ls="-", c="r", linewidth=2)
-        plt.ylim([inputs["freq_min"] / 1e9, inputs["freq_max"] / 1e9])
-        plt.xlim([sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9])
-        plt.xlabel("Time (ns)")
-        plt.ylabel("Frequency (GHz)")
-        plt.title("Spectrogram ROI")
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--roi_spectrogram.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig7)
+        # 6. Voltage ROI (Filtered)
+        if save_filtered_plot:
+            fig10 = plt.figure(figsize=(12, 8))
+            plt.plot(sdf_out["time"] / 1e-9, np.real(vc_out["voltage_filt"]) * 1e3, label="Filtered Signal", c="tab:blue")
+            plt.plot(vc_out["time_f"] / 1e-9, iua_out["env_max_interp"] * 1e3, label="Signal Envelope", c="tab:red")
+            plt.plot(vc_out["time_f"] / 1e-9, iua_out["env_min_interp"] * 1e3, c="tab:red")
+            plt.xlabel("Time (ns)")
+            plt.ylabel("Voltage (mV)")
+            plt.legend()
+            plt.title("Voltage ROI")
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--voltage_roi.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig10)
         
-        # 4. Filtered spectrogram
-        fig8 = plt.figure(figsize=(12, 8))
-        plt.imshow(cf_out["power_filt"], aspect="auto", origin="lower", 
-                   extent=[cf_out["t_filt"][0] / 1e-9, cf_out["t_filt"][-1] / 1e-9, 
-                          cf_out["f_filt"][0] / 1e9, cf_out["f_filt"][-1] / 1e9], cmap=inputs["cmap"])
-        plt.colorbar(label="Power (dBm)")
-        plt.axvline(sdf_out["t_start_corrected"] / 1e-9, ls="-", c="r", linewidth=2)
-        plt.ylim([inputs["freq_min"] / 1e9, inputs["freq_max"] / 1e9])
-        plt.xlim([sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9])
-        plt.xlabel("Time (ns)")
-        plt.ylabel("Frequency (GHz)")
-        plt.title("Filtered Spectrogram ROI")
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--filtered_roi_spectrogram.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig8)
+        # 7. Velocity spectrogram overlay (STFT)
+        if save_stft_plot:
+            fig11 = plt.figure(figsize=(12, 8))
+            plt.imshow(10 * np.log10(sdf_out["mag"] ** 2), aspect="auto", origin="lower", 
+                       extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
+                              sdf_out["f"][0] / 1e9, sdf_out["f"][-1] / 1e9], cmap=inputs["cmap"])
+            plt.colorbar(label="Power (dBm)")
+            plt.ylim([inputs["freq_min"] / 1e9, inputs["freq_max"] / 1e9])
+            plt.xlim([sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9])
+            plt.xlabel("Time (ns)")
+            plt.ylabel("Frequency (GHz)")
+            plt.title("Velocity Spectrogram Overlay")
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--velocity_spectrogram_overlay.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig11)
         
-        # 5. Thresholded spectrogram
-        fig9 = plt.figure(figsize=(12, 8))
-        plt.imshow(sdf_out["th3"], aspect="auto", origin="lower", 
-                   extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
-                          sdf_out["f_doi"][0] / 1e9, sdf_out["f_doi"][-1] / 1e9], cmap=inputs["cmap"])
-        plt.axvline(sdf_out["t_start_corrected"] / 1e-9, ls="-", c="r", linewidth=2)
-        plt.ylim([inputs["freq_min"] / 1e9, inputs["freq_max"] / 1e9])
-        plt.xlim([sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9])
-        plt.xlabel("Time (ns)")
-        plt.ylabel("Frequency (GHz)")
-        plt.title("Thresholded Spectrogram")
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--thresholded_spectrogram.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig9)
+        # 8. Velocity uncertainty plot (Uncertainty)
+        if save_uncertainty_plot:
+            fig12 = plt.figure(figsize=(12, 8))
+            plt.plot(vc_out["time_f"] * 1e6, iua_out["vel_uncert"], 'r-', linewidth=2)
+            plt.xlabel('Time (μs)', fontsize=14)
+            plt.ylabel('Velocity Uncertainty (m/s)', fontsize=14)
+            plt.title('Velocity Uncertainty vs Time', fontsize=16)
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--velocity_uncertainty.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig12)
+            
+            # 9. Noise fraction plot (Uncertainty)
+            fig13 = plt.figure(figsize=(12, 8))
+            plt.plot(vc_out["time_f"] * 1e6, iua_out["inst_noise"], 'r-', linewidth=2)
+            plt.xlabel('Time (μs)', fontsize=14)
+            plt.ylabel('Noise Fraction', fontsize=14)
+            plt.title('Noise Fraction vs Time', fontsize=16)
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--noise_fraction.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig13)
         
-        # 6. Voltage ROI
-        fig10 = plt.figure(figsize=(12, 8))
-        plt.plot(sdf_out["time"] / 1e-9, np.real(vc_out["voltage_filt"]) * 1e3, label="Filtered Signal", c="tab:blue")
-        plt.plot(vc_out["time_f"] / 1e-9, iua_out["env_max_interp"] * 1e3, label="Signal Envelope", c="tab:red")
-        plt.plot(vc_out["time_f"] / 1e-9, iua_out["env_min_interp"] * 1e3, c="tab:red")
-        plt.xlabel("Time (ns)")
-        plt.ylabel("Voltage (mV)")
-        plt.legend()
-        plt.title("Voltage ROI")
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--voltage_roi.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig10)
+        # 10. Noise histogram (Uncertainty)
+        if save_uncertainty_plot:
+            fig14 = plt.figure(figsize=(12, 8))
+            plt.hist(iua_out["noise"] * 1e3, bins=50, rwidth=0.8, alpha=0.7, color='blue', edgecolor='black')
+            plt.xlabel('Noise (mV)', fontsize=14)
+            plt.ylabel('Counts', fontsize=14)
+            plt.title('Voltage Noise Distribution', fontsize=16)
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--noise_histogram.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig14)
         
-        # 7. Velocity spectrogram overlay
-        fig11 = plt.figure(figsize=(12, 8))
-        plt.imshow(10 * np.log10(sdf_out["mag"] ** 2), aspect="auto", origin="lower", 
-                   extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
-                          sdf_out["f"][0] / 1e9, sdf_out["f"][-1] / 1e9], cmap=inputs["cmap"])
-        plt.colorbar(label="Power (dBm)")
-        plt.ylim([inputs["freq_min"] / 1e9, inputs["freq_max"] / 1e9])
-        plt.xlim([sdf_out["t_doi_start"] / 1e-9, sdf_out["t_doi_end"] / 1e-9])
-        plt.xlabel("Time (ns)")
-        plt.ylabel("Frequency (GHz)")
-        plt.title("Velocity Spectrogram Overlay")
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--velocity_spectrogram_overlay.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig11)
+        # 11. IQ amplitude plot (Amplitude)
+        if save_amplitude_plot:
+            fig15 = plt.figure(figsize=(12, 8))
+            iq_amplitude = np.sqrt(np.real(cf_out["voltage_filt"])**2 + np.imag(cf_out["voltage_filt"])**2)
+            plt.plot(sdf_out["time"] * 1e6, iq_amplitude, 'g-', linewidth=2)
+            plt.xlabel('Time (μs)', fontsize=14)
+            plt.ylabel('IQ Amplitude', fontsize=14)
+            plt.title('IQ Signal Amplitude', fontsize=16)
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--IQ_amplitude.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig15)
         
-        # 8. Velocity uncertainty plot
-        fig12 = plt.figure(figsize=(12, 8))
-        plt.plot(vc_out["time_f"] * 1e6, iua_out["vel_uncert"], 'r-', linewidth=2)
-        plt.xlabel('Time (μs)', fontsize=14)
-        plt.ylabel('Velocity Uncertainty (m/s)', fontsize=14)
-        plt.title('Velocity Uncertainty vs Time', fontsize=16)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--velocity_uncertainty.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig12)
-        
-        # 9. Noise fraction plot
-        fig13 = plt.figure(figsize=(12, 8))
-        plt.plot(vc_out["time_f"] * 1e6, iua_out["inst_noise"], 'r-', linewidth=2)
-        plt.xlabel('Time (μs)', fontsize=14)
-        plt.ylabel('Noise Fraction', fontsize=14)
-        plt.title('Noise Fraction vs Time', fontsize=16)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--noise_fraction.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig13)
-        
-        # 10. Noise histogram
-        fig14 = plt.figure(figsize=(12, 8))
-        plt.hist(iua_out["noise"] * 1e3, bins=50, rwidth=0.8, alpha=0.7, color='blue', edgecolor='black')
-        plt.xlabel('Noise (mV)', fontsize=14)
-        plt.ylabel('Counts', fontsize=14)
-        plt.title('Voltage Noise Distribution', fontsize=16)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--noise_histogram.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig14)
-        
-        # 11. IQ amplitude plot
-        fig15 = plt.figure(figsize=(12, 8))
-        iq_amplitude = np.sqrt(np.real(cf_out["voltage_filt"])**2 + np.imag(cf_out["voltage_filt"])**2)
-        plt.plot(sdf_out["time"] * 1e6, iq_amplitude, 'g-', linewidth=2)
-        plt.xlabel('Time (μs)', fontsize=14)
-        plt.ylabel('IQ Amplitude', fontsize=14)
-        plt.title('IQ Signal Amplitude', fontsize=16)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plot_dir, f"{base_filename}--IQ_amplitude.png"), dpi=300, bbox_inches='tight')
-        plt.close(fig15)
+        # 12. Peak detection plot (Peak Detection)
+        if save_peak_detection_plot and sa_out is not None:
+            fig16 = plt.figure(figsize=(12, 8))
+            plt.plot(vc_out["time_f"] * 1e6, vc_out["velocity_f_smooth"], 'b-', linewidth=2, label='Smoothed Velocity')
+            
+            # Plot detected peaks if available
+            if 'max_compression_idx' in sa_out and sa_out['max_compression_idx'] is not None:
+                max_comp_time = vc_out["time_f"][sa_out['max_compression_idx']] * 1e6
+                max_comp_vel = vc_out["velocity_f_smooth"][sa_out['max_compression_idx']]
+                plt.plot(max_comp_time, max_comp_vel, 'ro', markersize=10, label='Max Compression')
+            
+            if 'max_tension_idx' in sa_out and sa_out['max_tension_idx'] is not None:
+                max_tens_time = vc_out["time_f"][sa_out['max_tension_idx']] * 1e6
+                max_tens_vel = vc_out["velocity_f_smooth"][sa_out['max_tension_idx']]
+                plt.plot(max_tens_time, max_tens_vel, 'go', markersize=10, label='Max Tension')
+            
+            if 'recompression_idx' in sa_out and sa_out['recompression_idx'] is not None:
+                recomp_time = vc_out["time_f"][sa_out['recompression_idx']] * 1e6
+                recomp_vel = vc_out["velocity_f_smooth"][sa_out['recompression_idx']]
+                plt.plot(recomp_time, recomp_vel, 'mo', markersize=10, label='Recompression')
+            
+            plt.xlabel('Time (μs)', fontsize=14)
+            plt.ylabel('Velocity (m/s)', fontsize=14)
+            plt.title('Peak Detection Results', fontsize=16)
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{base_filename}--peak_detection.png"), dpi=300, bbox_inches='tight')
+            plt.close(fig16)
         
         print(f"[{datetime.now()}] Original ALPSS spectrogram plots created successfully")
         return plt.figure()

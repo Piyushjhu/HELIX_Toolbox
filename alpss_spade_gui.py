@@ -9,6 +9,7 @@ import os
 import glob
 import subprocess
 import threading
+import time
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -83,6 +84,9 @@ class AnalysisThread(QThread):
         
     def run(self):
         try:
+            # Start timing the entire analysis
+            self.start_time = time.time()
+            
             # Import ALPSS and SPADE modules
             sys.path.append('ALPSS')
             sys.path.append('SPADE/spall_analysis_release')
@@ -95,8 +99,12 @@ class AnalysisThread(QThread):
             
             # Process ALPSS files if provided and not SPADE-only mode
             if self.analysis_mode != "spade_only" and self.input_files:
+                total_alpss_time = 0
                 for i, input_file in enumerate(self.input_files):
                     self.progress_signal.emit(f"ALPSS Processing file {i+1}/{len(self.input_files)}: {os.path.basename(input_file)}")
+                    
+                    # Start timing for this file
+                    file_start_time = time.time()
                     
                     # Run ALPSS
                     self.progress_signal.emit("Running ALPSS analysis...")
@@ -107,12 +115,31 @@ class AnalysisThread(QThread):
                     alpss_params['exp_data_dir'] = os.path.dirname(input_file)
                     alpss_params['out_files_dir'] = self.output_dir
                     
+                    # Pass image selection parameters to ALPSS
+                    alpss_params['save_velocity_plot'] = self.alpss_params.get('save_velocity_plot', True)
+                    alpss_params['save_stft_plot'] = self.alpss_params.get('save_stft_plot', True)
+                    alpss_params['save_filtered_plot'] = self.alpss_params.get('save_filtered_plot', True)
+                    alpss_params['save_phase_plot'] = self.alpss_params.get('save_phase_plot', True)
+                    alpss_params['save_amplitude_plot'] = self.alpss_params.get('save_amplitude_plot', True)
+                    alpss_params['save_peak_detection_plot'] = self.alpss_params.get('save_peak_detection_plot', True)
+                    alpss_params['save_uncertainty_plot'] = self.alpss_params.get('save_uncertainty_plot', True)
+                    
                     alpss_main(**alpss_params)
                     
-                    self.progress_signal.emit(f"Completed ALPSS analysis for {os.path.basename(input_file)}")
+                    # Calculate timing for this file
+                    file_end_time = time.time()
+                    file_time = file_end_time - file_start_time
+                    total_alpss_time += file_time
+                    
+                    self.progress_signal.emit(f"Completed ALPSS analysis for {os.path.basename(input_file)} in {file_time:.2f} seconds")
+                
+                # Report total ALPSS timing
+                avg_time = total_alpss_time / len(self.input_files) if self.input_files else 0
+                self.progress_signal.emit(f"ALPSS Analysis Summary: {len(self.input_files)} files processed in {total_alpss_time:.2f} seconds (avg: {avg_time:.2f}s per file)")
             
             # Run SPADE analysis if not ALPSS-only mode
             if self.analysis_mode != "alpss_only":
+                spade_start_time = time.time()
                 if self.spade_auto_mode:
                     # Automatic mode: use ALPSS output
                     if self.input_files:
@@ -168,7 +195,9 @@ class AnalysisThread(QThread):
                             for i in range(len(vel_files)):
                                 self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(vel_files)}: Completed")
                             
-                            self.progress_signal.emit(f"Completed SPADE analysis for {len(vel_files)} files")
+                            spade_end_time = time.time()
+                            spade_time = spade_end_time - spade_start_time
+                            self.progress_signal.emit(f"Completed SPADE analysis for {len(vel_files)} files in {spade_time:.2f} seconds")
                         else:
                             self.progress_signal.emit("Warning: No velocity files found for SPADE analysis")
                     else:
@@ -218,10 +247,17 @@ class AnalysisThread(QThread):
                         for i in range(len(self.spade_input_files)):
                             self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: Completed")
                         
-                        self.progress_signal.emit(f"Completed SPADE analysis for {len(self.spade_input_files)} files")
+                        spade_end_time = time.time()
+                        spade_time = spade_end_time - spade_start_time
+                        self.progress_signal.emit(f"Completed SPADE analysis for {len(self.spade_input_files)} files in {spade_time:.2f} seconds")
                     else:
                         self.progress_signal.emit("No SPADE input files provided")
+            # Calculate total processing time
+            total_end_time = time.time()
+            total_time = total_end_time - self.start_time if hasattr(self, 'start_time') else 0
+            
             self.progress_signal.emit("All analysis completed successfully!")
+            self.progress_signal.emit(f"Total processing time: {total_time:.2f} seconds")
             self.finished_signal.emit(True, "Analysis completed successfully")
             
             # After SPADE analysis, generate mean velocity file and combined plots
@@ -258,16 +294,16 @@ class AnalysisThread(QThread):
                         # 3. Plot combined mean velocity - create a simple plot since SPADE's function expects specific naming
                         try:
                             fig, ax = plt.subplots(figsize=(12, 8))
-                            time = merged['Time']
+                            time_data = merged['Time']
                             mean_velocity = merged['Mean Velocity (m/s)']
                             velocity_std = merged['Std Dev Velocity (m/s)']
                             
                             # Plot mean line
-                            ax.plot(time, mean_velocity, 'b-', linewidth=2, label='Mean Velocity')
+                            ax.plot(time_data, mean_velocity, 'b-', linewidth=2, label='Mean Velocity')
                             
                             # Plot shaded uncertainty if available
                             if not velocity_std.isna().all():
-                                ax.fill_between(time, mean_velocity - velocity_std, mean_velocity + velocity_std, 
+                                ax.fill_between(time_data, mean_velocity - velocity_std, mean_velocity + velocity_std, 
                                               alpha=0.3, color='blue', label='±1σ')
                             
                             ax.set_xlabel('Time (ns)', fontsize=14)
@@ -306,19 +342,19 @@ class AnalysisThread(QThread):
                         except Exception:
                             df = pd.read_csv(file, header=None)
                         # Use first two columns for time and velocity
-                        time = df.iloc[:, 0].values
+                        time_data = df.iloc[:, 0].values
                         velocity = df.iloc[:, 1].values
                         print(f"[DEBUG] Plotting {file}: using columns {df.columns[0]}, {df.columns[1]}")
-                        if np.nanmax(time) < 1.0:
-                            time = time * 1e9
+                        if np.nanmax(time_data) < 1.0:
+                            time_data = time_data * 1e9
                         threshold = 0.1 * np.nanmax(velocity)
                         above_thresh = np.where(velocity > threshold)[0]
                         if len(above_thresh) > 0:
                             t0_idx = above_thresh[0]
                         else:
                             t0_idx = 0
-                        t0 = time[t0_idx]
-                        time_shifted = time - t0
+                        t0 = time_data[t0_idx]
+                        time_shifted = time_data - t0
                         label = os.path.basename(file).replace('--velocity--smooth.csv','')
                         if i == 0:
                             print(f"[DEBUG] First 10 time_shifted: {time_shifted[:10]}")
@@ -1404,10 +1440,90 @@ class ALPSSSPADEGUI(QMainWindow):
         
         layout.addWidget(plot_group)
         
+        # Image selection group
+        image_group = QGroupBox("ALPSS Output Images")
+        image_layout = QVBoxLayout(image_group)
+        image_layout.setSpacing(10)
+        
+        # Description
+        desc_label = QLabel("Select which ALPSS output images to generate:")
+        desc_label.setWordWrap(True)
+        image_layout.addWidget(desc_label)
+        
+        # Image checkboxes
+        self.save_velocity_plot = QCheckBox("Velocity vs Time Plot")
+        self.save_velocity_plot.setChecked(True)
+        self.save_velocity_plot.setToolTip("Generate velocity vs time plot with uncertainty bands")
+        image_layout.addWidget(self.save_velocity_plot)
+        
+        self.save_stft_plot = QCheckBox("STFT Spectrogram")
+        self.save_stft_plot.setChecked(True)
+        self.save_stft_plot.setToolTip("Generate Short-Time Fourier Transform spectrogram")
+        image_layout.addWidget(self.save_stft_plot)
+        
+        self.save_filtered_plot = QCheckBox("Filtered Signal Plot")
+        self.save_filtered_plot.setChecked(True)
+        self.save_filtered_plot.setToolTip("Generate plot showing original vs filtered signal")
+        image_layout.addWidget(self.save_filtered_plot)
+        
+        self.save_phase_plot = QCheckBox("Phase Plot")
+        self.save_phase_plot.setChecked(True)
+        self.save_phase_plot.setToolTip("Generate phase vs time plot")
+        image_layout.addWidget(self.save_phase_plot)
+        
+        self.save_amplitude_plot = QCheckBox("Amplitude Plot")
+        self.save_amplitude_plot.setChecked(True)
+        self.save_amplitude_plot.setToolTip("Generate amplitude vs time plot")
+        image_layout.addWidget(self.save_amplitude_plot)
+        
+        self.save_peak_detection_plot = QCheckBox("Peak Detection Plot")
+        self.save_peak_detection_plot.setChecked(True)
+        self.save_peak_detection_plot.setToolTip("Generate plot showing detected peaks and pullback")
+        image_layout.addWidget(self.save_peak_detection_plot)
+        
+        self.save_uncertainty_plot = QCheckBox("Uncertainty Analysis Plot")
+        self.save_uncertainty_plot.setChecked(True)
+        self.save_uncertainty_plot.setToolTip("Generate uncertainty analysis plots")
+        image_layout.addWidget(self.save_uncertainty_plot)
+        
+        # Select all/none buttons
+        select_buttons_layout = QHBoxLayout()
+        self.select_all_images = QPushButton("Select All")
+        self.select_all_images.clicked.connect(self.select_all_alpss_images)
+        select_buttons_layout.addWidget(self.select_all_images)
+        
+        self.deselect_all_images = QPushButton("Deselect All")
+        self.deselect_all_images.clicked.connect(self.deselect_all_alpss_images)
+        select_buttons_layout.addWidget(self.deselect_all_images)
+        
+        image_layout.addLayout(select_buttons_layout)
+        
+        layout.addWidget(image_group)
+        
         scroll.setWidget(scroll_widget)
         layout = QVBoxLayout(tab)
         layout.addWidget(scroll)
         self.tab_widget.addTab(tab, "ALPSS Parameters")
+        
+    def select_all_alpss_images(self):
+        """Select all ALPSS output images"""
+        self.save_velocity_plot.setChecked(True)
+        self.save_stft_plot.setChecked(True)
+        self.save_filtered_plot.setChecked(True)
+        self.save_phase_plot.setChecked(True)
+        self.save_amplitude_plot.setChecked(True)
+        self.save_peak_detection_plot.setChecked(True)
+        self.save_uncertainty_plot.setChecked(True)
+        
+    def deselect_all_alpss_images(self):
+        """Deselect all ALPSS output images"""
+        self.save_velocity_plot.setChecked(False)
+        self.save_stft_plot.setChecked(False)
+        self.save_filtered_plot.setChecked(False)
+        self.save_phase_plot.setChecked(False)
+        self.save_amplitude_plot.setChecked(False)
+        self.save_peak_detection_plot.setChecked(False)
+        self.save_uncertainty_plot.setChecked(False)
         
     def create_spade_params_tab(self):
         """Create SPADE parameters tab"""
@@ -2138,6 +2254,14 @@ Output Files:
             'spall_calculation': self.spall_calculation.currentText(),
             'plot_figsize': (self.plot_width.value(), self.plot_height.value()),
             'plot_dpi': self.plot_dpi.value(),
+            # Image selection parameters
+            'save_velocity_plot': self.save_velocity_plot.isChecked(),
+            'save_stft_plot': self.save_stft_plot.isChecked(),
+            'save_filtered_plot': self.save_filtered_plot.isChecked(),
+            'save_phase_plot': self.save_phase_plot.isChecked(),
+            'save_amplitude_plot': self.save_amplitude_plot.isChecked(),
+            'save_peak_detection_plot': self.save_peak_detection_plot.isChecked(),
+            'save_uncertainty_plot': self.save_uncertainty_plot.isChecked(),
         }
         
     def get_spade_params(self):
