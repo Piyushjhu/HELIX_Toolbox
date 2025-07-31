@@ -1007,91 +1007,70 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Create new violin plot: Maximum velocity vs waveplate angle by material
-                self.progress_signal.emit("Creating Figure 4b: Maximum velocity vs waveplate angle (violin plot)...")
-                fig4b, ax4b = plt.subplots(1, 1, figsize=(14, 10))
+                # Save data for violin plots to CSV file
+                self.progress_signal.emit("Saving data for violin plots to CSV...")
                 
-                # Prepare data for seaborn violin plot
-                seaborn_available = False
-                try:
-                    import seaborn as sns
-                    # Test if seaborn is working by trying to access a function
-                    _ = sns.violinplot
-                    seaborn_available = True
-                    self.progress_signal.emit("[INFO] seaborn successfully imported for violin plot")
-                except (ImportError, AttributeError) as e:
-                    self.progress_signal.emit(f"[WARNING] seaborn not available: {str(e)}, skipping violin plot")
-                    seaborn_available = False
-                
-                # Create DataFrame for seaborn
-                violin_data = []
+                # Collect all data for CSV export
+                csv_data = []
                 for material in material_colors.keys():
                     if material in scatter_data and len(scatter_data[material]) > 0:
                         for waveplate_angle, max_velocity, file_name in scatter_data[material]:
-                            violin_data.append({
+                            # Get additional data from parameter file
+                            shot_time_s = None
+                            pdv_power_dbm = None
+                            laser_energy_mj = None
+                            
+                            if self.param_data and file_name in self.param_data:
+                                exp_info = self.param_data[file_name]
+                                
+                                # Get shot time (flexible column name matching)
+                                shot_time_from_param = exp_info.get('shot_time', None)
+                                if shot_time_from_param is not None and shot_time_from_param != 'Unknown':
+                                    try:
+                                        shot_time_s = float(shot_time_from_param)
+                                    except (ValueError, TypeError):
+                                        pass
+                                
+                                # Get laser energy (flexible column name matching)
+                                for key, value in exp_info.items():
+                                    if any(term in key.lower() for term in ['laser', 'energy', 'pulse']) and value != 'Unknown':
+                                        try:
+                                            laser_energy_mj = float(value)
+                                            break
+                                        except (ValueError, TypeError):
+                                            continue
+                            
+                            # Get PDV power from existing data
+                            if material in pdv_power_data:
+                                for pdv_power, pdv_file_name in pdv_power_data[material]:
+                                    if pdv_file_name == file_name:
+                                        pdv_power_dbm = pdv_power
+                                        break
+                            
+                            csv_data.append({
+                                'file_name': file_name,
                                 'material': material,
-                                'angle': waveplate_angle,
-                                'velocity': max_velocity,
-                                'file': file_name
+                                'waveplate_angle_degrees': waveplate_angle,
+                                'max_velocity_ms': max_velocity,
+                                'shot_time_s': shot_time_s,
+                                'pdv_return_power_dbm': pdv_power_dbm,
+                                'laser_energy_mj': laser_energy_mj
                             })
                 
-                if violin_data and seaborn_available:
-                    df = pd.DataFrame(violin_data)
+                # Save to CSV file
+                if csv_data:
+                    csv_df = pd.DataFrame(csv_data)
+                    csv_path = os.path.join(spade_output_dir, 'violin_plot_data.csv')
+                    csv_df.to_csv(csv_path, index=False)
+                    self.progress_signal.emit(f"Saved {len(csv_data)} data points to {csv_path}")
+                    self.progress_signal.emit(f"Columns: {list(csv_df.columns)}")
                     
-                    # Create violin plot with seaborn
-                    sns.violinplot(x='angle', y='velocity', hue='material', data=df,
-                                   palette="Set2", cut=0, inner=None, split=False, 
-                                   linewidth=1, dodge=False, saturation=0.5, ax=ax4b)
-                    
-                    # Add swarm plot overlay
-                    sns.swarmplot(x='angle', y='velocity', hue='material', data=df,
-                                  palette="Set2", alpha=0.5, size=4, dodge=False,
-                                  edgecolor='k', linewidth=1, ax=ax4b)
-                    
-                    # Remove duplicate legend caused by swarm
-                    handles, labels = ax4b.get_legend_handles_labels()
-                    ax4b.legend(handles[:3], labels[:3], title="Flyer Material", fontsize=16, title_fontsize=18)
-                    
-                    # Configure plot
-                    ax4b.set_xlabel("Wave Plate Angle (degrees)", fontsize=20)
-                    ax4b.set_ylabel("Maximum Velocity (m/s)", fontsize=20)
-                    ax4b.set_title("Maximum Velocity by Angle and Material (Overlaid)", fontsize=20, fontweight='bold')
-                    ax4b.grid(True, linestyle='--', alpha=0.5)
-                    ax4b.tick_params(axis='both', which='major', labelsize=16)
-                    ax4b.tick_params(axis='both', which='minor', labelsize=14)
-                    ax4b.minorticks_on()
-                    
-                    # Add bounding box
-                    for spine in ax4b.spines.values():
-                        spine.set_linewidth(3.0)
-                        spine.set_color('black')
-                elif violin_data and not seaborn_available:
-                    # Fallback: create a simple scatter plot if seaborn is not available
-                    self.progress_signal.emit("Creating fallback scatter plot (seaborn not available)")
-                    
-                    # Create a simple scatter plot as fallback
-                    for material in material_colors.keys():
-                        if material in scatter_data and len(scatter_data[material]) > 0:
-                            waveplate_angles = [point[0] for point in scatter_data[material]]
-                            max_velocities = [point[1] for point in scatter_data[material]]
-                            color = material_colors[material]
-                            
-                            ax4b.scatter(waveplate_angles, max_velocities, color=color, s=100, alpha=0.7, 
-                                        label=f'{material} (n={len(scatter_data[material])})')
-                    
-                    ax4b.set_xlabel("Wave Plate Angle (degrees)", fontsize=20)
-                    ax4b.set_ylabel("Maximum Velocity (m/s)", fontsize=20)
-                    ax4b.set_title("Maximum Velocity by Angle and Material (Scatter Plot Fallback)", fontsize=20, fontweight='bold')
-                    ax4b.legend(fontsize=16, title="Flyer Material", title_fontsize=18)
-                    ax4b.grid(True, linestyle='--', alpha=0.5)
-                    ax4b.tick_params(axis='both', which='major', labelsize=16)
-                    ax4b.tick_params(axis='both', which='minor', labelsize=14)
-                    ax4b.minorticks_on()
-                    
-                    # Add bounding box
-                    for spine in ax4b.spines.values():
-                        spine.set_linewidth(3.0)
-                        spine.set_color('black')
+                    # Show data summary
+                    for material in csv_df['material'].unique():
+                        material_data = csv_df[csv_df['material'] == material]
+                        self.progress_signal.emit(f"{material}: {len(material_data)} samples")
+                else:
+                    self.progress_signal.emit("No data available for CSV export")
                 
 
                 
@@ -1291,21 +1270,7 @@ class AnalysisThread(QThread):
                 fig6.savefig(out_path6_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig6)
                 
-                # Save new violin plot
-                if violin_data:
-                    fig4b.tight_layout()
-                    out_path4b_png = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle_violin.png')
-                    out_path4b_pdf = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle_violin.pdf')
-                    self.progress_signal.emit("Saving Figure 4b (violin plot)...")
-                    if not save_pdf_only:
-                        if use_optimize:
-                            fig4b.savefig(out_path4b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                        else:
-                            fig4b.savefig(out_path4b_png, dpi=png_dpi, bbox_inches='tight')
-                    fig4b.savefig(out_path4b_pdf, format='pdf', bbox_inches='tight')
-                    plt.close(fig4b)
-                else:
-                    plt.close(fig4b)
+
                 
 
                 
@@ -1326,7 +1291,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png/.pdf")
                 self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png/.pdf")
                 self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png/.pdf")
-                self.progress_signal.emit(f"Figure 4b (violin plot): max_velocity_vs_waveplate_angle_violin.png/.pdf")
+                self.progress_signal.emit(f"Data for violin plots: violin_plot_data.csv")
                 self.progress_signal.emit(f"Figure 5 (shot time vs material): shot_time_vs_material.png/.pdf")
                 self.progress_signal.emit(f"Figure 6 (PDV power vs material): pdv_power_vs_material.png/.pdf")
                 # --- END ENHANCED PLOT ---
