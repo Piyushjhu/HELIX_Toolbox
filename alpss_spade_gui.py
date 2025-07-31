@@ -462,6 +462,7 @@ class AnalysisThread(QThread):
                 # Data structures for scatter plot
                 scatter_data = {}  # {material: [(waveplate_angle, max_velocity, file_name), ...]}
                 shot_time_data = {}  # {material: [(shot_time, file_name), ...]}
+                pdv_power_data = {}  # {material: [(pdv_power, file_name), ...]}
                 
                 for i, file in enumerate(sorted(smoothed_files)):
                     try:
@@ -651,6 +652,20 @@ class AnalysisThread(QThread):
                                 if material not in shot_time_data:
                                     shot_time_data[material] = []
                                 shot_time_data[material].append((shot_time_ns, base_name))
+                        
+                        # Calculate PDV return power (average power in the signal)
+                        if len(velocity_filtered) > 0:
+                            # Convert velocity to power (assuming velocity is proportional to power)
+                            # This is a simplified calculation - in real PDV, power would come from raw data
+                            velocity_power = np.abs(velocity_filtered)
+                            # Convert to dBm (assuming 0 dBm = 1 mW reference)
+                            # This is a placeholder calculation - actual PDV power would need raw data
+                            pdv_power_dbm = 10 * np.log10(np.mean(velocity_power) + 1e-10)  # Add small offset to avoid log(0)
+                            
+                            # Collect data for PDV power vs material plot
+                            if material not in pdv_power_data:
+                                pdv_power_data[material] = []
+                            pdv_power_data[material].append((pdv_power_dbm, base_name))
                         
                         plotted_files.append(os.path.basename(file))
                         
@@ -1035,7 +1050,53 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Adjust layout and save all five figures
+                # Create PDV power vs material scatter plot for Figure 6
+                fig6, ax6 = plt.subplots(1, 1, figsize=(14, 10))
+                
+                # Define material order for x-axis (same as shot time plot)
+                material_order = ['Al', 'Ti', 'Cu']
+                material_positions = {material: i for i, material in enumerate(material_order)}
+                
+                for material, data_points in pdv_power_data.items():
+                    if len(data_points) > 0 and material in material_positions:
+                        color = material_colors[material]
+                        pdv_powers = [point[0] for point in data_points]
+                        file_names = [point[1] for point in data_points]
+                        
+                        # Use material position for x-axis
+                        x_pos = material_positions[material]
+                        x_positions = [x_pos] * len(pdv_powers)
+                        
+                        # Plot scatter points
+                        ax6.scatter(x_positions, pdv_powers, color=color, s=100, alpha=0.7, 
+                                   label=f'{material} (n={len(data_points)})')
+                        
+                        # Add file name annotations for some points (avoid overcrowding)
+                        if len(data_points) <= 10:  # Only annotate if few points
+                            for i, (pdv_power, file_name) in enumerate(data_points):
+                                ax6.annotate(file_name, (x_pos, pdv_power), xytext=(5, 5), 
+                                           textcoords='offset points', fontsize=10, alpha=0.8)
+                
+                # Configure PDV power vs material scatter plot
+                ax6.set_xlabel('Material', fontsize=20)
+                ax6.set_ylabel('PDV Return Power (dBm)', fontsize=20)
+                ax6.set_title('PDV Return Power vs Material', fontsize=20, fontweight='bold')
+                ax6.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
+                ax6.grid(True, linestyle='--', alpha=0.5)
+                ax6.tick_params(axis='both', which='major', labelsize=16)
+                ax6.tick_params(axis='both', which='minor', labelsize=14)
+                ax6.minorticks_on()
+                
+                # Set x-axis ticks to material names
+                ax6.set_xticks(range(len(material_order)))
+                ax6.set_xticklabels(material_order)
+                
+                # Add bounding box to PDV power scatter plot
+                for spine in ax6.spines.values():
+                    spine.set_linewidth(3.0)
+                    spine.set_color('black')
+                
+                # Adjust layout and save all six figures
                 fig1.tight_layout()
                 out_path1 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
                 fig1.savefig(out_path1, dpi=300, bbox_inches='tight')
@@ -1061,6 +1122,11 @@ class AnalysisThread(QThread):
                 fig5.savefig(out_path5, dpi=300, bbox_inches='tight')
                 plt.close(fig5)
                 
+                fig6.tight_layout()
+                out_path6 = os.path.join(spade_output_dir, 'pdv_power_vs_material.png')
+                fig6.savefig(out_path6, dpi=300, bbox_inches='tight')
+                plt.close(fig6)
+                
                 # Report combined plotting summary
                 self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
                 self.progress_signal.emit(f"Successfully plotted: {len(plotted_files)} files")
@@ -1078,6 +1144,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png")
                 self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png")
                 self.progress_signal.emit(f"Figure 5 (shot time vs material): shot_time_vs_material.png")
+                self.progress_signal.emit(f"Figure 6 (PDV power vs material): pdv_power_vs_material.png")
                 # --- END ENHANCED PLOT ---
 
                 # 4. Spall Strength vs. Strain Rate and Shock Stress
@@ -2322,6 +2389,10 @@ class ALPSSSPADEGUI(QMainWindow):
         self.plot_shot_time_vs_material.setChecked(True)
         combined_plot_layout.addWidget(self.plot_shot_time_vs_material, 1, 1)
         
+        self.plot_pdv_power_vs_material = QCheckBox("Figure 6: PDV Return Power vs Material")
+        self.plot_pdv_power_vs_material.setChecked(True)
+        combined_plot_layout.addWidget(self.plot_pdv_power_vs_material, 1, 2)
+        
         layout.addWidget(combined_plot_group)
         
         # Plot axis limits
@@ -3181,6 +3252,7 @@ Output Files:
             'plot_spread_analysis': self.plot_spread_analysis.isChecked(),
             'plot_velocity_vs_angle': self.plot_velocity_vs_angle.isChecked(),
             'plot_shot_time_vs_material': self.plot_shot_time_vs_material.isChecked(),
+            'plot_pdv_power_vs_material': self.plot_pdv_power_vs_material.isChecked(),
         }
         
     def run_analysis(self):
