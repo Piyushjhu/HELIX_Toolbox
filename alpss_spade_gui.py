@@ -1005,53 +1005,57 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Create violin plot version of Figure 4
+                # Create new violin plot: Maximum velocity vs waveplate angle by material
                 self.progress_signal.emit("Creating Figure 4b: Maximum velocity vs waveplate angle (violin plot)...")
                 fig4b, ax4b = plt.subplots(1, 1, figsize=(14, 10))
                 
-                # Prepare data for violin plot
-                violin_data = []
-                violin_labels = []
-                violin_colors = []
+                # Prepare data for seaborn violin plot
+                import seaborn as sns
                 
+                # Create DataFrame for seaborn
+                violin_data = []
                 for material in material_colors.keys():
                     if material in scatter_data and len(scatter_data[material]) > 0:
-                        max_velocities = [point[1] for point in scatter_data[material]]
-                        violin_data.append(max_velocities)
-                        violin_labels.append(f'{material} (n={len(max_velocities)})')
-                        violin_colors.append(material_colors[material])
+                        for waveplate_angle, max_velocity, file_name in scatter_data[material]:
+                            violin_data.append({
+                                'material': material,
+                                'angle': waveplate_angle,
+                                'velocity': max_velocity,
+                                'file': file_name
+                            })
                 
-                # Create violin plot
                 if violin_data:
-                    vp = ax4b.violinplot(violin_data, positions=range(len(violin_data)), 
-                                        showmeans=True, showmedians=True)
+                    df = pd.DataFrame(violin_data)
                     
-                    # Color the violins
-                    for i, (patch, color) in enumerate(zip(vp['bodies'], violin_colors)):
-                        patch.set_facecolor(color)
-                        patch.set_alpha(0.7)
+                    # Create violin plot with seaborn
+                    sns.violinplot(x='angle', y='velocity', hue='material', data=df,
+                                   palette="Set2", cut=0, inner=None, split=False, 
+                                   linewidth=1, dodge=False, saturation=0.5, ax=ax4b)
                     
-                    # Color the means and medians
-                    vp['cmeans'].set_color('red')
-                    vp['cmeans'].set_linewidth(2)
-                    vp['cmedians'].set_color('black')
-                    vp['cmedians'].set_linewidth(2)
+                    # Add swarm plot overlay
+                    sns.swarmplot(x='angle', y='velocity', hue='material', data=df,
+                                  palette="Set2", alpha=0.5, size=4, dodge=False,
+                                  edgecolor='k', linewidth=1, ax=ax4b)
+                    
+                    # Remove duplicate legend caused by swarm
+                    handles, labels = ax4b.get_legend_handles_labels()
+                    ax4b.legend(handles[:3], labels[:3], title="Flyer Material", fontsize=16, title_fontsize=18)
+                    
+                    # Configure plot
+                    ax4b.set_xlabel("Wave Plate Angle (degrees)", fontsize=20)
+                    ax4b.set_ylabel("Maximum Velocity (m/s)", fontsize=20)
+                    ax4b.set_title("Maximum Velocity by Angle and Material (Overlaid)", fontsize=20, fontweight='bold')
+                    ax4b.grid(True, linestyle='--', alpha=0.5)
+                    ax4b.tick_params(axis='both', which='major', labelsize=16)
+                    ax4b.tick_params(axis='both', which='minor', labelsize=14)
+                    ax4b.minorticks_on()
+                    
+                    # Add bounding box
+                    for spine in ax4b.spines.values():
+                        spine.set_linewidth(3.0)
+                        spine.set_color('black')
                 
-                # Configure violin plot
-                ax4b.set_xlabel('Material', fontsize=20)
-                ax4b.set_ylabel('Maximum Velocity (m/s)', fontsize=20)
-                ax4b.set_title('Maximum Velocity Distribution by Material (Violin Plot)', fontsize=20, fontweight='bold')
-                ax4b.set_xticks(range(len(violin_labels)))
-                ax4b.set_xticklabels(violin_labels)
-                ax4b.grid(True, linestyle='--', alpha=0.5)
-                ax4b.tick_params(axis='both', which='major', labelsize=16)
-                ax4b.tick_params(axis='both', which='minor', labelsize=14)
-                ax4b.minorticks_on()
-                
-                # Add bounding box to violin plot
-                for spine in ax4b.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
+
                 
                 # Create shot time vs material box plot for Figure 5
                 self.progress_signal.emit("Creating Figure 5: Shot time vs material...")
@@ -1106,54 +1110,7 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Create violin plot version of Figure 5
-                self.progress_signal.emit("Creating Figure 5b: Shot time vs material (violin plot)...")
-                fig5b, ax5b = plt.subplots(1, 1, figsize=(14, 10))
-                
-                # Prepare data for violin plot (same data as box plot)
-                violin_data = []
-                violin_labels = []
-                violin_colors = []
-                
-                for material in material_order:
-                    if material in shot_time_data and len(shot_time_data[material]) > 0:
-                        shot_times = [point[0] for point in shot_time_data[material]]
-                        violin_data.append(shot_times)
-                        violin_labels.append(f'{material} (n={len(shot_times)})')
-                        violin_colors.append(material_colors[material])
-                
-                # Create violin plot
-                if violin_data:
-                    vp = ax5b.violinplot(violin_data, positions=range(len(violin_data)), 
-                                        showmeans=True, showmedians=True)
-                    
-                    # Color the violins
-                    for i, (patch, color) in enumerate(zip(vp['bodies'], violin_colors)):
-                        patch.set_facecolor(color)
-                        patch.set_alpha(0.7)
-                    
-                    # Color the means and medians
-                    vp['cmeans'].set_color('red')
-                    vp['cmeans'].set_linewidth(2)
-                    vp['cmedians'].set_color('black')
-                    vp['cmedians'].set_linewidth(2)
-                
-                # Configure violin plot
-                ax5b.set_xlabel('Material', fontsize=20)
-                ax5b.set_ylabel('Shot Time (s)', fontsize=20)
-                ax5b.set_title('Shot Time Distribution by Material (Violin Plot)', fontsize=20, fontweight='bold')
-                ax5b.set_xticks(range(len(violin_labels)))
-                ax5b.set_xticklabels(violin_labels)
-                ax5b.set_ylim(0, 20)  # Same limit as box plot
-                ax5b.grid(True, linestyle='--', alpha=0.5)
-                ax5b.tick_params(axis='both', which='major', labelsize=16)
-                ax5b.tick_params(axis='both', which='minor', labelsize=14)
-                ax5b.minorticks_on()
-                
-                # Add bounding box to violin plot
-                for spine in ax5b.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
+
                 
                 # Create PDV power vs material scatter plot for Figure 6
                 self.progress_signal.emit("Creating Figure 6: PDV power vs material...")
@@ -1202,53 +1159,7 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Create violin plot version of Figure 6
-                self.progress_signal.emit("Creating Figure 6b: PDV power vs material (violin plot)...")
-                fig6b, ax6b = plt.subplots(1, 1, figsize=(14, 10))
-                
-                # Prepare data for violin plot
-                violin_data = []
-                violin_labels = []
-                violin_colors = []
-                
-                for material in material_order:
-                    if material in pdv_power_data and len(pdv_power_data[material]) > 0:
-                        pdv_powers = [point[0] for point in pdv_power_data[material]]
-                        violin_data.append(pdv_powers)
-                        violin_labels.append(f'{material} (n={len(pdv_powers)})')
-                        violin_colors.append(material_colors[material])
-                
-                # Create violin plot
-                if violin_data:
-                    vp = ax6b.violinplot(violin_data, positions=range(len(violin_data)), 
-                                        showmeans=True, showmedians=True)
-                    
-                    # Color the violins
-                    for i, (patch, color) in enumerate(zip(vp['bodies'], violin_colors)):
-                        patch.set_facecolor(color)
-                        patch.set_alpha(0.7)
-                    
-                    # Color the means and medians
-                    vp['cmeans'].set_color('red')
-                    vp['cmeans'].set_linewidth(2)
-                    vp['cmedians'].set_color('black')
-                    vp['cmedians'].set_linewidth(2)
-                
-                # Configure violin plot
-                ax6b.set_xlabel('Material', fontsize=20)
-                ax6b.set_ylabel('PDV Return Power (dBm)', fontsize=20)
-                ax6b.set_title('PDV Return Power Distribution by Material (Violin Plot)', fontsize=20, fontweight='bold')
-                ax6b.set_xticks(range(len(violin_labels)))
-                ax6b.set_xticklabels(violin_labels)
-                ax6b.grid(True, linestyle='--', alpha=0.5)
-                ax6b.tick_params(axis='both', which='major', labelsize=16)
-                ax6b.tick_params(axis='both', which='minor', labelsize=14)
-                ax6b.minorticks_on()
-                
-                # Add bounding box to violin plot
-                for spine in ax6b.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
+
                 
                 # Adjust layout and save all six figures (with speed optimization)
                 optimize_saving = self.spade_params.get('optimize_saving', True)
@@ -1315,38 +1226,18 @@ class AnalysisThread(QThread):
                 fig6.savefig(out_path6_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig6)
                 
-                # Save violin plot versions
-                self.progress_signal.emit("Saving violin plot versions...")
+                # Save new violin plot
+                if violin_data:
+                    fig4b.tight_layout()
+                    out_path4b_png = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle_violin.png')
+                    out_path4b_pdf = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle_violin.pdf')
+                    self.progress_signal.emit("Saving Figure 4b (violin plot)...")
+                    if not save_pdf_only:
+                        fig4b.savefig(out_path4b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
+                    fig4b.savefig(out_path4b_pdf, format='pdf', bbox_inches='tight')
+                    plt.close(fig4b)
                 
-                # Save Figure 4b (violin plot)
-                fig4b.tight_layout()
-                out_path4b_png = os.path.join(spade_output_dir, 'max_velocity_vs_material_violin.png')
-                out_path4b_pdf = os.path.join(spade_output_dir, 'max_velocity_vs_material_violin.pdf')
-                self.progress_signal.emit("Saving Figure 4b (violin plot)...")
-                if not save_pdf_only:
-                    fig4b.savefig(out_path4b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                fig4b.savefig(out_path4b_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig4b)
-                
-                # Save Figure 5b (violin plot)
-                fig5b.tight_layout()
-                out_path5b_png = os.path.join(spade_output_dir, 'shot_time_vs_material_violin.png')
-                out_path5b_pdf = os.path.join(spade_output_dir, 'shot_time_vs_material_violin.pdf')
-                self.progress_signal.emit("Saving Figure 5b (violin plot)...")
-                if not save_pdf_only:
-                    fig5b.savefig(out_path5b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                fig5b.savefig(out_path5b_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig5b)
-                
-                # Save Figure 6b (violin plot)
-                fig6b.tight_layout()
-                out_path6b_png = os.path.join(spade_output_dir, 'pdv_power_vs_material_violin.png')
-                out_path6b_pdf = os.path.join(spade_output_dir, 'pdv_power_vs_material_violin.pdf')
-                self.progress_signal.emit("Saving Figure 6b (violin plot)...")
-                if not save_pdf_only:
-                    fig6b.savefig(out_path6b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                fig6b.savefig(out_path6b_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig6b)
+
                 
                 # Report combined plotting summary
                 self.progress_signal.emit("Enhanced combined plotting completed successfully!")
@@ -1365,11 +1256,9 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png/.pdf")
                 self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png/.pdf")
                 self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png/.pdf")
-                self.progress_signal.emit(f"Figure 4b (violin plot): max_velocity_vs_material_violin.png/.pdf")
+                self.progress_signal.emit(f"Figure 4b (violin plot): max_velocity_vs_waveplate_angle_violin.png/.pdf")
                 self.progress_signal.emit(f"Figure 5 (shot time vs material): shot_time_vs_material.png/.pdf")
-                self.progress_signal.emit(f"Figure 5b (violin plot): shot_time_vs_material_violin.png/.pdf")
                 self.progress_signal.emit(f"Figure 6 (PDV power vs material): pdv_power_vs_material.png/.pdf")
-                self.progress_signal.emit(f"Figure 6b (violin plot): pdv_power_vs_material_violin.png/.pdf")
                 # --- END ENHANCED PLOT ---
 
                 # 4. Spall Strength vs. Strain Rate and Shock Stress
