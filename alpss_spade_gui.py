@@ -100,13 +100,15 @@ class AnalysisThread(QThread):
             # Create output directory
             os.makedirs(self.output_dir, exist_ok=True)
             
+            # Initialize successful_files list for both ALPSS and SPADE modes
+            successful_files = []
+            
             # Process ALPSS files if provided and not SPADE-only mode
             if self.analysis_mode != "spade_only" and self.input_files:
                 total_alpss_time = 0
                 
                 # Process all files
                 files_to_process = self.input_files
-                successful_files = []
                 failed_files = []
                 
                 for i, input_file in enumerate(files_to_process):
