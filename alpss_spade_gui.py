@@ -766,7 +766,6 @@ class AnalysisThread(QThread):
                 ax3_1.set_ylabel('Velocity (m/s)', fontsize=12)
                 ax3_1.set_ylim(y_min, y_max)
                 ax3_1.set_title('Velocity Traces by Material (Spread Analysis)', fontsize=14, fontweight='bold')
-                ax3_1.legend(fontsize='small', loc='best')
                 ax3_1.grid(True, linestyle='--', alpha=0.5)
                 ax3_1.tick_params(axis='both', which='major', labelsize=10)
                 ax3_1.tick_params(axis='both', which='minor', labelsize=8)
@@ -782,7 +781,6 @@ class AnalysisThread(QThread):
                 ax3_2.set_ylabel('Velocity (m/s)', fontsize=12)
                 ax3_2.set_ylim(y_min, y_max)
                 ax3_2.set_title('Velocity Traces by Waveplate Angle (Spread Analysis)', fontsize=14, fontweight='bold')
-                ax3_2.legend(fontsize='small', loc='best')
                 ax3_2.grid(True, linestyle='--', alpha=0.5)
                 ax3_2.tick_params(axis='both', which='major', labelsize=10)
                 ax3_2.tick_params(axis='both', which='minor', labelsize=8)
@@ -844,6 +842,9 @@ class AnalysisThread(QThread):
                                              alpha=0.4, color=color, label=f'{material} (n={len(traces)})')
                             ax3_1.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
                 
+                # Add legend to material spread subplot
+                ax3_1.legend(fontsize='small', loc='best')
+                
                 # Waveplate angle spread plot
                 for waveplate_angle, traces in waveplate_data.items():
                     if len(traces) > 0:
@@ -893,6 +894,9 @@ class AnalysisThread(QThread):
                             ax3_2.fill_between(time_centers, min_velocities, max_velocities, 
                                              alpha=0.4, color=color, label=f'{waveplate_angle} (n={len(traces)})')
                             ax3_2.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
+                
+                # Add legend to waveplate spread subplot
+                ax3_2.legend(fontsize='small', loc='best')
                 
                 # Adjust layout and save all three figures
                 fig1.tight_layout()
