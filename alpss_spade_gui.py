@@ -1012,11 +1012,15 @@ class AnalysisThread(QThread):
                 fig4b, ax4b = plt.subplots(1, 1, figsize=(14, 10))
                 
                 # Prepare data for seaborn violin plot
+                seaborn_available = False
                 try:
                     import seaborn as sns
+                    # Test if seaborn is working by trying to access a function
+                    _ = sns.violinplot
                     seaborn_available = True
-                except ImportError:
-                    self.progress_signal.emit("[WARNING] seaborn not available, skipping violin plot")
+                    self.progress_signal.emit("[INFO] seaborn successfully imported for violin plot")
+                except (ImportError, AttributeError) as e:
+                    self.progress_signal.emit(f"[WARNING] seaborn not available: {str(e)}, skipping violin plot")
                     seaborn_available = False
                 
                 # Create DataFrame for seaborn
@@ -1063,12 +1067,31 @@ class AnalysisThread(QThread):
                         spine.set_color('black')
                 elif violin_data and not seaborn_available:
                     # Fallback: create a simple scatter plot if seaborn is not available
-                    ax4b.text(0.5, 0.5, 'seaborn not available\nViolin plot skipped', 
-                              transform=ax4b.transAxes, ha='center', va='center', 
-                              fontsize=16, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                    self.progress_signal.emit("Creating fallback scatter plot (seaborn not available)")
+                    
+                    # Create a simple scatter plot as fallback
+                    for material in material_colors.keys():
+                        if material in scatter_data and len(scatter_data[material]) > 0:
+                            waveplate_angles = [point[0] for point in scatter_data[material]]
+                            max_velocities = [point[1] for point in scatter_data[material]]
+                            color = material_colors[material]
+                            
+                            ax4b.scatter(waveplate_angles, max_velocities, color=color, s=100, alpha=0.7, 
+                                        label=f'{material} (n={len(scatter_data[material])})')
+                    
                     ax4b.set_xlabel("Wave Plate Angle (degrees)", fontsize=20)
                     ax4b.set_ylabel("Maximum Velocity (m/s)", fontsize=20)
-                    ax4b.set_title("Maximum Velocity by Angle and Material (seaborn required)", fontsize=20, fontweight='bold')
+                    ax4b.set_title("Maximum Velocity by Angle and Material (Scatter Plot Fallback)", fontsize=20, fontweight='bold')
+                    ax4b.legend(fontsize=16, title="Flyer Material", title_fontsize=18)
+                    ax4b.grid(True, linestyle='--', alpha=0.5)
+                    ax4b.tick_params(axis='both', which='major', labelsize=16)
+                    ax4b.tick_params(axis='both', which='minor', labelsize=14)
+                    ax4b.minorticks_on()
+                    
+                    # Add bounding box
+                    for spine in ax4b.spines.values():
+                        spine.set_linewidth(3.0)
+                        spine.set_color('black')
                 
 
                 
