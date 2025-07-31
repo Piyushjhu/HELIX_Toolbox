@@ -1249,13 +1249,23 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Adjust layout and save all six figures (PNG and PDF)
-                self.progress_signal.emit("Saving all figures (PNG and PDF formats)...")
+                # Adjust layout and save all six figures (with speed optimization)
+                optimize_saving = self.spade_params.get('optimize_saving', True)
+                save_pdf_only = self.spade_params.get('save_pdf_only', False)
+                
+                if optimize_saving:
+                    png_dpi = 150
+                    self.progress_signal.emit("Saving all figures (optimized for speed - 150 DPI)...")
+                else:
+                    png_dpi = 300
+                    self.progress_signal.emit("Saving all figures (high quality - 300 DPI)...")
+                
                 fig1.tight_layout()
                 out_path1_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
                 out_path1_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.pdf')
                 self.progress_signal.emit("Saving Figure 1...")
-                fig1.savefig(out_path1_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig1.savefig(out_path1_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig1.savefig(out_path1_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig1)
                 
@@ -1263,7 +1273,8 @@ class AnalysisThread(QThread):
                 out_path2_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
                 out_path2_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.pdf')
                 self.progress_signal.emit("Saving Figure 2...")
-                fig2.savefig(out_path2_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig2.savefig(out_path2_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig2.savefig(out_path2_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig2)
                 
@@ -1271,7 +1282,8 @@ class AnalysisThread(QThread):
                 out_path3_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.png')
                 out_path3_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.pdf')
                 self.progress_signal.emit("Saving Figure 3...")
-                fig3.savefig(out_path3_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig3.savefig(out_path3_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig3.savefig(out_path3_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig3)
                 
@@ -1279,7 +1291,8 @@ class AnalysisThread(QThread):
                 out_path4_png = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.png')
                 out_path4_pdf = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.pdf')
                 self.progress_signal.emit("Saving Figure 4...")
-                fig4.savefig(out_path4_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig4.savefig(out_path4_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig4.savefig(out_path4_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig4)
                 
@@ -1287,7 +1300,8 @@ class AnalysisThread(QThread):
                 out_path5_png = os.path.join(spade_output_dir, 'shot_time_vs_material.png')
                 out_path5_pdf = os.path.join(spade_output_dir, 'shot_time_vs_material.pdf')
                 self.progress_signal.emit("Saving Figure 5...")
-                fig5.savefig(out_path5_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig5.savefig(out_path5_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig5.savefig(out_path5_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig5)
                 
@@ -1295,7 +1309,8 @@ class AnalysisThread(QThread):
                 out_path6_png = os.path.join(spade_output_dir, 'pdv_power_vs_material.png')
                 out_path6_pdf = os.path.join(spade_output_dir, 'pdv_power_vs_material.pdf')
                 self.progress_signal.emit("Saving Figure 6...")
-                fig6.savefig(out_path6_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig6.savefig(out_path6_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig6.savefig(out_path6_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig6)
                 
@@ -1307,7 +1322,8 @@ class AnalysisThread(QThread):
                 out_path4b_png = os.path.join(spade_output_dir, 'max_velocity_vs_material_violin.png')
                 out_path4b_pdf = os.path.join(spade_output_dir, 'max_velocity_vs_material_violin.pdf')
                 self.progress_signal.emit("Saving Figure 4b (violin plot)...")
-                fig4b.savefig(out_path4b_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig4b.savefig(out_path4b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig4b.savefig(out_path4b_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig4b)
                 
@@ -1316,7 +1332,8 @@ class AnalysisThread(QThread):
                 out_path5b_png = os.path.join(spade_output_dir, 'shot_time_vs_material_violin.png')
                 out_path5b_pdf = os.path.join(spade_output_dir, 'shot_time_vs_material_violin.pdf')
                 self.progress_signal.emit("Saving Figure 5b (violin plot)...")
-                fig5b.savefig(out_path5b_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig5b.savefig(out_path5b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig5b.savefig(out_path5b_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig5b)
                 
@@ -1325,7 +1342,8 @@ class AnalysisThread(QThread):
                 out_path6b_png = os.path.join(spade_output_dir, 'pdv_power_vs_material_violin.png')
                 out_path6b_pdf = os.path.join(spade_output_dir, 'pdv_power_vs_material_violin.pdf')
                 self.progress_signal.emit("Saving Figure 6b (violin plot)...")
-                fig6b.savefig(out_path6b_png, dpi=300, bbox_inches='tight')
+                if not save_pdf_only:
+                    fig6b.savefig(out_path6b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                 fig6b.savefig(out_path6b_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig6b)
                 
@@ -2599,6 +2617,17 @@ class ALPSSSPADEGUI(QMainWindow):
         self.plot_pdv_power_vs_material.setChecked(True)
         combined_plot_layout.addWidget(self.plot_pdv_power_vs_material, 1, 2)
         
+        # Speed optimization options
+        self.optimize_saving = QCheckBox("Optimize for Speed (150 DPI PNG)")
+        self.optimize_saving.setChecked(True)
+        self.optimize_saving.setToolTip("Reduce PNG DPI from 300 to 150 for faster saving")
+        combined_plot_layout.addWidget(self.optimize_saving, 2, 0)
+        
+        self.save_pdf_only = QCheckBox("Save PDF Only (Skip PNG)")
+        self.save_pdf_only.setChecked(False)
+        self.save_pdf_only.setToolTip("Save only PDF files for maximum speed")
+        combined_plot_layout.addWidget(self.save_pdf_only, 2, 1)
+        
         layout.addWidget(combined_plot_group)
         
         # Plot axis limits
@@ -3459,6 +3488,9 @@ Output Files:
             'plot_velocity_vs_angle': self.plot_velocity_vs_angle.isChecked(),
             'plot_shot_time_vs_material': self.plot_shot_time_vs_material.isChecked(),
             'plot_pdv_power_vs_material': self.plot_pdv_power_vs_material.isChecked(),
+            # Speed optimization options
+            'optimize_saving': self.optimize_saving.isChecked(),
+            'save_pdf_only': self.save_pdf_only.isChecked(),
         }
         
     def run_analysis(self):
