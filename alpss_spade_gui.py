@@ -14,12 +14,14 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+
+# Excel support will be checked dynamically when needed
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, 
                              QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
                              QLineEdit, QPushButton, QTextEdit, QProgressBar,
                              QFileDialog, QCheckBox, QComboBox, QSpinBox, 
                              QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
-                             QSplitter, QFrame, QStyleFactory, QTabBar)
+                             QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QFont, QValidator
 from SPADE.spall_analysis_release.spall_analysis import plot_combined_mean_traces, plot_spall_vs_strain_rate, plot_spall_vs_shock_stress
@@ -72,12 +74,13 @@ class AnalysisThread(QThread):
     progress_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
     
-    def __init__(self, alpss_params, spade_params, input_files, output_dir, spade_auto_mode=True, spade_input_files=None, analysis_mode="both"):
+    def __init__(self, alpss_params, spade_params, input_files, output_dir, param_data=None, spade_auto_mode=True, spade_input_files=None, analysis_mode="both"):
         super().__init__()
         self.alpss_params = alpss_params
         self.spade_params = spade_params
         self.input_files = input_files
         self.output_dir = output_dir
+        self.param_data = param_data  # Parameter file data mapping
         self.spade_auto_mode = spade_auto_mode
         self.spade_input_files = spade_input_files
         self.analysis_mode = analysis_mode  # "alpss_only", "spade_only", or "both"
@@ -100,8 +103,12 @@ class AnalysisThread(QThread):
             # Process ALPSS files if provided and not SPADE-only mode
             if self.analysis_mode != "spade_only" and self.input_files:
                 total_alpss_time = 0
-                for i, input_file in enumerate(self.input_files):
-                    self.progress_signal.emit(f"ALPSS Processing file {i+1}/{len(self.input_files)}: {os.path.basename(input_file)}")
+                
+                # Process all files
+                files_to_process = self.input_files
+                
+                for i, input_file in enumerate(files_to_process):
+                    self.progress_signal.emit(f"ALPSS Processing file {i+1}/{len(files_to_process)}: {os.path.basename(input_file)}")
                     
                     # Start timing for this file
                     file_start_time = time.time()
@@ -114,6 +121,19 @@ class AnalysisThread(QThread):
                     alpss_params['filename'] = os.path.basename(input_file)
                     alpss_params['exp_data_dir'] = os.path.dirname(input_file)
                     alpss_params['out_files_dir'] = self.output_dir
+                    
+                    # Add experiment info if parameter data is available
+                    if self.param_data:
+                        base_name = os.path.splitext(os.path.basename(input_file))[0]
+                        exp_info = self.param_data.get(base_name, {})
+                        if exp_info:
+                            alpss_params['experiment_info'] = exp_info
+                            self.progress_signal.emit(f"Linked to experiment: {exp_info.get('exp_id', 'Unknown')} - {exp_info.get('sample_material', 'Unknown')}")
+                        else:
+                            self.progress_signal.emit(f"No experiment info found for {base_name}")
+                            alpss_params['experiment_info'] = {}
+                    else:
+                        alpss_params['experiment_info'] = {}
                     
                     # Pass image selection parameters to ALPSS
                     alpss_params['save_velocity_plot'] = self.alpss_params.get('save_velocity_plot', True)
@@ -182,6 +202,13 @@ class AnalysisThread(QThread):
                                 spade_params_with_skip.pop('smooth_window', None)
                                 spade_params_with_skip.pop('polyorder', None)
                             
+                            # Add parameter data for enhanced legends if available
+                            if self.param_data:
+                                spade_params_with_skip['param_data'] = self.param_data
+                                self.progress_signal.emit("Using parameter data for enhanced legends")
+                            else:
+                                spade_params_with_skip['param_data'] = None
+                            
                             process_velocity_files(
                                 input_folder=self.output_dir,
                                 file_pattern="*--vel-smooth-with-uncert.csv",  # Use ALPSS smoothed data with uncertainty
@@ -233,6 +260,13 @@ class AnalysisThread(QThread):
                         if spade_params_with_skip.get('skip_smoothing', False):
                             spade_params_with_skip.pop('smooth_window', None)
                             spade_params_with_skip.pop('polyorder', None)
+                        
+                        # Add parameter data for enhanced legends if available
+                        if self.param_data:
+                            spade_params_with_skip['param_data'] = self.param_data
+                            self.progress_signal.emit("Using parameter data for enhanced legends")
+                        else:
+                            spade_params_with_skip['param_data'] = None
                         
                         process_velocity_files(
                             input_folder=input_dir,
@@ -355,7 +389,16 @@ class AnalysisThread(QThread):
                             t0_idx = 0
                         t0 = time_data[t0_idx]
                         time_shifted = time_data - t0
-                        label = os.path.basename(file).replace('--velocity--smooth.csv','')
+                        # Create enhanced label using parameter data if available
+                        base_name = os.path.basename(file).replace('--velocity--smooth.csv','')
+                        if self.param_data and base_name in self.param_data:
+                            exp_info = self.param_data[base_name]
+                            sample_material = exp_info.get('sample_material', 'Unknown')
+                            exp_id = exp_info.get('exp_id', 'Unknown')
+                            label = f"{base_name} ({sample_material}, {exp_id})"
+                        else:
+                            label = base_name
+                            
                         if i == 0:
                             print(f"[DEBUG] First 10 time_shifted: {time_shifted[:10]}")
                             print(f"[DEBUG] First 10 velocity: {velocity[:10]}")
@@ -964,6 +1007,37 @@ class ALPSSSPADEGUI(QMainWindow):
         output_layout.addWidget(self.output_btn)
         
         layout.addWidget(output_group)
+        
+        # Parameter file selection
+        param_group = QGroupBox("Experiment Parameter Files (Optional)")
+        param_layout = QVBoxLayout(param_group)
+        
+        # Description
+        desc_label = QLabel("Select a folder containing parameter files (.xlsx) to link experiment data with processing results.")
+        desc_label.setWordWrap(True)
+        param_layout.addWidget(desc_label)
+        
+        # Parameter folder selection
+        param_folder_layout = QHBoxLayout()
+        self.param_folder_path = QLineEdit()
+        self.param_folder_path.setPlaceholderText("Select parameter folder...")
+        param_folder_layout.addWidget(self.param_folder_path)
+        
+        self.param_folder_btn = QPushButton("Browse")
+        self.param_folder_btn.clicked.connect(self.select_param_folder)
+        param_folder_layout.addWidget(self.param_folder_btn)
+        
+        param_layout.addLayout(param_folder_layout)
+        
+        # Parameter file info
+        self.param_file_info = QTextEdit()
+        self.param_file_info.setMaximumHeight(100)
+        self.param_file_info.setPlaceholderText("Parameter folder information will appear here...")
+        self.param_file_info.setReadOnly(True)
+        param_layout.addWidget(QLabel("Parameter Folder Info:"))
+        param_layout.addWidget(self.param_file_info)
+        
+        layout.addWidget(param_group)
         
         # File list display
         self.file_list = QTextEdit()
@@ -2140,6 +2214,111 @@ Output Files:
         if dir_path:
             self.output_path.setText(dir_path)
             
+    def select_param_folder(self):
+        """Select parameter folder containing Excel files"""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, 
+            "Select Parameter Folder", 
+            ""
+        )
+        if folder_path:
+            self.param_folder_path.setText(folder_path)
+            self.load_param_folder_info()
+            
+    def load_param_folder_info(self):
+        """Load and display information from all Excel files in the parameter folder"""
+        folder_path = self.param_folder_path.text()
+        if not folder_path or not os.path.exists(folder_path):
+            self.param_file_info.setText("No parameter folder selected")
+            return
+            
+        # Find all Excel files in the folder
+        excel_files = []
+        for file in os.listdir(folder_path):
+            if file.lower().endswith(('.xlsx', '.xls')):
+                excel_files.append(os.path.join(folder_path, file))
+                
+        if not excel_files:
+            self.param_file_info.setText(f"No Excel files found in {os.path.basename(folder_path)}")
+            return
+            
+        total_experiments = 0
+        total_pdv_files = 0
+        all_materials = set()
+        all_pdv_files = []
+        
+        info_text = f"Parameter Folder: {os.path.basename(folder_path)}\n"
+        info_text += f"Excel Files Found: {len(excel_files)}\n"
+        
+        for file_path in excel_files:
+            try:
+                # Try to read the Excel file
+                try:
+                    import openpyxl
+                except ImportError:
+                    self.param_file_info.setText(f"Error: openpyxl not installed. Please install with: pip install openpyxl")
+                    return
+                try:
+                    df = pd.read_excel(file_path)
+                except Exception as e:
+                    info_text += f"\n{os.path.basename(file_path)}: Error reading file - {str(e)}"
+                    continue
+                    
+                # Display basic information for this file
+                file_experiments = len(df)
+                total_experiments += file_experiments
+                info_text += f"\n{os.path.basename(file_path)}: {file_experiments} experiments"
+                
+                # Check for required columns
+                if 'PDV_FileName' in df.columns:
+                    pdv_files = df['PDV_FileName'].dropna().astype(str).tolist()
+                    total_pdv_files += len(pdv_files)
+                    all_pdv_files.extend(pdv_files)
+                    info_text += f", {len(pdv_files)} PDV files"
+                else:
+                    info_text += ", no PDV_FileName column"
+                    
+                # Check for sample material column
+                
+                # Look for sample material column with various possible names
+                sample_material_col = None
+                for col in df.columns:
+                    col_lower = col.lower()
+                    # Check for various possible column names including spaces, underscores, and different formats
+                    if any(name in col_lower for name in [
+                        'sample_material', 'samplematerial', 'sample material', 'sample-material',
+                        'material', 'sample', 'sample_mat', 'sample mat', 'sample-mat'
+                    ]):
+                        sample_material_col = col
+                        break
+                
+                if sample_material_col:
+                    materials = df[sample_material_col].dropna().unique()
+                    all_materials.update(materials)
+                else:
+                    pass
+                    
+            except Exception as e:
+                info_text += f"\n{os.path.basename(file_path)}: Error - {str(e)}"
+                
+        # Add summary information
+        info_text += f"\n\nSummary: {total_experiments} total experiments, {total_pdv_files} PDV files"
+        if all_materials:
+            info_text += f"\nSample Materials: {', '.join(sorted(all_materials))}"
+        if all_pdv_files:
+            # Ensure all PDV files are strings and handle any remaining non-string values
+            pdv_files_display = []
+            for pdv_file in all_pdv_files[:5]:
+                try:
+                    pdv_files_display.append(str(pdv_file))
+                except:
+                    pdv_files_display.append("Unknown")
+            info_text += f"\nSample PDV Files: {', '.join(pdv_files_display)}"
+            if len(all_pdv_files) > 5:
+                info_text += f" ... and {len(all_pdv_files) - 5} more"
+                
+        self.param_file_info.setText(info_text)
+            
     def select_spade_input(self):
         """Select SPADE input files or directory"""
         # Ask user if they want to select files or directory
@@ -2200,6 +2379,103 @@ Output Files:
                 return sorted(files)
         
         return []
+        
+    def get_param_file_data(self):
+        """Get parameter file data from all Excel files in the selected parameter folder"""
+        folder_path = self.param_folder_path.text()
+        if not folder_path or not os.path.exists(folder_path):
+            return None
+            
+        # Find all Excel files in the folder
+        excel_files = []
+        for file in os.listdir(folder_path):
+            if file.lower().endswith(('.xlsx', '.xls')):
+                excel_files.append(os.path.join(folder_path, file))
+                
+        if not excel_files:
+            return None
+            
+        # Combine data from all parameter files
+        combined_param_data = {}
+        
+        for param_file_path in excel_files:
+            if not os.path.exists(param_file_path):
+                continue
+                
+            try:
+                # Try to read the Excel file
+                try:
+                    import openpyxl
+                except ImportError:
+                    print(f"Error: openpyxl not installed for {param_file_path}")
+                    continue
+                try:
+                    df = pd.read_excel(param_file_path)
+                except Exception as e:
+                    print(f"Error reading Excel file {param_file_path}: {str(e)}")
+                    continue
+                    
+                # Create a mapping from PDV_FileName to experiment data
+                param_data = {}
+                
+                # Handle different possible column names for PDV_FileName
+                pdv_col = None
+                for col in df.columns:
+                    # Check for various possible column names (case insensitive)
+                    col_lower = col.lower()
+                    if any(name in col_lower for name in ['pdv_filename', 'pdvfilename', 'dv_filename', 'dvfilename', 'pdv_file', 'pdvfile']):
+                        pdv_col = col
+                        break
+                        
+                if pdv_col is None:
+                    continue
+                    
+                # Create mapping for each experiment
+                for idx, row in df.iterrows():
+                    pdv_file = row[pdv_col]
+                    if pd.isna(pdv_file) or pdv_file == 0:
+                        continue
+                        
+                    # Convert PDV file name to string to ensure consistency
+                    pdv_file_str = str(pdv_file)
+                        
+                    # Extract only essential experiment info to prevent memory issues
+                    exp_info = {
+                        'exp_id': row.get('Exp_ID', f'Exp_{idx+1}'),
+                        'sample_material': row.get('Sample_material', 'Unknown'),
+                    }
+                    
+                    # Handle sample material column with flexible matching
+                    sample_material_col = None
+                    for col in df.columns:
+                        col_lower = col.lower()
+                        # Check for various possible column names including spaces, underscores, and different formats
+                        if any(name in col_lower for name in [
+                            'sample_material', 'samplematerial', 'sample material', 'sample-material',
+                            'material', 'sample', 'sample_mat', 'sample mat', 'sample-mat'
+                        ]):
+                            sample_material_col = col
+                            break
+                    
+                    if sample_material_col:
+                        exp_info['sample_material'] = row.get(sample_material_col, 'Unknown')
+                    
+                    # Handle other columns with flexible matching
+                    for col in df.columns:
+                        col_lower = col.lower()
+                        if 'flyer_material' in col_lower or 'flyermaterial' in col_lower:
+                            exp_info['flyer_material'] = row.get(col, 'Unknown')
+                        elif 'thickness' in col_lower:
+                            exp_info['thickness'] = row.get(col, 'Unknown')
+                            
+                    # Add to combined data (later files override earlier ones if same PDV file)
+                    combined_param_data[pdv_file_str] = exp_info
+                    
+            except Exception as e:
+                print(f"Error loading parameter file {param_file_path}: {e}")
+                continue
+                
+        return combined_param_data if combined_param_data else None
         
     def get_alpss_params(self):
         """Get ALPSS parameters from GUI"""
@@ -2308,6 +2584,20 @@ Output Files:
         alpss_params = self.get_alpss_params()
         spade_params = self.get_spade_params()
         
+        # Get parameter file data if available
+        param_data = self.get_param_file_data()
+        if param_data:
+            # Count Excel files in the parameter folder
+            folder_path = self.param_folder_path.text()
+            excel_count = 0
+            if folder_path and os.path.exists(folder_path):
+                for file in os.listdir(folder_path):
+                    if file.lower().endswith(('.xlsx', '.xls')):
+                        excel_count += 1
+            self.progress_text.append(f"Loaded {excel_count} parameter files with {len(param_data)} total experiments")
+        else:
+            self.progress_text.append("No parameter files provided - using default file names")
+        
         # Determine analysis mode
         if self.mode_alpss_only.isChecked():
             # ALPSS only mode
@@ -2328,7 +2618,7 @@ Output Files:
             
             # Start ALPSS-only analysis thread
             self.analysis_thread = AnalysisThread(
-                alpss_params, spade_params, input_files, output_dir,
+                alpss_params, spade_params, input_files, output_dir, param_data,
                 spade_auto_mode=False, spade_input_files=None, analysis_mode="alpss_only"
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
@@ -2374,7 +2664,7 @@ Output Files:
             
             # Start SPADE-only analysis thread
             self.analysis_thread = AnalysisThread(
-                alpss_params, spade_params, [], output_dir,
+                alpss_params, spade_params, [], output_dir, param_data,
                 spade_auto_mode=False, spade_input_files=spade_input_files, analysis_mode="spade_only"
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
@@ -2420,7 +2710,7 @@ Output Files:
             
             # Start combined analysis thread
             self.analysis_thread = AnalysisThread(
-                alpss_params, spade_params, input_files, output_dir,
+                alpss_params, spade_params, input_files, output_dir, param_data,
                 spade_auto_mode=spade_auto_mode, spade_input_files=spade_input_files, analysis_mode="both"
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
@@ -2506,7 +2796,14 @@ def main():
     app.setStyle('Fusion')  # Use Fusion style for better cross-platform appearance
     
     # Set application font with larger size and better readability (increased by 25%)
-    font = QFont("Segoe UI", 14)  # Increased from 11 to 14 (25% increase)
+    # Use system-appropriate font to avoid Qt warnings
+    import platform
+    if platform.system() == "Darwin":  # macOS
+        font = QFont("Helvetica", 14)  # macOS system font (always available)
+    elif platform.system() == "Windows":
+        font = QFont("Segoe UI", 14)  # Windows system font
+    else:  # Linux and others
+        font = QFont("Arial", 14)  # Universal fallback
     font.setWeight(QFont.Normal)
     app.setFont(font)
     
