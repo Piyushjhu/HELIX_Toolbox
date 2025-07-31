@@ -389,6 +389,32 @@ class AnalysisThread(QThread):
                             t0_idx = 0
                         t0 = time_data[t0_idx]
                         time_shifted = time_data - t0
+                        
+                        # Load noise fraction data and filter velocity data
+                        noise_fraction = None
+                        velocity_filtered = velocity.copy()
+                        
+                        # Try to load noise fraction data
+                        noise_file = file.replace('--velocity--smooth.csv', '--noise--frac.csv')
+                        if os.path.exists(noise_file):
+                            try:
+                                df_noise = pd.read_csv(noise_file)
+                                if df_noise.shape[1] >= 1:
+                                    noise_fraction = df_noise.iloc[:, -1].values  # Use last column
+                                    if len(noise_fraction) == len(velocity):
+                                        # Filter out data points where noise fraction > 1
+                                        high_noise_mask = noise_fraction > 1.0
+                                        velocity_filtered[high_noise_mask] = np.nan
+                                        print(f"[DEBUG] Filtered {np.sum(high_noise_mask)} high-noise points from {base_name}")
+                                    else:
+                                        print(f"[WARNING] Noise fraction length mismatch for {file}")
+                                else:
+                                    print(f"[WARNING] Noise fraction file has insufficient columns: {noise_file}")
+                            except Exception as e:
+                                print(f"[WARNING] Could not read noise fraction for {file}: {e}")
+                        else:
+                            print(f"[INFO] No noise fraction file found for {file}, using unfiltered data")
+                        
                         # Create enhanced label using parameter data if available
                         base_name = os.path.basename(file).replace('--velocity--smooth.csv','')
                         if self.param_data and base_name in self.param_data:
@@ -402,26 +428,32 @@ class AnalysisThread(QThread):
                         if i == 0:
                             print(f"[DEBUG] First 10 time_shifted: {time_shifted[:10]}")
                             print(f"[DEBUG] First 10 velocity: {velocity[:10]}")
+                            print(f"[DEBUG] First 10 velocity_filtered: {velocity_filtered[:10]}")
                         
-                        # Store velocity data for adaptive limits (ignore noise/uncertainty)
-                        all_velocities.extend(velocity)
+                        # Store velocity data for adaptive limits (use filtered data)
+                        all_velocities.extend(velocity_filtered)
                         all_times.extend(time_shifted)
                         
-                        # Plot uncertainty shading
+                        # Plot uncertainty shading (use filtered velocity for shading bounds)
                         uncert_file = file.replace('--velocity--smooth.csv', '--vel--uncert.csv')
                         if os.path.exists(uncert_file):
                             try:
                                 df_unc = pd.read_csv(uncert_file)
                                 uncert = df_unc.iloc[:, -1].values
                                 if len(uncert) == len(velocity):
-                                    ax1.fill_between(time_shifted, velocity-uncert, velocity+uncert, alpha=0.2)
-                                    ax2.fill_between(time_shifted, velocity-uncert, velocity+uncert, alpha=0.2)
+                                    # Apply same filtering to uncertainty
+                                    uncert_filtered = uncert.copy()
+                                    if noise_fraction is not None:
+                                        uncert_filtered[high_noise_mask] = np.nan
+                                    
+                                    ax1.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, alpha=0.2)
+                                    ax2.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, alpha=0.2)
                             except Exception as e:
                                 print(f"[WARNING] Could not read uncertainty for {file}: {e}")
                         
-                        # Plot velocity traces on both subplots
-                        ax1.plot(time_shifted, velocity, label=label, marker='.', linestyle='-', markersize=2)
-                        ax2.plot(time_shifted, velocity, label=label, marker='.', linestyle='-', markersize=2)
+                        # Plot velocity traces on both subplots (use filtered data)
+                        ax1.plot(time_shifted, velocity_filtered, label=label, marker='.', linestyle='-', markersize=2)
+                        ax2.plot(time_shifted, velocity_filtered, label=label, marker='.', linestyle='-', markersize=2)
                         
                     except Exception as e:
                         print(f"[WARNING] Could not plot {file}: {e}")
