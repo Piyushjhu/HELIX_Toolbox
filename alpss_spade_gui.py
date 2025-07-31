@@ -426,8 +426,12 @@ class AnalysisThread(QThread):
                         for missing_file in missing_plot_files:
                             self.progress_signal.emit(f"❌ Missing: {missing_file}--velocity--smooth.csv")
                 
-                # Create enhanced figure with three subplots: material-based, waveplate angle-based, and zoomed region
-                fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 15), height_ratios=[1, 1, 0.8])
+                # Create two separate figures for cleaner legends
+                # Figure 1: Individual file legends below the plot
+                fig1, (ax1_1, ax1_2, ax1_3) = plt.subplots(3, 1, figsize=(16, 18), height_ratios=[1, 1, 0.8])
+                
+                # Figure 2: Color meaning legends only
+                fig2, (ax2_1, ax2_2, ax2_3) = plt.subplots(3, 1, figsize=(14, 15), height_ratios=[1, 1, 0.8])
                 
                 # Store all velocity data to determine adaptive y-axis limits
                 all_velocities = []
@@ -542,26 +546,39 @@ class AnalysisThread(QThread):
                                     if noise_fraction is not None:
                                         uncert_filtered[high_noise_mask] = np.nan
                                     
-                                    # Plot uncertainty with material color
-                                    ax1.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
-                                                   alpha=0.2, color=material_colors[material])
-                                    # Plot uncertainty with waveplate color
-                                    ax2.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
-                                                   alpha=0.2, color=waveplate_colors[waveplate_angle])
+                                    # Plot uncertainty for Figure 1
+                                    ax1_1.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                                     alpha=0.2, color=material_colors[material])
+                                    ax1_2.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                                     alpha=0.2, color=waveplate_colors[waveplate_angle])
+                                    ax1_3.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                                     alpha=0.2, color=material_colors[material])
+                                    
+                                    # Plot uncertainty for Figure 2
+                                    ax2_1.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                                     alpha=0.2, color=material_colors[material])
+                                    ax2_2.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                                     alpha=0.2, color=waveplate_colors[waveplate_angle])
+                                    ax2_3.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                                     alpha=0.2, color=material_colors[material])
                             except Exception as e:
                                 print(f"[WARNING] Could not read uncertainty for {file}: {e}")
                         
-                        # Plot velocity traces with material-based coloring (subplot 1)
-                        ax1.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-', 
-                                markersize=2, color=material_colors[material])
+                        # Plot velocity traces for Figure 1 (with individual file legends)
+                        ax1_1.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-', 
+                                  markersize=2, color=material_colors[material])
+                        ax1_2.plot(time_shifted, velocity_filtered, label=label_waveplate, marker='.', linestyle='-', 
+                                  markersize=2, color=waveplate_colors[waveplate_angle])
+                        ax1_3.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-', 
+                                  markersize=2, color=material_colors[material])
                         
-                        # Plot velocity traces with waveplate angle-based coloring (subplot 2)
-                        ax2.plot(time_shifted, velocity_filtered, label=label_waveplate, marker='.', linestyle='-', 
-                                markersize=2, color=waveplate_colors[waveplate_angle])
-                        
-                        # Plot velocity traces on zoomed subplot (subplot 3) - use material colors
-                        ax3.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-', 
-                                markersize=2, color=material_colors[material])
+                        # Plot velocity traces for Figure 2 (with color meaning legends only)
+                        ax2_1.plot(time_shifted, velocity_filtered, marker='.', linestyle='-', 
+                                  markersize=2, color=material_colors[material])
+                        ax2_2.plot(time_shifted, velocity_filtered, marker='.', linestyle='-', 
+                                  markersize=2, color=waveplate_colors[waveplate_angle])
+                        ax2_3.plot(time_shifted, velocity_filtered, marker='.', linestyle='-', 
+                                  markersize=2, color=material_colors[material])
                         
                         plotted_files.append(os.path.basename(file))
                         
@@ -585,75 +602,158 @@ class AnalysisThread(QThread):
                     y_min = self.spade_params.get('y_min_main', 0)
                     y_max = self.spade_params.get('y_max_main', 700)
                 
-                # Configure material-based subplot (ax1)
-                ax1.set_xlabel('Time (ns)', fontsize=12)
-                ax1.set_ylabel('Velocity (m/s)', fontsize=12)
-                ax1.set_ylim(y_min, y_max)
-                ax1.set_title('Velocity Traces by Material (Same Material = Same Color)', fontsize=14, fontweight='bold')
-                ax1.legend(fontsize='small', loc='best')
-                ax1.grid(True, linestyle='--', alpha=0.5)
-                ax1.tick_params(axis='both', which='major', labelsize=10)
-                ax1.tick_params(axis='both', which='minor', labelsize=8)
-                ax1.minorticks_on()
+                # Configure Figure 1 (with individual file legends)
+                # Material-based subplot (ax1_1)
+                ax1_1.set_xlabel('Time (ns)', fontsize=12)
+                ax1_1.set_ylabel('Velocity (m/s)', fontsize=12)
+                ax1_1.set_ylim(y_min, y_max)
+                ax1_1.set_title('Velocity Traces by Material (Same Material = Same Color)', fontsize=14, fontweight='bold')
+                ax1_1.legend(fontsize='small', loc='best', ncol=2)
+                ax1_1.grid(True, linestyle='--', alpha=0.5)
+                ax1_1.tick_params(axis='both', which='major', labelsize=10)
+                ax1_1.tick_params(axis='both', which='minor', labelsize=8)
+                ax1_1.minorticks_on()
                 
                 # Add bounding box to material subplot
-                for spine in ax1.spines.values():
+                for spine in ax1_1.spines.values():
                     spine.set_linewidth(1.5)
                     spine.set_color('black')
                 
-                # Configure waveplate angle-based subplot (ax2)
-                ax2.set_xlabel('Time (ns)', fontsize=12)
-                ax2.set_ylabel('Velocity (m/s)', fontsize=12)
-                ax2.set_ylim(y_min, y_max)
-                ax2.set_title('Velocity Traces by Waveplate Angle (Same Angle = Same Color)', fontsize=14, fontweight='bold')
-                ax2.legend(fontsize='small', loc='best')
-                ax2.grid(True, linestyle='--', alpha=0.5)
-                ax2.tick_params(axis='both', which='major', labelsize=10)
-                ax2.tick_params(axis='both', which='minor', labelsize=8)
-                ax2.minorticks_on()
+                # Waveplate angle-based subplot (ax1_2)
+                ax1_2.set_xlabel('Time (ns)', fontsize=12)
+                ax1_2.set_ylabel('Velocity (m/s)', fontsize=12)
+                ax1_2.set_ylim(y_min, y_max)
+                ax1_2.set_title('Velocity Traces by Waveplate Angle (Same Angle = Same Color)', fontsize=14, fontweight='bold')
+                ax1_2.legend(fontsize='small', loc='best', ncol=2)
+                ax1_2.grid(True, linestyle='--', alpha=0.5)
+                ax1_2.tick_params(axis='both', which='major', labelsize=10)
+                ax1_2.tick_params(axis='both', which='minor', labelsize=8)
+                ax1_2.minorticks_on()
                 
                 # Add bounding box to waveplate subplot
-                for spine in ax2.spines.values():
+                for spine in ax1_2.spines.values():
                     spine.set_linewidth(1.5)
                     spine.set_color('black')
                 
-                # Configure zoomed subplot (ax3) - 0 to 20 ns region
-                ax3.set_xlabel('Time (ns)', fontsize=12)
-                ax3.set_ylabel('Velocity (m/s)', fontsize=12)
+                # Zoomed subplot (ax1_3)
+                ax1_3.set_xlabel('Time (ns)', fontsize=12)
+                ax1_3.set_ylabel('Velocity (m/s)', fontsize=12)
                 
                 # Set x-axis limits for zoomed plot
                 if not self.spade_params.get('auto_calculate_limits', True):
                     x_min_zoom = self.spade_params.get('x_min_zoom', 0)
                     x_max_zoom = self.spade_params.get('x_max_zoom', 20)
-                    ax3.set_xlim(x_min_zoom, x_max_zoom)
-                    ax3.set_title(f'Zoomed Region: 0-20 ns (Material Colors)', fontsize=12, fontweight='bold')
+                    ax1_3.set_xlim(x_min_zoom, x_max_zoom)
+                    ax1_3.set_title(f'Zoomed Region: 0-20 ns (Material Colors)', fontsize=12, fontweight='bold')
                 else:
-                    ax3.set_xlim(0, 20)
-                    ax3.set_title('Zoomed Region: 0-20 ns (Material Colors)', fontsize=12, fontweight='bold')
+                    ax1_3.set_xlim(0, 20)
+                    ax1_3.set_title('Zoomed Region: 0-20 ns (Material Colors)', fontsize=12, fontweight='bold')
                 
                 # Set y-axis limits for zoomed plot
                 if not self.spade_params.get('auto_calculate_limits', True):
                     y_min_zoom = self.spade_params.get('y_min_zoom', 0)
                     y_max_zoom = self.spade_params.get('y_max_zoom', 700)
-                    ax3.set_ylim(y_min_zoom, y_max_zoom)
+                    ax1_3.set_ylim(y_min_zoom, y_max_zoom)
                 else:
-                    ax3.set_ylim(y_min, y_max)
-                ax3.legend(fontsize='small', loc='best')
-                ax3.grid(True, linestyle='--', alpha=0.5)
-                ax3.tick_params(axis='both', which='major', labelsize=10)
-                ax3.tick_params(axis='both', which='minor', labelsize=8)
-                ax3.minorticks_on()
+                    ax1_3.set_ylim(y_min, y_max)
+                ax1_3.legend(fontsize='small', loc='best', ncol=2)
+                ax1_3.grid(True, linestyle='--', alpha=0.5)
+                ax1_3.tick_params(axis='both', which='major', labelsize=10)
+                ax1_3.tick_params(axis='both', which='minor', labelsize=8)
+                ax1_3.minorticks_on()
                 
                 # Add bounding box to zoomed subplot
-                for spine in ax3.spines.values():
+                for spine in ax1_3.spines.values():
                     spine.set_linewidth(1.5)
                     spine.set_color('black')
                 
-                # Adjust layout and save
-                fig.tight_layout()
-                out_path = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_enhanced.png')
-                fig.savefig(out_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
+                # Configure Figure 2 (with color meaning legends only)
+                # Material-based subplot (ax2_1)
+                ax2_1.set_xlabel('Time (ns)', fontsize=12)
+                ax2_1.set_ylabel('Velocity (m/s)', fontsize=12)
+                ax2_1.set_ylim(y_min, y_max)
+                ax2_1.set_title('Velocity Traces by Material (Same Material = Same Color)', fontsize=14, fontweight='bold')
+                ax2_1.grid(True, linestyle='--', alpha=0.5)
+                ax2_1.tick_params(axis='both', which='major', labelsize=10)
+                ax2_1.tick_params(axis='both', which='minor', labelsize=8)
+                ax2_1.minorticks_on()
+                
+                # Add color legend for materials
+                material_legend_elements = []
+                for material, color in material_colors.items():
+                    material_legend_elements.append(plt.Line2D([0], [0], color=color, label=f'{material}'))
+                ax2_1.legend(handles=material_legend_elements, fontsize='small', loc='best')
+                
+                # Add bounding box to material subplot
+                for spine in ax2_1.spines.values():
+                    spine.set_linewidth(1.5)
+                    spine.set_color('black')
+                
+                # Waveplate angle-based subplot (ax2_2)
+                ax2_2.set_xlabel('Time (ns)', fontsize=12)
+                ax2_2.set_ylabel('Velocity (m/s)', fontsize=12)
+                ax2_2.set_ylim(y_min, y_max)
+                ax2_2.set_title('Velocity Traces by Waveplate Angle (Same Angle = Same Color)', fontsize=14, fontweight='bold')
+                ax2_2.grid(True, linestyle='--', alpha=0.5)
+                ax2_2.tick_params(axis='both', which='major', labelsize=10)
+                ax2_2.tick_params(axis='both', which='minor', labelsize=8)
+                ax2_2.minorticks_on()
+                
+                # Add color legend for waveplate angles
+                waveplate_legend_elements = []
+                for waveplate_angle, color in waveplate_colors.items():
+                    waveplate_legend_elements.append(plt.Line2D([0], [0], color=color, label=f'{waveplate_angle}'))
+                ax2_2.legend(handles=waveplate_legend_elements, fontsize='small', loc='best')
+                
+                # Add bounding box to waveplate subplot
+                for spine in ax2_2.spines.values():
+                    spine.set_linewidth(1.5)
+                    spine.set_color('black')
+                
+                # Zoomed subplot (ax2_3)
+                ax2_3.set_xlabel('Time (ns)', fontsize=12)
+                ax2_3.set_ylabel('Velocity (m/s)', fontsize=12)
+                
+                # Set x-axis limits for zoomed plot
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    x_min_zoom = self.spade_params.get('x_min_zoom', 0)
+                    x_max_zoom = self.spade_params.get('x_max_zoom', 20)
+                    ax2_3.set_xlim(x_min_zoom, x_max_zoom)
+                    ax2_3.set_title(f'Zoomed Region: 0-20 ns (Material Colors)', fontsize=12, fontweight='bold')
+                else:
+                    ax2_3.set_xlim(0, 20)
+                    ax2_3.set_title('Zoomed Region: 0-20 ns (Material Colors)', fontsize=12, fontweight='bold')
+                
+                # Set y-axis limits for zoomed plot
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    y_min_zoom = self.spade_params.get('y_min_zoom', 0)
+                    y_max_zoom = self.spade_params.get('y_max_zoom', 700)
+                    ax2_3.set_ylim(y_min_zoom, y_max_zoom)
+                else:
+                    ax2_3.set_ylim(y_min, y_max)
+                ax2_3.grid(True, linestyle='--', alpha=0.5)
+                ax2_3.tick_params(axis='both', which='major', labelsize=10)
+                ax2_3.tick_params(axis='both', which='minor', labelsize=8)
+                ax2_3.minorticks_on()
+                
+                # Add color legend for materials in zoomed plot
+                ax2_3.legend(handles=material_legend_elements, fontsize='small', loc='best')
+                
+                # Add bounding box to zoomed subplot
+                for spine in ax2_3.spines.values():
+                    spine.set_linewidth(1.5)
+                    spine.set_color('black')
+                
+                # Adjust layout and save both figures
+                fig1.tight_layout()
+                out_path1 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
+                fig1.savefig(out_path1, dpi=300, bbox_inches='tight')
+                plt.close(fig1)
+                
+                fig2.tight_layout()
+                out_path2 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
+                fig2.savefig(out_path2, dpi=300, bbox_inches='tight')
+                plt.close(fig2)
                 
                 # Report combined plotting summary
                 self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
@@ -667,7 +767,8 @@ class AnalysisThread(QThread):
                     for failed_file, error_msg in failed_plot_files:
                         self.progress_signal.emit(f"❌ {failed_file}: {error_msg}")
                 
-                self.progress_signal.emit(f"Enhanced combined velocity plot saved: all_smoothed_velocity_traces_enhanced.png")
+                self.progress_signal.emit(f"Figure 1 (with individual file legends): all_smoothed_velocity_traces_with_legends.png")
+                self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png")
                 # --- END ENHANCED PLOT ---
 
                 # 4. Spall Strength vs. Strain Rate and Shock Stress
