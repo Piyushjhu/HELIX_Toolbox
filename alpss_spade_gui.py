@@ -636,25 +636,26 @@ class AnalysisThread(QThread):
                                     scatter_data[material] = []
                                 scatter_data[material].append((waveplate_angle_numeric, max_velocity, base_name))
                         
-                        # Calculate shot time (time to reach 10% of max velocity)
-                        if len(velocity_filtered) > 0:
-                            max_vel = np.nanmax(velocity_filtered)
-                            threshold = 0.1 * max_vel
-                            
-                            # Find first time point where velocity exceeds threshold
-                            above_threshold = np.where(velocity_filtered >= threshold)[0]
-                            if len(above_threshold) > 0:
-                                shot_time_idx = above_threshold[0]
-                                shot_time = time_shifted[shot_time_idx]
-                                
-                                # Convert to seconds (time data is in seconds)
-                                shot_time_s = shot_time
-                                
-                                # Collect data for shot time vs material plot
-                                if material not in shot_time_data:
-                                    shot_time_data[material] = []
-                                shot_time_data[material].append((shot_time_s, base_name))
-                                print(f"[DEBUG] Shot time for {base_name} ({material}): {shot_time_s:.6f} s")
+                        # Get shot time from parameter data instead of calculating from velocity
+                        shot_time_s = None
+                        if self.param_data and base_name in self.param_data:
+                            exp_info = self.param_data[base_name]
+                            shot_time_from_param = exp_info.get('shot_time', None)
+                            if shot_time_from_param is not None and shot_time_from_param != 'Unknown':
+                                try:
+                                    shot_time_s = float(shot_time_from_param)
+                                    print(f"[DEBUG] Shot time from parameter file for {base_name} ({material}): {shot_time_s:.6f} s")
+                                except (ValueError, TypeError):
+                                    print(f"[WARNING] Invalid shot time value for {base_name}: {shot_time_from_param}")
+                        
+                        # If no shot time from parameter file, skip this file
+                        if shot_time_s is not None:
+                            # Collect data for shot time vs material plot
+                            if material not in shot_time_data:
+                                shot_time_data[material] = []
+                            shot_time_data[material].append((shot_time_s, base_name))
+                        else:
+                            print(f"[INFO] No shot time data available for {base_name}")
                         
                         # Calculate PDV return power (average power in the signal)
                         if len(velocity_filtered) > 0:
@@ -3378,6 +3379,8 @@ Output Files:
                             exp_info['thickness'] = row.get(col, 'Unknown')
                         elif 'waveplate_angle' in col_lower or 'waveplate angle' in col_lower or 'waveplate' in col_lower:
                             exp_info['waveplate_angle'] = row.get(col, 'Unknown')
+                        elif 'shot_time' in col_lower or 'shot time' in col_lower or 'shottime' in col_lower or 'shot_time (seconds)' in col_lower:
+                            exp_info['shot_time'] = row.get(col, 'Unknown')
                             
                     # Add to combined data (later files override earlier ones if same PDV file)
                     combined_param_data[pdv_file_str] = exp_info
