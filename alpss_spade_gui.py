@@ -426,12 +426,15 @@ class AnalysisThread(QThread):
                         for missing_file in missing_plot_files:
                             self.progress_signal.emit(f"❌ Missing: {missing_file}--velocity--smooth.csv")
                 
-                # Create two separate figures for cleaner legends
+                # Create three separate figures for cleaner legends
                 # Figure 1: Individual file legends below the plot
                 fig1, (ax1_1, ax1_2, ax1_3) = plt.subplots(3, 1, figsize=(16, 18), height_ratios=[1, 1, 0.8])
                 
                 # Figure 2: Color meaning legends only
                 fig2, (ax2_1, ax2_2, ax2_3) = plt.subplots(3, 1, figsize=(14, 15), height_ratios=[1, 1, 0.8])
+                
+                # Figure 3: Spread plots with alpha-based coloring (no zoomed subplot)
+                fig3, (ax3_1, ax3_2) = plt.subplots(2, 1, figsize=(14, 12), height_ratios=[1, 1])
                 
                 # Store all velocity data to determine adaptive y-axis limits
                 all_velocities = []
@@ -448,6 +451,10 @@ class AnalysisThread(QThread):
                 # Define color palettes
                 material_palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
                 waveplate_palette = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#54a0ff', '#5f27cd', '#00d2d3', '#ff9f43']
+                
+                # Data structures for spread plots
+                material_data = {}  # {material: [(time, velocity, file_name), ...]}
+                waveplate_data = {}  # {waveplate_angle: [(time, velocity, file_name), ...]}
                 
                 for i, file in enumerate(sorted(smoothed_files)):
                     try:
@@ -579,6 +586,15 @@ class AnalysisThread(QThread):
                                   markersize=2, color=waveplate_colors[waveplate_angle])
                         ax2_3.plot(time_shifted, velocity_filtered, marker='.', linestyle='-', 
                                   markersize=2, color=material_colors[material])
+                        
+                        # Collect data for spread plots (Figure 3)
+                        if material not in material_data:
+                            material_data[material] = []
+                        material_data[material].append((time_shifted, velocity_filtered, base_name))
+                        
+                        if waveplate_angle not in waveplate_data:
+                            waveplate_data[waveplate_angle] = []
+                        waveplate_data[waveplate_angle].append((time_shifted, velocity_filtered, base_name))
                         
                         plotted_files.append(os.path.basename(file))
                         
@@ -744,7 +760,141 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(1.5)
                     spine.set_color('black')
                 
-                # Adjust layout and save both figures
+                # Configure Figure 3 (spread plots)
+                # Material spread subplot (ax3_1)
+                ax3_1.set_xlabel('Time (ns)', fontsize=12)
+                ax3_1.set_ylabel('Velocity (m/s)', fontsize=12)
+                ax3_1.set_ylim(y_min, y_max)
+                ax3_1.set_title('Velocity Traces by Material (Spread Analysis)', fontsize=14, fontweight='bold')
+                ax3_1.legend(fontsize='small', loc='best')
+                ax3_1.grid(True, linestyle='--', alpha=0.5)
+                ax3_1.tick_params(axis='both', which='major', labelsize=10)
+                ax3_1.tick_params(axis='both', which='minor', labelsize=8)
+                ax3_1.minorticks_on()
+                
+                # Add bounding box to material spread subplot
+                for spine in ax3_1.spines.values():
+                    spine.set_linewidth(1.5)
+                    spine.set_color('black')
+                
+                # Waveplate angle spread subplot (ax3_2)
+                ax3_2.set_xlabel('Time (ns)', fontsize=12)
+                ax3_2.set_ylabel('Velocity (m/s)', fontsize=12)
+                ax3_2.set_ylim(y_min, y_max)
+                ax3_2.set_title('Velocity Traces by Waveplate Angle (Spread Analysis)', fontsize=14, fontweight='bold')
+                ax3_2.legend(fontsize='small', loc='best')
+                ax3_2.grid(True, linestyle='--', alpha=0.5)
+                ax3_2.tick_params(axis='both', which='major', labelsize=10)
+                ax3_2.tick_params(axis='both', which='minor', labelsize=8)
+                ax3_2.minorticks_on()
+                
+                # Add bounding box to waveplate spread subplot
+                for spine in ax3_2.spines.values():
+                    spine.set_linewidth(1.5)
+                    spine.set_color('black')
+                
+                # Create spread plots for Figure 3
+                # Material spread plot
+                for material, traces in material_data.items():
+                    if len(traces) > 0:
+                        color = material_colors[material]
+                        # Plot individual traces with low alpha
+                        for time_data, velocity_data, file_name in traces:
+                            ax3_1.plot(time_data, velocity_data, color=color, alpha=0.3, linewidth=0.5)
+                        
+                        # Calculate and plot min/max bounds
+                        all_times = []
+                        all_velocities = []
+                        for time_data, velocity_data, _ in traces:
+                            all_times.extend(time_data)
+                            all_velocities.extend(velocity_data)
+                        
+                        # Find common time range and calculate statistics
+                        if all_times and all_velocities:
+                            time_array = np.array(all_times)
+                            velocity_array = np.array(all_velocities)
+                            
+                            # Group by time bins to calculate statistics
+                            time_bins = np.linspace(min(time_array), max(time_array), 100)
+                            min_velocities = []
+                            max_velocities = []
+                            mean_velocities = []
+                            
+                            for i in range(len(time_bins) - 1):
+                                mask = (time_array >= time_bins[i]) & (time_array < time_bins[i + 1])
+                                if np.any(mask):
+                                    velocities_in_bin = velocity_array[mask]
+                                    velocities_in_bin = velocities_in_bin[~np.isnan(velocities_in_bin)]
+                                    if len(velocities_in_bin) > 0:
+                                        min_velocities.append(np.min(velocities_in_bin))
+                                        max_velocities.append(np.max(velocities_in_bin))
+                                        mean_velocities.append(np.mean(velocities_in_bin))
+                                    else:
+                                        min_velocities.append(np.nan)
+                                        max_velocities.append(np.nan)
+                                        mean_velocities.append(np.nan)
+                                else:
+                                    min_velocities.append(np.nan)
+                                    max_velocities.append(np.nan)
+                                    mean_velocities.append(np.nan)
+                            
+                            # Plot min/max bounds and mean
+                            time_centers = (time_bins[:-1] + time_bins[1:]) / 2
+                            ax3_1.fill_between(time_centers, min_velocities, max_velocities, 
+                                             alpha=0.4, color=color, label=f'{material} (n={len(traces)})')
+                            ax3_1.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
+                
+                # Waveplate angle spread plot
+                for waveplate_angle, traces in waveplate_data.items():
+                    if len(traces) > 0:
+                        color = waveplate_colors[waveplate_angle]
+                        # Plot individual traces with low alpha
+                        for time_data, velocity_data, file_name in traces:
+                            ax3_2.plot(time_data, velocity_data, color=color, alpha=0.3, linewidth=0.5)
+                        
+                        # Calculate and plot min/max bounds
+                        all_times = []
+                        all_velocities = []
+                        for time_data, velocity_data, _ in traces:
+                            all_times.extend(time_data)
+                            all_velocities.extend(velocity_data)
+                        
+                        # Find common time range and calculate statistics
+                        if all_times and all_velocities:
+                            time_array = np.array(all_times)
+                            velocity_array = np.array(all_velocities)
+                            
+                            # Group by time bins to calculate statistics
+                            time_bins = np.linspace(min(time_array), max(time_array), 100)
+                            min_velocities = []
+                            max_velocities = []
+                            mean_velocities = []
+                            
+                            for i in range(len(time_bins) - 1):
+                                mask = (time_array >= time_bins[i]) & (time_array < time_bins[i + 1])
+                                if np.any(mask):
+                                    velocities_in_bin = velocity_array[mask]
+                                    velocities_in_bin = velocities_in_bin[~np.isnan(velocities_in_bin)]
+                                    if len(velocities_in_bin) > 0:
+                                        min_velocities.append(np.min(velocities_in_bin))
+                                        max_velocities.append(np.max(velocities_in_bin))
+                                        mean_velocities.append(np.mean(velocities_in_bin))
+                                    else:
+                                        min_velocities.append(np.nan)
+                                        max_velocities.append(np.nan)
+                                        mean_velocities.append(np.nan)
+                                else:
+                                    min_velocities.append(np.nan)
+                                    max_velocities.append(np.nan)
+                                    mean_velocities.append(np.nan)
+                            
+                            # Plot min/max bounds and mean
+                            time_centers = (time_bins[:-1] + time_bins[1:]) / 2
+                            ax3_2.fill_between(time_centers, min_velocities, max_velocities, 
+                                             alpha=0.4, color=color, label=f'{waveplate_angle} (n={len(traces)})')
+                            ax3_2.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
+                
+                # Adjust layout and save all three figures
                 fig1.tight_layout()
                 out_path1 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
                 fig1.savefig(out_path1, dpi=300, bbox_inches='tight')
@@ -754,6 +904,11 @@ class AnalysisThread(QThread):
                 out_path2 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
                 fig2.savefig(out_path2, dpi=300, bbox_inches='tight')
                 plt.close(fig2)
+                
+                fig3.tight_layout()
+                out_path3 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.png')
+                fig3.savefig(out_path3, dpi=300, bbox_inches='tight')
+                plt.close(fig3)
                 
                 # Report combined plotting summary
                 self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
@@ -769,6 +924,7 @@ class AnalysisThread(QThread):
                 
                 self.progress_signal.emit(f"Figure 1 (with individual file legends): all_smoothed_velocity_traces_with_legends.png")
                 self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png")
+                self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png")
                 # --- END ENHANCED PLOT ---
 
                 # 4. Spall Strength vs. Strain Rate and Shock Stress
