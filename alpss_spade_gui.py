@@ -1019,6 +1019,7 @@ class AnalysisThread(QThread):
                 ax5.set_xlabel('Material', fontsize=20)
                 ax5.set_ylabel('Shot Time (ns)', fontsize=20)
                 ax5.set_title('Shot Time vs Material', fontsize=20, fontweight='bold')
+                ax5.set_ylim(0, 20)  # Limit y-axis to 0-20 ns
                 ax5.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
                 ax5.grid(True, linestyle='--', alpha=0.5)
                 ax5.tick_params(axis='both', which='major', labelsize=16)
