@@ -461,6 +461,7 @@ class AnalysisThread(QThread):
                 
                 # Data structures for scatter plot
                 scatter_data = {}  # {material: [(waveplate_angle, max_velocity, file_name), ...]}
+                shot_time_data = {}  # {material: [(shot_time, file_name), ...]}
                 
                 for i, file in enumerate(sorted(smoothed_files)):
                     try:
@@ -629,6 +630,28 @@ class AnalysisThread(QThread):
                                     scatter_data[material] = []
                                 scatter_data[material].append((waveplate_angle_numeric, max_velocity, base_name))
                         
+                        # Calculate shot time (time to reach 10% of max velocity)
+                        if len(velocity_filtered) > 0:
+                            max_vel = np.nanmax(velocity_filtered)
+                            threshold = 0.1 * max_vel
+                            
+                            # Find first time point where velocity exceeds threshold
+                            above_threshold = np.where(velocity_filtered >= threshold)[0]
+                            if len(above_threshold) > 0:
+                                shot_time_idx = above_threshold[0]
+                                shot_time = time_shifted[shot_time_idx]
+                                
+                                # Convert to ns if needed
+                                if np.nanmax(time_shifted) < 1000:  # If time is in ns already
+                                    shot_time_ns = shot_time
+                                else:
+                                    shot_time_ns = shot_time / 1e9  # Convert to ns
+                                
+                                # Collect data for shot time vs material plot
+                                if material not in shot_time_data:
+                                    shot_time_data[material] = []
+                                shot_time_data[material].append((shot_time_ns, base_name))
+                        
                         plotted_files.append(os.path.basename(file))
                         
                     except Exception as e:
@@ -651,70 +674,71 @@ class AnalysisThread(QThread):
                     y_min = self.spade_params.get('y_min_main', 0)
                     y_max = self.spade_params.get('y_max_main', 700)
                 
-                # Configure Figure 1 (with individual file legends)
-                # Material-based subplot (ax1_1)
-                ax1_1.set_xlabel('Time (ns)', fontsize=20)
-                ax1_1.set_ylabel('Velocity (m/s)', fontsize=20)
-                ax1_1.set_ylim(y_min, y_max)
-                ax1_1.set_title('Velocity Traces by Material (Same Material = Same Color)', fontsize=20, fontweight='bold')
-                ax1_1.legend(fontsize=16, loc='best', ncol=2)
-                ax1_1.grid(True, linestyle='--', alpha=0.5)
-                ax1_1.tick_params(axis='both', which='major', labelsize=16)
-                ax1_1.tick_params(axis='both', which='minor', labelsize=14)
-                ax1_1.minorticks_on()
-                
-                # Add bounding box to material subplot
-                for spine in ax1_1.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-                # Waveplate angle-based subplot (ax1_2)
-                ax1_2.set_xlabel('Time (ns)', fontsize=20)
-                ax1_2.set_ylabel('Velocity (m/s)', fontsize=20)
-                ax1_2.set_ylim(y_min, y_max)
-                ax1_2.set_title('Velocity Traces by Waveplate Angle (Same Angle = Same Color)', fontsize=20, fontweight='bold')
-                ax1_2.legend(fontsize=16, loc='best', ncol=2)
-                ax1_2.grid(True, linestyle='--', alpha=0.5)
-                ax1_2.tick_params(axis='both', which='major', labelsize=16)
-                ax1_2.tick_params(axis='both', which='minor', labelsize=14)
-                ax1_2.minorticks_on()
-                
-                # Add bounding box to waveplate subplot
-                for spine in ax1_2.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-                # Zoomed subplot (ax1_3)
-                ax1_3.set_xlabel('Time (ns)', fontsize=20)
-                ax1_3.set_ylabel('Velocity (m/s)', fontsize=20)
-                
-                # Set x-axis limits for zoomed plot
-                if not self.spade_params.get('auto_calculate_limits', True):
-                    x_min_zoom = self.spade_params.get('x_min_zoom', 0)
-                    x_max_zoom = self.spade_params.get('x_max_zoom', 20)
-                    ax1_3.set_xlim(x_min_zoom, x_max_zoom)
-                    ax1_3.set_title(f'Zoomed Region: 0-20 ns (Material Colors)', fontsize=18, fontweight='bold')
-                else:
-                    ax1_3.set_xlim(0, 20)
-                    ax1_3.set_title('Zoomed Region: 0-20 ns (Material Colors)', fontsize=18, fontweight='bold')
-                
-                # Set y-axis limits for zoomed plot
-                if not self.spade_params.get('auto_calculate_limits', True):
-                    y_min_zoom = self.spade_params.get('y_min_zoom', 0)
-                    y_max_zoom = self.spade_params.get('y_max_zoom', 700)
-                    ax1_3.set_ylim(y_min_zoom, y_max_zoom)
-                else:
-                    ax1_3.set_ylim(y_min, y_max)
-                ax1_3.legend(fontsize=16, loc='best', ncol=2)
-                ax1_3.grid(True, linestyle='--', alpha=0.5)
-                ax1_3.tick_params(axis='both', which='major', labelsize=16)
-                ax1_3.tick_params(axis='both', which='minor', labelsize=14)
-                ax1_3.minorticks_on()
-                
-                # Add bounding box to zoomed subplot
-                for spine in ax1_3.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
+                # Configure Figure 1 (with individual file legends) - only if selected
+                if self.spade_params.get('plot_individual_legends', True):
+                    # Material-based subplot (ax1_1)
+                    ax1_1.set_xlabel('Time (ns)', fontsize=20)
+                    ax1_1.set_ylabel('Velocity (m/s)', fontsize=20)
+                    ax1_1.set_ylim(y_min, y_max)
+                    ax1_1.set_title('Velocity Traces by Material (Same Material = Same Color)', fontsize=20, fontweight='bold')
+                    ax1_1.legend(fontsize=16, loc='best', ncol=2)
+                    ax1_1.grid(True, linestyle='--', alpha=0.5)
+                    ax1_1.tick_params(axis='both', which='major', labelsize=16)
+                    ax1_1.tick_params(axis='both', which='minor', labelsize=14)
+                    ax1_1.minorticks_on()
+                    
+                    # Add bounding box to material subplot
+                    for spine in ax1_1.spines.values():
+                        spine.set_linewidth(3.0)
+                        spine.set_color('black')
+                    
+                    # Waveplate angle-based subplot (ax1_2)
+                    ax1_2.set_xlabel('Time (ns)', fontsize=20)
+                    ax1_2.set_ylabel('Velocity (m/s)', fontsize=20)
+                    ax1_2.set_ylim(y_min, y_max)
+                    ax1_2.set_title('Velocity Traces by Waveplate Angle (Same Angle = Same Color)', fontsize=20, fontweight='bold')
+                    ax1_2.legend(fontsize=16, loc='best', ncol=2)
+                    ax1_2.grid(True, linestyle='--', alpha=0.5)
+                    ax1_2.tick_params(axis='both', which='major', labelsize=16)
+                    ax1_2.tick_params(axis='both', which='minor', labelsize=14)
+                    ax1_2.minorticks_on()
+                    
+                    # Add bounding box to waveplate subplot
+                    for spine in ax1_2.spines.values():
+                        spine.set_linewidth(3.0)
+                        spine.set_color('black')
+                    
+                    # Zoomed subplot (ax1_3)
+                    ax1_3.set_xlabel('Time (ns)', fontsize=20)
+                    ax1_3.set_ylabel('Velocity (m/s)', fontsize=20)
+                    
+                    # Set x-axis limits for zoomed plot
+                    if not self.spade_params.get('auto_calculate_limits', True):
+                        x_min_zoom = self.spade_params.get('x_min_zoom', 0)
+                        x_max_zoom = self.spade_params.get('x_max_zoom', 20)
+                        ax1_3.set_xlim(x_min_zoom, x_max_zoom)
+                        ax1_3.set_title(f'Zoomed Region: 0-20 ns (Material Colors)', fontsize=18, fontweight='bold')
+                    else:
+                        ax1_3.set_xlim(0, 20)
+                        ax1_3.set_title('Zoomed Region: 0-20 ns (Material Colors)', fontsize=18, fontweight='bold')
+                    
+                    # Set y-axis limits for zoomed plot
+                    if not self.spade_params.get('auto_calculate_limits', True):
+                        y_min_zoom = self.spade_params.get('y_min_zoom', 0)
+                        y_max_zoom = self.spade_params.get('y_max_zoom', 700)
+                        ax1_3.set_ylim(y_min_zoom, y_max_zoom)
+                    else:
+                        ax1_3.set_ylim(y_min, y_max)
+                    ax1_3.legend(fontsize=16, loc='best', ncol=2)
+                    ax1_3.grid(True, linestyle='--', alpha=0.5)
+                    ax1_3.tick_params(axis='both', which='major', labelsize=16)
+                    ax1_3.tick_params(axis='both', which='minor', labelsize=14)
+                    ax1_3.minorticks_on()
+                    
+                    # Add bounding box to zoomed subplot
+                    for spine in ax1_3.spines.values():
+                        spine.set_linewidth(3.0)
+                        spine.set_color('black')
                 
                 # Configure Figure 2 (with color meaning legends only)
                 # Material-based subplot (ax2_1)
@@ -964,7 +988,53 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Adjust layout and save all four figures
+                # Create shot time vs material scatter plot for Figure 5
+                fig5, ax5 = plt.subplots(1, 1, figsize=(14, 10))
+                
+                # Define material order for x-axis
+                material_order = ['Al', 'Ti', 'Cu']
+                material_positions = {material: i for i, material in enumerate(material_order)}
+                
+                for material, data_points in shot_time_data.items():
+                    if len(data_points) > 0 and material in material_positions:
+                        color = material_colors[material]
+                        shot_times = [point[0] for point in data_points]
+                        file_names = [point[1] for point in data_points]
+                        
+                        # Use material position for x-axis
+                        x_pos = material_positions[material]
+                        x_positions = [x_pos] * len(shot_times)
+                        
+                        # Plot scatter points
+                        ax5.scatter(x_positions, shot_times, color=color, s=100, alpha=0.7, 
+                                   label=f'{material} (n={len(data_points)})')
+                        
+                        # Add file name annotations for some points (avoid overcrowding)
+                        if len(data_points) <= 10:  # Only annotate if few points
+                            for i, (shot_time, file_name) in enumerate(data_points):
+                                ax5.annotate(file_name, (x_pos, shot_time), xytext=(5, 5), 
+                                           textcoords='offset points', fontsize=10, alpha=0.8)
+                
+                # Configure shot time vs material scatter plot
+                ax5.set_xlabel('Material', fontsize=20)
+                ax5.set_ylabel('Shot Time (ns)', fontsize=20)
+                ax5.set_title('Shot Time vs Material', fontsize=20, fontweight='bold')
+                ax5.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
+                ax5.grid(True, linestyle='--', alpha=0.5)
+                ax5.tick_params(axis='both', which='major', labelsize=16)
+                ax5.tick_params(axis='both', which='minor', labelsize=14)
+                ax5.minorticks_on()
+                
+                # Set x-axis ticks to material names
+                ax5.set_xticks(range(len(material_order)))
+                ax5.set_xticklabels(material_order)
+                
+                # Add bounding box to shot time scatter plot
+                for spine in ax5.spines.values():
+                    spine.set_linewidth(3.0)
+                    spine.set_color('black')
+                
+                # Adjust layout and save all five figures
                 fig1.tight_layout()
                 out_path1 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
                 fig1.savefig(out_path1, dpi=300, bbox_inches='tight')
@@ -985,6 +1055,11 @@ class AnalysisThread(QThread):
                 fig4.savefig(out_path4, dpi=300, bbox_inches='tight')
                 plt.close(fig4)
                 
+                fig5.tight_layout()
+                out_path5 = os.path.join(spade_output_dir, 'shot_time_vs_material.png')
+                fig5.savefig(out_path5, dpi=300, bbox_inches='tight')
+                plt.close(fig5)
+                
                 # Report combined plotting summary
                 self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
                 self.progress_signal.emit(f"Successfully plotted: {len(plotted_files)} files")
@@ -1001,6 +1076,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png")
                 self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png")
                 self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png")
+                self.progress_signal.emit(f"Figure 5 (shot time vs material): shot_time_vs_material.png")
                 # --- END ENHANCED PLOT ---
 
                 # 4. Spall Strength vs. Strain Rate and Shock Stress
@@ -2220,6 +2296,33 @@ class ALPSSSPADEGUI(QMainWindow):
         
         layout.addWidget(output_group)
         
+        # Combined plot selection
+        combined_plot_group = QGroupBox("Combined Plot Selection")
+        combined_plot_layout = QGridLayout(combined_plot_group)
+        combined_plot_layout.setSpacing(10)  # Increase spacing between elements
+        
+        self.plot_individual_legends = QCheckBox("Figure 1: Individual File Legends")
+        self.plot_individual_legends.setChecked(True)
+        combined_plot_layout.addWidget(self.plot_individual_legends, 0, 0)
+        
+        self.plot_color_meaning = QCheckBox("Figure 2: Color Meaning Only")
+        self.plot_color_meaning.setChecked(True)
+        combined_plot_layout.addWidget(self.plot_color_meaning, 0, 1)
+        
+        self.plot_spread_analysis = QCheckBox("Figure 3: Spread Analysis")
+        self.plot_spread_analysis.setChecked(True)
+        combined_plot_layout.addWidget(self.plot_spread_analysis, 0, 2)
+        
+        self.plot_velocity_vs_angle = QCheckBox("Figure 4: Velocity vs Waveplate Angle")
+        self.plot_velocity_vs_angle.setChecked(True)
+        combined_plot_layout.addWidget(self.plot_velocity_vs_angle, 1, 0)
+        
+        self.plot_shot_time_vs_material = QCheckBox("Figure 5: Shot Time vs Material")
+        self.plot_shot_time_vs_material.setChecked(True)
+        combined_plot_layout.addWidget(self.plot_shot_time_vs_material, 1, 1)
+        
+        layout.addWidget(combined_plot_group)
+        
         # Plot axis limits
         axis_group = QGroupBox("Combined Plot Axis Limits")
         axis_layout = QGridLayout(axis_group)
@@ -3071,6 +3174,12 @@ Output Files:
             'x_max_zoom': self.x_max_zoom.value(),
             'y_min_zoom': self.y_min_zoom.value(),
             'y_max_zoom': self.y_max_zoom.value(),
+            # Combined plot selection
+            'plot_individual_legends': self.plot_individual_legends.isChecked(),
+            'plot_color_meaning': self.plot_color_meaning.isChecked(),
+            'plot_spread_analysis': self.plot_spread_analysis.isChecked(),
+            'plot_velocity_vs_angle': self.plot_velocity_vs_angle.isChecked(),
+            'plot_shot_time_vs_material': self.plot_shot_time_vs_material.isChecked(),
         }
         
     def run_analysis(self):
