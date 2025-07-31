@@ -436,6 +436,9 @@ class AnalysisThread(QThread):
                 # Figure 3: Spread plots with alpha-based coloring (no zoomed subplot)
                 fig3, (ax3_1, ax3_2) = plt.subplots(2, 1, figsize=(14, 12), height_ratios=[1, 1])
                 
+                # Figure 4: Maximum velocity vs waveplate angle scatter plot
+                fig4, ax4 = plt.subplots(1, 1, figsize=(14, 10))
+                
                 # Store all velocity data to determine adaptive y-axis limits
                 all_velocities = []
                 all_times = []
@@ -455,6 +458,9 @@ class AnalysisThread(QThread):
                 # Data structures for spread plots
                 material_data = {}  # {material: [(time, velocity, file_name), ...]}
                 waveplate_data = {}  # {waveplate_angle: [(time, velocity, file_name), ...]}
+                
+                # Data structures for scatter plot
+                scatter_data = {}  # {material: [(waveplate_angle, max_velocity, file_name), ...]}
                 
                 for i, file in enumerate(sorted(smoothed_files)):
                     try:
@@ -595,6 +601,33 @@ class AnalysisThread(QThread):
                         if waveplate_angle not in waveplate_data:
                             waveplate_data[waveplate_angle] = []
                         waveplate_data[waveplate_angle].append((time_shifted, velocity_filtered, base_name))
+                        
+                        # Calculate maximum velocity (average between 300-400ns) for scatter plot
+                        # Convert time to ns if needed
+                        time_ns = time_shifted.copy()
+                        if np.nanmax(time_ns) < 1000:  # If time is in ns already
+                            pass
+                        else:
+                            time_ns = time_ns / 1e9  # Convert to ns
+                        
+                        # Find data points between 300-400ns
+                        mask_300_400 = (time_ns >= 300) & (time_ns <= 400)
+                        if np.any(mask_300_400):
+                            velocities_300_400 = velocity_filtered[mask_300_400]
+                            velocities_300_400 = velocities_300_400[~np.isnan(velocities_300_400)]
+                            if len(velocities_300_400) > 0:
+                                max_velocity = np.mean(velocities_300_400)
+                                
+                                # Convert waveplate angle to numeric for plotting
+                                try:
+                                    waveplate_angle_numeric = float(str(waveplate_angle).replace('°', '').replace('Unknown', '0'))
+                                except:
+                                    waveplate_angle_numeric = 0
+                                
+                                # Collect data for scatter plot
+                                if material not in scatter_data:
+                                    scatter_data[material] = []
+                                scatter_data[material].append((waveplate_angle_numeric, max_velocity, base_name))
                         
                         plotted_files.append(os.path.basename(file))
                         
@@ -898,7 +931,40 @@ class AnalysisThread(QThread):
                 # Add legend to waveplate spread subplot
                 ax3_2.legend(fontsize=16, loc='best', title='Wave Plate Angle', title_fontsize=18)
                 
-                # Adjust layout and save all three figures
+                # Create scatter plot for Figure 4 (Maximum velocity vs waveplate angle)
+                for material, data_points in scatter_data.items():
+                    if len(data_points) > 0:
+                        color = material_colors[material]
+                        waveplate_angles = [point[0] for point in data_points]
+                        max_velocities = [point[1] for point in data_points]
+                        file_names = [point[2] for point in data_points]
+                        
+                        # Plot scatter points
+                        ax4.scatter(waveplate_angles, max_velocities, color=color, s=100, alpha=0.7, 
+                                   label=f'{material} (n={len(data_points)})')
+                        
+                        # Add file name annotations for some points (avoid overcrowding)
+                        if len(data_points) <= 10:  # Only annotate if few points
+                            for i, (angle, velocity, file_name) in enumerate(data_points):
+                                ax4.annotate(file_name, (angle, velocity), xytext=(5, 5), 
+                                           textcoords='offset points', fontsize=10, alpha=0.8)
+                
+                # Configure scatter plot
+                ax4.set_xlabel('Wave Plate Angle (degrees)', fontsize=20)
+                ax4.set_ylabel('Maximum Velocity (m/s)', fontsize=20)
+                ax4.set_title('Maximum Velocity vs Wave Plate Angle by Material', fontsize=20, fontweight='bold')
+                ax4.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
+                ax4.grid(True, linestyle='--', alpha=0.5)
+                ax4.tick_params(axis='both', which='major', labelsize=16)
+                ax4.tick_params(axis='both', which='minor', labelsize=14)
+                ax4.minorticks_on()
+                
+                # Add bounding box to scatter plot
+                for spine in ax4.spines.values():
+                    spine.set_linewidth(3.0)
+                    spine.set_color('black')
+                
+                # Adjust layout and save all four figures
                 fig1.tight_layout()
                 out_path1 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
                 fig1.savefig(out_path1, dpi=300, bbox_inches='tight')
@@ -913,6 +979,11 @@ class AnalysisThread(QThread):
                 out_path3 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.png')
                 fig3.savefig(out_path3, dpi=300, bbox_inches='tight')
                 plt.close(fig3)
+                
+                fig4.tight_layout()
+                out_path4 = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.png')
+                fig4.savefig(out_path4, dpi=300, bbox_inches='tight')
+                plt.close(fig4)
                 
                 # Report combined plotting summary
                 self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
@@ -929,6 +1000,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"Figure 1 (with individual file legends): all_smoothed_velocity_traces_with_legends.png")
                 self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png")
                 self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png")
+                self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png")
                 # --- END ENHANCED PLOT ---
 
                 # 4. Spall Strength vs. Strain Rate and Shock Stress
