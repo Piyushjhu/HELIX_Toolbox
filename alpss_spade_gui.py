@@ -1010,7 +1010,12 @@ class AnalysisThread(QThread):
                 fig4b, ax4b = plt.subplots(1, 1, figsize=(14, 10))
                 
                 # Prepare data for seaborn violin plot
-                import seaborn as sns
+                try:
+                    import seaborn as sns
+                    seaborn_available = True
+                except ImportError:
+                    self.progress_signal.emit("[WARNING] seaborn not available, skipping violin plot")
+                    seaborn_available = False
                 
                 # Create DataFrame for seaborn
                 violin_data = []
@@ -1024,7 +1029,7 @@ class AnalysisThread(QThread):
                                 'file': file_name
                             })
                 
-                if violin_data:
+                if violin_data and seaborn_available:
                     df = pd.DataFrame(violin_data)
                     
                     # Create violin plot with seaborn
@@ -1054,6 +1059,14 @@ class AnalysisThread(QThread):
                     for spine in ax4b.spines.values():
                         spine.set_linewidth(3.0)
                         spine.set_color('black')
+                elif violin_data and not seaborn_available:
+                    # Fallback: create a simple scatter plot if seaborn is not available
+                    ax4b.text(0.5, 0.5, 'seaborn not available\nViolin plot skipped', 
+                              transform=ax4b.transAxes, ha='center', va='center', 
+                              fontsize=16, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                    ax4b.set_xlabel("Wave Plate Angle (degrees)", fontsize=20)
+                    ax4b.set_ylabel("Maximum Velocity (m/s)", fontsize=20)
+                    ax4b.set_title("Maximum Velocity by Angle and Material (seaborn required)", fontsize=20, fontweight='bold')
                 
 
                 
@@ -1235,6 +1248,8 @@ class AnalysisThread(QThread):
                     if not save_pdf_only:
                         fig4b.savefig(out_path4b_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
                     fig4b.savefig(out_path4b_pdf, format='pdf', bbox_inches='tight')
+                    plt.close(fig4b)
+                else:
                     plt.close(fig4b)
                 
 
