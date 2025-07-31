@@ -50,32 +50,69 @@ def alpss_main(**inputs):
 
         # function to find the spall signal domain of interest
         print(f"[{datetime.now()}] DEBUG: Starting spall_doi_finder...")
-        sdf_out = spall_doi_finder(**inputs)
-        print(f"[{datetime.now()}] DEBUG: spall_doi_finder complete.")
+        try:
+            sdf_out = spall_doi_finder(**inputs)
+            print(f"[{datetime.now()}] DEBUG: spall_doi_finder complete.")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in spall_doi_finder: {e}")
+            raise Exception(f"Failed in spall_doi_finder: {e}")
 
         # function to find the carrier frequency
-        cen = carrier_frequency(sdf_out, **inputs)
-        print(f"[{datetime.now()}] DEBUG: carrier_frequency complete.")
+        try:
+            cen = carrier_frequency(sdf_out, **inputs)
+            print(f"[{datetime.now()}] DEBUG: carrier_frequency complete.")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in carrier_frequency: {e}")
+            raise Exception(f"Failed in carrier_frequency: {e}")
 
         # function to filter out the carrier frequency after the signal has started
-        cf_out = carrier_filter(sdf_out, cen, **inputs)
-        print(f"[{datetime.now()}] DEBUG: carrier_filter complete.")
+        try:
+            cf_out = carrier_filter(sdf_out, cen, **inputs)
+            print(f"[{datetime.now()}] DEBUG: carrier_filter complete.")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in carrier_filter: {e}")
+            raise Exception(f"Failed in carrier_filter: {e}")
 
         # function to calculate the velocity from the filtered voltage signal
-        vc_out = velocity_calculation(sdf_out, cen, cf_out, **inputs)
-        print(f"[{datetime.now()}] DEBUG: velocity_calculation complete.")
+        try:
+            vc_out = velocity_calculation(sdf_out, cen, cf_out, **inputs)
+            print(f"[{datetime.now()}] DEBUG: velocity_calculation complete.")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in velocity_calculation: {e}")
+            raise Exception(f"Failed in velocity_calculation: {e}")
 
         # function to estimate the instantaneous uncertainty for all points in time
-        iua_out = instantaneous_uncertainty_analysis(sdf_out, vc_out, cen, **inputs)
-        print(f"[{datetime.now()}] DEBUG: instantaneous_uncertainty_analysis complete.")
+        try:
+            iua_out = instantaneous_uncertainty_analysis(sdf_out, vc_out, cen, **inputs)
+            print(f"[{datetime.now()}] DEBUG: instantaneous_uncertainty_analysis complete.")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in instantaneous_uncertainty_analysis: {e}")
+            raise Exception(f"Failed in instantaneous_uncertainty_analysis: {e}")
 
         # function to find points of interest on the velocity trace
-        sa_out = spall_analysis(vc_out, iua_out, **inputs)
-        print(f"[{datetime.now()}] DEBUG: spall_analysis complete.")
+        try:
+            sa_out = spall_analysis(vc_out, iua_out, **inputs)
+            print(f"[{datetime.now()}] DEBUG: spall_analysis complete.")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in spall_analysis: {e}")
+            # Don't fail completely if spall analysis fails, continue with partial results
+            sa_out = {
+                "v_max_comp": 0, "t_max_comp": 0, "v_max_ten": 0, "t_max_ten": 0,
+                "v_rc": 0, "t_rc": 0, "spall_strength_est": 0, "strain_rate_est": 0
+            }
+            print(f"[{datetime.now()}] WARNING: Using default values for spall analysis")
 
         # function to calculate uncertainties in the spall strength and strain rate due to external uncertainties
-        fua_out = full_uncertainty_analysis(cen, sa_out, iua_out, **inputs)
-        print(f"[{datetime.now()}] DEBUG: full_uncertainty_analysis complete.")
+        try:
+            fua_out = full_uncertainty_analysis(cen, sa_out, iua_out, **inputs)
+            print(f"[{datetime.now()}] DEBUG: full_uncertainty_analysis complete.")
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in full_uncertainty_analysis: {e}")
+            # Don't fail completely if uncertainty analysis fails, continue with partial results
+            fua_out = {
+                "spall_uncert": 0, "strain_rate_uncert": 0
+            }
+            print(f"[{datetime.now()}] WARNING: Using default values for uncertainty analysis")
 
         # end the program timer
         end_time = datetime.now()
@@ -128,7 +165,20 @@ def alpss_main(**inputs):
                 )
                 print(f"[{datetime.now()}] DEBUG: saving function completed successfully.")
             except Exception as e:
-                print(f"[{datetime.now()}] ERROR in saving: {e}\n{traceback.format_exc()}")
+                print(f"[{datetime.now()}] ERROR in saving: {e}")
+                print(f"[{datetime.now()}] WARNING: Some output files may not have been saved")
+                # Try to save at least the essential velocity data
+                try:
+                    print(f"[{datetime.now()}] Attempting to save essential velocity data...")
+                    base_name = inputs["filename"][0:-4]
+                    velocity_data = np.stack((vc_out["time_f"], vc_out["velocity_f_smooth"]), axis=1)
+                    np.savetxt(
+                        os.path.join(inputs["out_files_dir"], f"{base_name}--velocity--smooth.csv"),
+                        velocity_data, delimiter=","
+                    )
+                    print(f"[{datetime.now()}] Saved essential velocity data")
+                except Exception as save_error:
+                    print(f"[{datetime.now()}] ERROR: Could not save even essential data: {save_error}")
         else:
             print(f"[{datetime.now()}] DEBUG: save_data is not 'yes', skipping saving")
 
