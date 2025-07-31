@@ -406,11 +406,11 @@ class AnalysisThread(QThread):
                             print(msg)
                             self.progress_signal.emit(msg)
 
-                # --- NEW: Plot all smoothed velocity traces with uncertainty, aligned to t=0 at first significant rise ---
+                # --- ENHANCED: Plot all smoothed velocity traces with material and waveplate angle information ---
                 smoothed_files = glob.glob(os.path.join(output_dir, '*--velocity--smooth.csv'))
                 
                 # Report combined plotting file availability
-                self.progress_signal.emit(f"=== Combined Velocity Plotting ===")
+                self.progress_signal.emit(f"=== Enhanced Combined Velocity Plotting ===")
                 self.progress_signal.emit(f"Found {len(smoothed_files)} velocity files for combined plotting")
                 
                 if len(smoothed_files) != len(successful_files):
@@ -426,14 +426,24 @@ class AnalysisThread(QThread):
                         for missing_file in missing_plot_files:
                             self.progress_signal.emit(f"❌ Missing: {missing_file}--velocity--smooth.csv")
                 
-                # Create figure with two subplots: main plot and zoomed region
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), height_ratios=[2, 1])
+                # Create enhanced figure with three subplots: material-based, waveplate angle-based, and zoomed region
+                fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 15), height_ratios=[1, 1, 0.8])
                 
                 # Store all velocity data to determine adaptive y-axis limits
                 all_velocities = []
                 all_times = []
                 plotted_files = []
                 failed_plot_files = []
+                
+                # Color maps for materials and waveplate angles
+                material_colors = {}
+                waveplate_colors = {}
+                material_counter = 0
+                waveplate_counter = 0
+                
+                # Define color palettes
+                material_palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                waveplate_palette = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#54a0ff', '#5f27cd', '#00d2d3', '#ff9f43']
                 
                 for i, file in enumerate(sorted(smoothed_files)):
                     try:
@@ -486,13 +496,21 @@ class AnalysisThread(QThread):
                         
                         # Create enhanced label using parameter data if available
                         base_name = os.path.basename(file).replace('--velocity--smooth.csv','')
+                        material = 'Unknown'
+                        waveplate_angle = 'Unknown'
+                        
                         if self.param_data and base_name in self.param_data:
                             exp_info = self.param_data[base_name]
-                            sample_material = exp_info.get('sample_material', 'Unknown')
+                            material = exp_info.get('sample_material', 'Unknown')
+                            waveplate_angle = exp_info.get('waveplate_angle', 'Unknown')
                             exp_id = exp_info.get('exp_id', 'Unknown')
-                            label = f"{base_name} ({sample_material}, {exp_id})"
+                            
+                            # Create labels with material and waveplate angle
+                            label_material = f"{base_name} ({material}, {exp_id})"
+                            label_waveplate = f"{base_name} ({waveplate_angle}°, {exp_id})"
                         else:
-                            label = base_name
+                            label_material = base_name
+                            label_waveplate = base_name
                             
                         if i == 0:
                             print(f"[DEBUG] First 10 time_shifted: {time_shifted[:10]}")
@@ -502,6 +520,15 @@ class AnalysisThread(QThread):
                         # Store velocity data for adaptive limits (use filtered data)
                         all_velocities.extend(velocity_filtered)
                         all_times.extend(time_shifted)
+                        
+                        # Assign colors for materials and waveplate angles
+                        if material not in material_colors:
+                            material_colors[material] = material_palette[material_counter % len(material_palette)]
+                            material_counter += 1
+                        
+                        if waveplate_angle not in waveplate_colors:
+                            waveplate_colors[waveplate_angle] = waveplate_palette[waveplate_counter % len(waveplate_palette)]
+                            waveplate_counter += 1
                         
                         # Plot uncertainty shading (use filtered velocity for shading bounds)
                         uncert_file = file.replace('--velocity--smooth.csv', '--vel--uncert.csv')
@@ -515,14 +542,26 @@ class AnalysisThread(QThread):
                                     if noise_fraction is not None:
                                         uncert_filtered[high_noise_mask] = np.nan
                                     
-                                    ax1.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, alpha=0.2)
-                                    ax2.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, alpha=0.2)
+                                    # Plot uncertainty with material color
+                                    ax1.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                                   alpha=0.2, color=material_colors[material])
+                                    # Plot uncertainty with waveplate color
+                                    ax2.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                                   alpha=0.2, color=waveplate_colors[waveplate_angle])
                             except Exception as e:
                                 print(f"[WARNING] Could not read uncertainty for {file}: {e}")
                         
-                        # Plot velocity traces on both subplots (use filtered data)
-                        ax1.plot(time_shifted, velocity_filtered, label=label, marker='.', linestyle='-', markersize=2)
-                        ax2.plot(time_shifted, velocity_filtered, label=label, marker='.', linestyle='-', markersize=2)
+                        # Plot velocity traces with material-based coloring (subplot 1)
+                        ax1.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-', 
+                                markersize=2, color=material_colors[material])
+                        
+                        # Plot velocity traces with waveplate angle-based coloring (subplot 2)
+                        ax2.plot(time_shifted, velocity_filtered, label=label_waveplate, marker='.', linestyle='-', 
+                                markersize=2, color=waveplate_colors[waveplate_angle])
+                        
+                        # Plot velocity traces on zoomed subplot (subplot 3) - use material colors
+                        ax3.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-', 
+                                markersize=2, color=material_colors[material])
                         
                         plotted_files.append(os.path.basename(file))
                         
@@ -546,79 +585,90 @@ class AnalysisThread(QThread):
                     y_min = self.spade_params.get('y_min_main', 0)
                     y_max = self.spade_params.get('y_max_main', 700)
                 
-                # Configure main plot (ax1)
+                # Configure material-based subplot (ax1)
                 ax1.set_xlabel('Time (ns)', fontsize=12)
                 ax1.set_ylabel('Velocity (m/s)', fontsize=12)
                 ax1.set_ylim(y_min, y_max)
-                
-                # Set x-axis limits for main plot
-                if not self.spade_params.get('auto_calculate_limits', True):
-                    x_min_main = self.spade_params.get('x_min_main', 0)
-                    x_max_main = self.spade_params.get('x_max_main', 100)
-                    ax1.set_xlim(x_min_main, x_max_main)
-                
-                ax1.set_title('All Smoothed Free Surface Velocity Traces (Aligned)', fontsize=14, fontweight='bold')
+                ax1.set_title('Velocity Traces by Material (Same Material = Same Color)', fontsize=14, fontweight='bold')
                 ax1.legend(fontsize='small', loc='best')
                 ax1.grid(True, linestyle='--', alpha=0.5)
                 ax1.tick_params(axis='both', which='major', labelsize=10)
                 ax1.tick_params(axis='both', which='minor', labelsize=8)
                 ax1.minorticks_on()
                 
-                # Add bounding box to main plot
+                # Add bounding box to material subplot
                 for spine in ax1.spines.values():
                     spine.set_linewidth(1.5)
                     spine.set_color('black')
                 
-                # Configure zoomed subplot (ax2) - 0 to 20 ns region
+                # Configure waveplate angle-based subplot (ax2)
                 ax2.set_xlabel('Time (ns)', fontsize=12)
                 ax2.set_ylabel('Velocity (m/s)', fontsize=12)
-                
-                # Set x-axis limits for zoomed plot
-                if not self.spade_params.get('auto_calculate_limits', True):
-                    x_min_zoom = self.spade_params.get('x_min_zoom', 0)
-                    x_max_zoom = self.spade_params.get('x_max_zoom', 20)
-                    ax2.set_xlim(x_min_zoom, x_max_zoom)
-                    ax2.set_title(f'Zoomed Region: {x_min_zoom}-{x_max_zoom} ns', fontsize=12, fontweight='bold')
-                else:
-                    ax2.set_xlim(0, 20)
-                    ax2.set_title('Zoomed Region: 0-20 ns', fontsize=12, fontweight='bold')
-                
-                # Set y-axis limits for zoomed plot
-                if not self.spade_params.get('auto_calculate_limits', True):
-                    y_min_zoom = self.spade_params.get('y_min_zoom', 0)
-                    y_max_zoom = self.spade_params.get('y_max_zoom', 700)
-                    ax2.set_ylim(y_min_zoom, y_max_zoom)
-                else:
-                    ax2.set_ylim(y_min, y_max)
+                ax2.set_ylim(y_min, y_max)
+                ax2.set_title('Velocity Traces by Waveplate Angle (Same Angle = Same Color)', fontsize=14, fontweight='bold')
                 ax2.legend(fontsize='small', loc='best')
                 ax2.grid(True, linestyle='--', alpha=0.5)
                 ax2.tick_params(axis='both', which='major', labelsize=10)
                 ax2.tick_params(axis='both', which='minor', labelsize=8)
                 ax2.minorticks_on()
                 
-                # Add bounding box to zoomed subplot
+                # Add bounding box to waveplate subplot
                 for spine in ax2.spines.values():
+                    spine.set_linewidth(1.5)
+                    spine.set_color('black')
+                
+                # Configure zoomed subplot (ax3) - 0 to 20 ns region
+                ax3.set_xlabel('Time (ns)', fontsize=12)
+                ax3.set_ylabel('Velocity (m/s)', fontsize=12)
+                
+                # Set x-axis limits for zoomed plot
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    x_min_zoom = self.spade_params.get('x_min_zoom', 0)
+                    x_max_zoom = self.spade_params.get('x_max_zoom', 20)
+                    ax3.set_xlim(x_min_zoom, x_max_zoom)
+                    ax3.set_title(f'Zoomed Region: 0-20 ns (Material Colors)', fontsize=12, fontweight='bold')
+                else:
+                    ax3.set_xlim(0, 20)
+                    ax3.set_title('Zoomed Region: 0-20 ns (Material Colors)', fontsize=12, fontweight='bold')
+                
+                # Set y-axis limits for zoomed plot
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    y_min_zoom = self.spade_params.get('y_min_zoom', 0)
+                    y_max_zoom = self.spade_params.get('y_max_zoom', 700)
+                    ax3.set_ylim(y_min_zoom, y_max_zoom)
+                else:
+                    ax3.set_ylim(y_min, y_max)
+                ax3.legend(fontsize='small', loc='best')
+                ax3.grid(True, linestyle='--', alpha=0.5)
+                ax3.tick_params(axis='both', which='major', labelsize=10)
+                ax3.tick_params(axis='both', which='minor', labelsize=8)
+                ax3.minorticks_on()
+                
+                # Add bounding box to zoomed subplot
+                for spine in ax3.spines.values():
                     spine.set_linewidth(1.5)
                     spine.set_color('black')
                 
                 # Adjust layout and save
                 fig.tight_layout()
-                out_path = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces.png')
+                out_path = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_enhanced.png')
                 fig.savefig(out_path, dpi=300, bbox_inches='tight')
                 plt.close(fig)
                 
                 # Report combined plotting summary
-                self.progress_signal.emit(f"=== Combined Plotting Summary ===")
+                self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
                 self.progress_signal.emit(f"Successfully plotted: {len(plotted_files)} files")
                 self.progress_signal.emit(f"Failed to plot: {len(failed_plot_files)} files")
+                self.progress_signal.emit(f"Materials found: {list(material_colors.keys())}")
+                self.progress_signal.emit(f"Waveplate angles found: {list(waveplate_colors.keys())}")
                 
                 if failed_plot_files:
                     self.progress_signal.emit(f"=== Failed Plot Files ===")
                     for failed_file, error_msg in failed_plot_files:
                         self.progress_signal.emit(f"❌ {failed_file}: {error_msg}")
                 
-                self.progress_signal.emit(f"Combined velocity plot saved: all_smoothed_velocity_traces.png")
-                # --- END NEW PLOT ---
+                self.progress_signal.emit(f"Enhanced combined velocity plot saved: all_smoothed_velocity_traces_enhanced.png")
+                # --- END ENHANCED PLOT ---
 
                 # 4. Spall Strength vs. Strain Rate and Shock Stress
                 summary_csv = os.path.join(spade_output_dir, 'spall_summary.csv')
@@ -2583,6 +2633,8 @@ Output Files:
                             exp_info['flyer_material'] = row.get(col, 'Unknown')
                         elif 'thickness' in col_lower:
                             exp_info['thickness'] = row.get(col, 'Unknown')
+                        elif 'waveplate_angle' in col_lower or 'waveplate angle' in col_lower or 'waveplate' in col_lower:
+                            exp_info['waveplate_angle'] = row.get(col, 'Unknown')
                             
                     # Add to combined data (later files override earlier ones if same PDV file)
                     combined_param_data[pdv_file_str] = exp_info
