@@ -464,7 +464,12 @@ class AnalysisThread(QThread):
                 shot_time_data = {}  # {material: [(shot_time, file_name), ...]}
                 pdv_power_data = {}  # {material: [(pdv_power, file_name), ...]}
                 
+                total_files = len(smoothed_files)
+                self.progress_signal.emit(f"Starting enhanced combined plotting for {total_files} files...")
+                
                 for i, file in enumerate(sorted(smoothed_files)):
+                    if i % 10 == 0:  # Update progress every 10 files
+                        self.progress_signal.emit(f"Processing file {i+1}/{total_files}: {os.path.basename(file)}")
                     try:
                         # Try reading with and without header
                         try:
@@ -649,6 +654,7 @@ class AnalysisThread(QThread):
                                 if material not in shot_time_data:
                                     shot_time_data[material] = []
                                 shot_time_data[material].append((shot_time_s, base_name))
+                                print(f"[DEBUG] Shot time for {base_name} ({material}): {shot_time_s:.6f} s")
                         
                         # Calculate PDV return power (average power in the signal)
                         if len(velocity_filtered) > 0:
@@ -688,6 +694,7 @@ class AnalysisThread(QThread):
                 
                 # Configure Figure 1 (with individual file legends) - only if selected
                 if self.spade_params.get('plot_individual_legends', True):
+                    self.progress_signal.emit("Creating Figure 1: Individual file legends...")
                     # Material-based subplot (ax1_1)
                     ax1_1.set_xlabel('Time (ns)', fontsize=20)
                     ax1_1.set_ylabel('Velocity (m/s)', fontsize=20)
@@ -753,6 +760,7 @@ class AnalysisThread(QThread):
                         spine.set_color('black')
                 
                 # Configure Figure 2 (with color meaning legends only)
+                self.progress_signal.emit("Creating Figure 2: Color meaning legends...")
                 # Material-based subplot (ax2_1)
                 ax2_1.set_xlabel('Time (ns)', fontsize=20)
                 ax2_1.set_ylabel('Velocity (m/s)', fontsize=20)
@@ -830,6 +838,7 @@ class AnalysisThread(QThread):
                     spine.set_color('black')
                 
                 # Configure Figure 3 (spread plots)
+                self.progress_signal.emit("Creating Figure 3: Spread analysis...")
                 # Material spread subplot (ax3_1)
                 ax3_1.set_xlabel('Time (ns)', fontsize=20)
                 ax3_1.set_ylabel('Velocity (m/s)', fontsize=20)
@@ -968,6 +977,7 @@ class AnalysisThread(QThread):
                 ax3_2.legend(fontsize=16, loc='best', title='Wave Plate Angle', title_fontsize=18)
                 
                 # Create scatter plot for Figure 4 (Maximum velocity vs waveplate angle)
+                self.progress_signal.emit("Creating Figure 4: Maximum velocity vs waveplate angle...")
                 for material, data_points in scatter_data.items():
                     if len(data_points) > 0:
                         color = material_colors[material]
@@ -995,6 +1005,7 @@ class AnalysisThread(QThread):
                     spine.set_color('black')
                 
                 # Create shot time vs material box plot for Figure 5
+                self.progress_signal.emit("Creating Figure 5: Shot time vs material...")
                 fig5, ax5 = plt.subplots(1, 1, figsize=(14, 10))
                 
                 # Define material order for x-axis
@@ -1012,6 +1023,9 @@ class AnalysisThread(QThread):
                         box_data.append(shot_times)
                         box_labels.append(f'{material} (n={len(shot_times)})')
                         box_colors.append(material_colors[material])
+                        print(f"[DEBUG] Box plot data for {material}: {len(shot_times)} points, range: {min(shot_times):.6f} - {max(shot_times):.6f} s")
+                    else:
+                        print(f"[DEBUG] No shot time data for material: {material}")
                 
                 # Create box plot with outlier handling
                 if box_data:
@@ -1044,6 +1058,7 @@ class AnalysisThread(QThread):
                     spine.set_color('black')
                 
                 # Create PDV power vs material scatter plot for Figure 6
+                self.progress_signal.emit("Creating Figure 6: PDV power vs material...")
                 fig6, ax6 = plt.subplots(1, 1, figsize=(14, 10))
                 
                 # Define material order for x-axis (same as shot time plot)
@@ -1090,9 +1105,11 @@ class AnalysisThread(QThread):
                     spine.set_color('black')
                 
                 # Adjust layout and save all six figures (PNG and PDF)
+                self.progress_signal.emit("Saving all figures (PNG and PDF formats)...")
                 fig1.tight_layout()
                 out_path1_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
                 out_path1_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.pdf')
+                self.progress_signal.emit("Saving Figure 1...")
                 fig1.savefig(out_path1_png, dpi=300, bbox_inches='tight')
                 fig1.savefig(out_path1_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig1)
@@ -1100,6 +1117,7 @@ class AnalysisThread(QThread):
                 fig2.tight_layout()
                 out_path2_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
                 out_path2_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.pdf')
+                self.progress_signal.emit("Saving Figure 2...")
                 fig2.savefig(out_path2_png, dpi=300, bbox_inches='tight')
                 fig2.savefig(out_path2_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig2)
@@ -1107,6 +1125,7 @@ class AnalysisThread(QThread):
                 fig3.tight_layout()
                 out_path3_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.png')
                 out_path3_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.pdf')
+                self.progress_signal.emit("Saving Figure 3...")
                 fig3.savefig(out_path3_png, dpi=300, bbox_inches='tight')
                 fig3.savefig(out_path3_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig3)
@@ -1114,6 +1133,7 @@ class AnalysisThread(QThread):
                 fig4.tight_layout()
                 out_path4_png = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.png')
                 out_path4_pdf = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.pdf')
+                self.progress_signal.emit("Saving Figure 4...")
                 fig4.savefig(out_path4_png, dpi=300, bbox_inches='tight')
                 fig4.savefig(out_path4_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig4)
@@ -1121,6 +1141,7 @@ class AnalysisThread(QThread):
                 fig5.tight_layout()
                 out_path5_png = os.path.join(spade_output_dir, 'shot_time_vs_material.png')
                 out_path5_pdf = os.path.join(spade_output_dir, 'shot_time_vs_material.pdf')
+                self.progress_signal.emit("Saving Figure 5...")
                 fig5.savefig(out_path5_png, dpi=300, bbox_inches='tight')
                 fig5.savefig(out_path5_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig5)
@@ -1128,11 +1149,13 @@ class AnalysisThread(QThread):
                 fig6.tight_layout()
                 out_path6_png = os.path.join(spade_output_dir, 'pdv_power_vs_material.png')
                 out_path6_pdf = os.path.join(spade_output_dir, 'pdv_power_vs_material.pdf')
+                self.progress_signal.emit("Saving Figure 6...")
                 fig6.savefig(out_path6_png, dpi=300, bbox_inches='tight')
                 fig6.savefig(out_path6_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig6)
                 
                 # Report combined plotting summary
+                self.progress_signal.emit("Enhanced combined plotting completed successfully!")
                 self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
                 self.progress_signal.emit(f"Successfully plotted: {len(plotted_files)} files")
                 self.progress_signal.emit(f"Failed to plot: {len(failed_plot_files)} files")
