@@ -978,12 +978,6 @@ class AnalysisThread(QThread):
                         # Plot scatter points
                         ax4.scatter(waveplate_angles, max_velocities, color=color, s=100, alpha=0.7, 
                                    label=f'{material} (n={len(data_points)})')
-                        
-                        # Add file name annotations for some points (avoid overcrowding)
-                        if len(data_points) <= 10:  # Only annotate if few points
-                            for i, (angle, velocity, file_name) in enumerate(data_points):
-                                ax4.annotate(file_name, (angle, velocity), xytext=(5, 5), 
-                                           textcoords='offset points', fontsize=10, alpha=0.8)
                 
                 # Configure scatter plot
                 ax4.set_xlabel('Wave Plate Angle (degrees)', fontsize=20)
@@ -1038,6 +1032,7 @@ class AnalysisThread(QThread):
                 ax5.set_xlabel('Material', fontsize=20)
                 ax5.set_ylabel('Shot Time (s)', fontsize=20)
                 ax5.set_title('Shot Time vs Material (Box Plot with Outliers)', fontsize=20, fontweight='bold')
+                ax5.set_ylim(0, 20)  # Limit y-axis to 0-20 seconds
                 ax5.grid(True, linestyle='--', alpha=0.5)
                 ax5.tick_params(axis='both', which='major', labelsize=16)
                 ax5.tick_params(axis='both', which='minor', labelsize=14)
