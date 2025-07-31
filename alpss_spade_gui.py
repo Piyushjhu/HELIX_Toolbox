@@ -642,16 +642,13 @@ class AnalysisThread(QThread):
                                 shot_time_idx = above_threshold[0]
                                 shot_time = time_shifted[shot_time_idx]
                                 
-                                # Convert to ns if needed
-                                if np.nanmax(time_shifted) < 1000:  # If time is in ns already
-                                    shot_time_ns = shot_time
-                                else:
-                                    shot_time_ns = shot_time / 1e9  # Convert to ns
+                                # Convert to seconds (time data is in seconds)
+                                shot_time_s = shot_time
                                 
                                 # Collect data for shot time vs material plot
                                 if material not in shot_time_data:
                                     shot_time_data[material] = []
-                                shot_time_data[material].append((shot_time_ns, base_name))
+                                shot_time_data[material].append((shot_time_s, base_name))
                         
                         # Calculate PDV return power (average power in the signal)
                         if len(velocity_filtered) > 0:
@@ -1003,49 +1000,50 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Create shot time vs material scatter plot for Figure 5
+                # Create shot time vs material box plot for Figure 5
                 fig5, ax5 = plt.subplots(1, 1, figsize=(14, 10))
                 
                 # Define material order for x-axis
                 material_order = ['Al', 'Ti', 'Cu']
                 material_positions = {material: i for i, material in enumerate(material_order)}
                 
-                for material, data_points in shot_time_data.items():
-                    if len(data_points) > 0 and material in material_positions:
-                        color = material_colors[material]
-                        shot_times = [point[0] for point in data_points]
-                        file_names = [point[1] for point in data_points]
-                        
-                        # Use material position for x-axis
-                        x_pos = material_positions[material]
-                        x_positions = [x_pos] * len(shot_times)
-                        
-                        # Plot scatter points
-                        ax5.scatter(x_positions, shot_times, color=color, s=100, alpha=0.7, 
-                                   label=f'{material} (n={len(data_points)})')
-                        
-                        # Add file name annotations for some points (avoid overcrowding)
-                        if len(data_points) <= 10:  # Only annotate if few points
-                            for i, (shot_time, file_name) in enumerate(data_points):
-                                ax5.annotate(file_name, (x_pos, shot_time), xytext=(5, 5), 
-                                           textcoords='offset points', fontsize=10, alpha=0.8)
+                # Prepare data for box plot
+                box_data = []
+                box_labels = []
+                box_colors = []
                 
-                # Configure shot time vs material scatter plot
+                for material in material_order:
+                    if material in shot_time_data and len(shot_time_data[material]) > 0:
+                        shot_times = [point[0] for point in shot_time_data[material]]
+                        box_data.append(shot_times)
+                        box_labels.append(f'{material} (n={len(shot_times)})')
+                        box_colors.append(material_colors[material])
+                
+                # Create box plot with outlier handling
+                if box_data:
+                    bp = ax5.boxplot(box_data, labels=box_labels, patch_artist=True, 
+                                    showfliers=True, flierprops={'marker': 'o', 'markersize': 6, 'markerfacecolor': 'red'})
+                    
+                    # Color the boxes
+                    for patch, color in zip(bp['boxes'], box_colors):
+                        patch.set_facecolor(color)
+                        patch.set_alpha(0.7)
+                    
+                    # Color the medians
+                    for median in bp['medians']:
+                        median.set_color('black')
+                        median.set_linewidth(2)
+                
+                # Configure shot time vs material box plot
                 ax5.set_xlabel('Material', fontsize=20)
-                ax5.set_ylabel('Shot Time (ns)', fontsize=20)
-                ax5.set_title('Shot Time vs Material', fontsize=20, fontweight='bold')
-                ax5.set_ylim(0, 20)  # Limit y-axis to 0-20 ns
-                ax5.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
+                ax5.set_ylabel('Shot Time (s)', fontsize=20)
+                ax5.set_title('Shot Time vs Material (Box Plot with Outliers)', fontsize=20, fontweight='bold')
                 ax5.grid(True, linestyle='--', alpha=0.5)
                 ax5.tick_params(axis='both', which='major', labelsize=16)
                 ax5.tick_params(axis='both', which='minor', labelsize=14)
                 ax5.minorticks_on()
                 
-                # Set x-axis ticks to material names
-                ax5.set_xticks(range(len(material_order)))
-                ax5.set_xticklabels(material_order)
-                
-                # Add bounding box to shot time scatter plot
+                # Add bounding box to shot time box plot
                 for spine in ax5.spines.values():
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
