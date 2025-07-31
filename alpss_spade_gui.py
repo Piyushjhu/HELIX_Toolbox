@@ -1179,18 +1179,22 @@ class AnalysisThread(QThread):
                 # Adjust layout and save all six figures (with speed optimization)
                 optimize_saving = self.spade_params.get('optimize_saving', True)
                 save_pdf_only = self.spade_params.get('save_pdf_only', False)
+                ultra_fast_mode = self.spade_params.get('ultra_fast_mode', False)  # Skip PNG entirely for speed
                 
                 # Check matplotlib version for optimize parameter support
                 import matplotlib
                 matplotlib_version = matplotlib.__version__
                 use_optimize = optimize_saving and matplotlib_version >= '3.3.0'
                 
-                if optimize_saving:
-                    png_dpi = 150
-                    self.progress_signal.emit("Saving all figures (optimized for speed - 150 DPI)...")
+                if ultra_fast_mode:
+                    png_dpi = 72  # Very low DPI for maximum speed
+                    self.progress_signal.emit("Saving all figures (ultra-fast mode - 72 DPI)...")
+                elif optimize_saving:
+                    png_dpi = 100  # Reduced from 150 for much faster saving
+                    self.progress_signal.emit("Saving all figures (optimized for speed - 100 DPI)...")
                 else:
-                    png_dpi = 300
-                    self.progress_signal.emit("Saving all figures (high quality - 300 DPI)...")
+                    png_dpi = 200  # Reduced from 300 for better balance
+                    self.progress_signal.emit("Saving all figures (high quality - 200 DPI)...")
                 
                 fig1.tight_layout()
                 out_path1_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
@@ -2551,15 +2555,20 @@ class ALPSSSPADEGUI(QMainWindow):
         combined_plot_layout.addWidget(self.plot_pdv_power_vs_material, 1, 2)
         
         # Speed optimization options
-        self.optimize_saving = QCheckBox("Optimize for Speed (150 DPI PNG)")
+        self.optimize_saving = QCheckBox("Optimize for Speed (100 DPI PNG)")
         self.optimize_saving.setChecked(True)
-        self.optimize_saving.setToolTip("Reduce PNG DPI from 300 to 150 for faster saving")
+        self.optimize_saving.setToolTip("Reduce PNG DPI from 200 to 100 for faster saving")
         combined_plot_layout.addWidget(self.optimize_saving, 2, 0)
+        
+        self.ultra_fast_mode = QCheckBox("Ultra-Fast Mode (72 DPI PNG)")
+        self.ultra_fast_mode.setChecked(False)
+        self.ultra_fast_mode.setToolTip("Use very low DPI (72) for maximum speed")
+        combined_plot_layout.addWidget(self.ultra_fast_mode, 2, 1)
         
         self.save_pdf_only = QCheckBox("Save PDF Only (Skip PNG)")
         self.save_pdf_only.setChecked(False)
         self.save_pdf_only.setToolTip("Save only PDF files for maximum speed")
-        combined_plot_layout.addWidget(self.save_pdf_only, 2, 1)
+        combined_plot_layout.addWidget(self.save_pdf_only, 2, 2)
         
         layout.addWidget(combined_plot_group)
         
@@ -3425,6 +3434,7 @@ Output Files:
             'plot_pdv_power_vs_material': self.plot_pdv_power_vs_material.isChecked(),
             # Speed optimization options
             'optimize_saving': self.optimize_saving.isChecked(),
+            'ultra_fast_mode': self.ultra_fast_mode.isChecked(),
             'save_pdf_only': self.save_pdf_only.isChecked(),
         }
         
