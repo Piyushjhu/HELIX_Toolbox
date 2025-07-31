@@ -1094,35 +1094,47 @@ class AnalysisThread(QThread):
                     spine.set_linewidth(3.0)
                     spine.set_color('black')
                 
-                # Adjust layout and save all six figures
+                # Adjust layout and save all six figures (PNG and PDF)
                 fig1.tight_layout()
-                out_path1 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
-                fig1.savefig(out_path1, dpi=300, bbox_inches='tight')
+                out_path1_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
+                out_path1_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.pdf')
+                fig1.savefig(out_path1_png, dpi=300, bbox_inches='tight')
+                fig1.savefig(out_path1_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig1)
                 
                 fig2.tight_layout()
-                out_path2 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
-                fig2.savefig(out_path2, dpi=300, bbox_inches='tight')
+                out_path2_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
+                out_path2_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.pdf')
+                fig2.savefig(out_path2_png, dpi=300, bbox_inches='tight')
+                fig2.savefig(out_path2_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig2)
                 
                 fig3.tight_layout()
-                out_path3 = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.png')
-                fig3.savefig(out_path3, dpi=300, bbox_inches='tight')
+                out_path3_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.png')
+                out_path3_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.pdf')
+                fig3.savefig(out_path3_png, dpi=300, bbox_inches='tight')
+                fig3.savefig(out_path3_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig3)
                 
                 fig4.tight_layout()
-                out_path4 = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.png')
-                fig4.savefig(out_path4, dpi=300, bbox_inches='tight')
+                out_path4_png = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.png')
+                out_path4_pdf = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.pdf')
+                fig4.savefig(out_path4_png, dpi=300, bbox_inches='tight')
+                fig4.savefig(out_path4_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig4)
                 
                 fig5.tight_layout()
-                out_path5 = os.path.join(spade_output_dir, 'shot_time_vs_material.png')
-                fig5.savefig(out_path5, dpi=300, bbox_inches='tight')
+                out_path5_png = os.path.join(spade_output_dir, 'shot_time_vs_material.png')
+                out_path5_pdf = os.path.join(spade_output_dir, 'shot_time_vs_material.pdf')
+                fig5.savefig(out_path5_png, dpi=300, bbox_inches='tight')
+                fig5.savefig(out_path5_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig5)
                 
                 fig6.tight_layout()
-                out_path6 = os.path.join(spade_output_dir, 'pdv_power_vs_material.png')
-                fig6.savefig(out_path6, dpi=300, bbox_inches='tight')
+                out_path6_png = os.path.join(spade_output_dir, 'pdv_power_vs_material.png')
+                out_path6_pdf = os.path.join(spade_output_dir, 'pdv_power_vs_material.pdf')
+                fig6.savefig(out_path6_png, dpi=300, bbox_inches='tight')
+                fig6.savefig(out_path6_pdf, format='pdf', bbox_inches='tight')
                 plt.close(fig6)
                 
                 # Report combined plotting summary
@@ -1137,12 +1149,12 @@ class AnalysisThread(QThread):
                     for failed_file, error_msg in failed_plot_files:
                         self.progress_signal.emit(f"❌ {failed_file}: {error_msg}")
                 
-                self.progress_signal.emit(f"Figure 1 (with individual file legends): all_smoothed_velocity_traces_with_legends.png")
-                self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png")
-                self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png")
-                self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png")
-                self.progress_signal.emit(f"Figure 5 (shot time vs material): shot_time_vs_material.png")
-                self.progress_signal.emit(f"Figure 6 (PDV power vs material): pdv_power_vs_material.png")
+                self.progress_signal.emit(f"Figure 1 (with individual file legends): all_smoothed_velocity_traces_with_legends.png/.pdf")
+                self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png/.pdf")
+                self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png/.pdf")
+                self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png/.pdf")
+                self.progress_signal.emit(f"Figure 5 (shot time vs material): shot_time_vs_material.png/.pdf")
+                self.progress_signal.emit(f"Figure 6 (PDV power vs material): pdv_power_vs_material.png/.pdf")
                 # --- END ENHANCED PLOT ---
 
                 # 4. Spall Strength vs. Strain Rate and Shock Stress
