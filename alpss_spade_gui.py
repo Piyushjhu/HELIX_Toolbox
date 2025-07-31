@@ -843,7 +843,7 @@ class AnalysisThread(QThread):
                             ax3_1.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
                 
                 # Add legend to material spread subplot
-                ax3_1.legend(fontsize=16, loc='best')
+                ax3_1.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
                 
                 # Waveplate angle spread plot
                 for waveplate_angle, traces in waveplate_data.items():
@@ -896,7 +896,7 @@ class AnalysisThread(QThread):
                             ax3_2.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
                 
                 # Add legend to waveplate spread subplot
-                ax3_2.legend(fontsize=16, loc='best')
+                ax3_2.legend(fontsize=16, loc='best', title='Wave Plate Angle', title_fontsize=18)
                 
                 # Adjust layout and save all three figures
                 fig1.tight_layout()
