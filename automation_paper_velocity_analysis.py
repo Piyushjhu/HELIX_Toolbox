@@ -16,11 +16,19 @@ Date: 2024
 
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
 import os
 import sys
 from pathlib import Path
+
+# Try to import seaborn, but provide fallback if not available
+try:
+    import seaborn as sns
+    SEABORN_AVAILABLE = True
+    print("Seaborn imported successfully")
+except ImportError:
+    SEABORN_AVAILABLE = False
+    print("Warning: seaborn not available, using matplotlib fallback")
 
 def load_violin_plot_data(csv_path):
     """
@@ -58,7 +66,11 @@ def create_violin_plots(df, output_dir):
     """
     # Set up the plotting style
     plt.style.use('default')
-    sns.set_palette("Set2")
+    if SEABORN_AVAILABLE:
+        sns.set_palette("Set2")
+    else:
+        # Use matplotlib default colors
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -73,19 +85,32 @@ def create_violin_plots(df, output_dir):
         # Create violin plot
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
-        # Create violin plot with seaborn
-        sns.violinplot(data=angle_data, x='waveplate_angle_degrees', y='max_velocity_ms', 
-                      hue='material', palette="Set2", cut=0, inner=None, split=False, 
-                      linewidth=1, dodge=False, saturation=0.5, ax=ax)
+        if SEABORN_AVAILABLE:
+            # Create violin plot with seaborn
+            sns.violinplot(data=angle_data, x='waveplate_angle_degrees', y='max_velocity_ms', 
+                          hue='material', palette="Set2", cut=0, inner=None, split=False, 
+                          linewidth=1, dodge=False, saturation=0.5, ax=ax)
+            
+            # Add swarm plot overlay
+            sns.swarmplot(data=angle_data, x='waveplate_angle_degrees', y='max_velocity_ms', 
+                         hue='material', palette="Set2", alpha=0.5, size=4, dodge=False,
+                         edgecolor='k', linewidth=1, ax=ax)
+        else:
+            # Fallback: create scatter plot with different markers for materials
+            materials = angle_data['material'].unique()
+            for i, material in enumerate(materials):
+                material_data = angle_data[angle_data['material'] == material]
+                ax.scatter(material_data['waveplate_angle_degrees'], material_data['max_velocity_ms'], 
+                          label=material, alpha=0.7, s=50, color=colors[i % len(colors)])
         
-        # Add swarm plot overlay
-        sns.swarmplot(data=angle_data, x='waveplate_angle_degrees', y='max_velocity_ms', 
-                     hue='material', palette="Set2", alpha=0.5, size=4, dodge=False,
-                     edgecolor='k', linewidth=1, ax=ax)
-        
-        # Remove duplicate legend caused by swarm
-        handles, labels = ax.get_legend_handles_labels()
-        ax.legend(handles[:3], labels[:3], title="Material", fontsize=14, title_fontsize=16)
+        # Handle legend
+        if SEABORN_AVAILABLE:
+            # Remove duplicate legend caused by swarm
+            handles, labels = ax.get_legend_handles_labels()
+            ax.legend(handles[:3], labels[:3], title="Material", fontsize=14, title_fontsize=16)
+        else:
+            # Simple legend for scatter plot
+            ax.legend(title="Material", fontsize=14, title_fontsize=16)
         
         # Configure plot
         ax.set_xlabel("Wave Plate Angle (degrees)", fontsize=16)
@@ -110,18 +135,29 @@ def create_violin_plots(df, output_dir):
         # Create box plot version
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
-        # Create box plot
-        sns.boxplot(data=angle_data, x='waveplate_angle_degrees', y='max_velocity_ms', 
-                   hue='material', palette="Set2", ax=ax)
-        
-        # Add swarm plot overlay
-        sns.swarmplot(data=angle_data, x='waveplate_angle_degrees', y='max_velocity_ms', 
-                     hue='material', palette="Set2", alpha=0.5, size=4, dodge=False,
-                     edgecolor='k', linewidth=1, ax=ax)
-        
-        # Remove duplicate legend
-        handles, labels = ax.get_legend_handles_labels()
-        ax.legend(handles[:3], labels[:3], title="Material", fontsize=14, title_fontsize=16)
+        if SEABORN_AVAILABLE:
+            # Create box plot
+            sns.boxplot(data=angle_data, x='waveplate_angle_degrees', y='max_velocity_ms', 
+                       hue='material', palette="Set2", ax=ax)
+            
+            # Add swarm plot overlay
+            sns.swarmplot(data=angle_data, x='waveplate_angle_degrees', y='max_velocity_ms', 
+                         hue='material', palette="Set2", alpha=0.5, size=4, dodge=False,
+                         edgecolor='k', linewidth=1, ax=ax)
+            
+            # Remove duplicate legend
+            handles, labels = ax.get_legend_handles_labels()
+            ax.legend(handles[:3], labels[:3], title="Material", fontsize=14, title_fontsize=16)
+        else:
+            # Fallback: create scatter plot with different markers for materials
+            materials = angle_data['material'].unique()
+            for i, material in enumerate(materials):
+                material_data = angle_data[angle_data['material'] == material]
+                ax.scatter(material_data['waveplate_angle_degrees'], material_data['max_velocity_ms'], 
+                          label=material, alpha=0.7, s=50, color=colors[i % len(colors)], marker='s')
+            
+            # Simple legend for scatter plot
+            ax.legend(title="Material", fontsize=14, title_fontsize=16)
         
         # Configure plot
         ax.set_xlabel("Wave Plate Angle (degrees)", fontsize=16)
