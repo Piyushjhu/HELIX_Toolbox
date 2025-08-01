@@ -660,15 +660,29 @@ class AnalysisThread(QThread):
                             print(f"[INFO] No shot time data available for {base_name}")
                         
                         # Calculate PDV return power (average power in the signal)
+                        pdv_power_dbm = None
                         if len(velocity_filtered) > 0:
                             # Convert velocity to power (assuming velocity is proportional to power)
                             # This is a simplified calculation - in real PDV, power would come from raw data
                             velocity_power = np.abs(velocity_filtered)
-                            # Convert to dBm (assuming 0 dBm = 1 mW reference)
-                            # This is a placeholder calculation - actual PDV power would need raw data
-                            pdv_power_dbm = 10 * np.log10(np.mean(velocity_power) + 1e-10)  # Add small offset to avoid log(0)
+                            mean_power = np.mean(velocity_power)
                             
-                            # Collect data for PDV power vs material plot
+                            # Only calculate if we have meaningful data
+                            if mean_power > 1e-10:  # Avoid very small values that give negative dBm
+                                # Convert to dBm (assuming 0 dBm = 1 mW reference)
+                                # This is a placeholder calculation - actual PDV power would need raw data
+                                pdv_power_dbm = 10 * np.log10(mean_power)
+                                
+                                # Ensure positive values (typical PDV return power is positive)
+                                if pdv_power_dbm < 0:
+                                    pdv_power_dbm = abs(pdv_power_dbm)  # Make negative values positive
+                                
+                                print(f"[DEBUG] PDV power for {base_name} ({material}): {pdv_power_dbm:.2f} dBm")
+                            else:
+                                print(f"[DEBUG] PDV power for {base_name} ({material}): too small to calculate")
+                        
+                        # Collect data for PDV power vs material plot (only if we have valid data)
+                        if pdv_power_dbm is not None:
                             if material not in pdv_power_data:
                                 pdv_power_data[material] = []
                             pdv_power_data[material].append((pdv_power_dbm, base_name))
@@ -1040,12 +1054,18 @@ class AnalysisThread(QThread):
                                         except (ValueError, TypeError):
                                             continue
                             
-                            # Get PDV power from existing data
+                            # Get PDV power from existing data (this should match the calculation above)
+                            pdv_power_dbm = None  # Reset to None for this file
                             if material in pdv_power_data:
                                 for pdv_power, pdv_file_name in pdv_power_data[material]:
                                     if pdv_file_name == file_name:
                                         pdv_power_dbm = pdv_power
+                                        print(f"[DEBUG] Found PDV power for {file_name}: {pdv_power_dbm:.2f} dBm")
                                         break
+                                else:
+                                    print(f"[DEBUG] No PDV power data found for {file_name}")
+                            else:
+                                print(f"[DEBUG] No PDV power data for material {material}")
                             
                             csv_data.append({
                                 'file_name': file_name,
