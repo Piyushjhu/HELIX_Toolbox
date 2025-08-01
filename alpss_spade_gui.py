@@ -668,15 +668,12 @@ class AnalysisThread(QThread):
                             mean_power = np.mean(velocity_power)
                             
                             # Only calculate if we have meaningful data
-                            if mean_power > 1e-10:  # Avoid very small values that give negative dBm
+                            if mean_power > 1e-10:  # Avoid very small values that give log(0) errors
                                 # Convert to dBm (assuming 0 dBm = 1 mW reference)
                                 # This is a placeholder calculation - actual PDV power would need raw data
                                 pdv_power_dbm = 10 * np.log10(mean_power)
                                 
-                                # Ensure positive values (typical PDV return power is positive)
-                                if pdv_power_dbm < 0:
-                                    pdv_power_dbm = abs(pdv_power_dbm)  # Make negative values positive
-                                
+                                # Preserve original sign (can be positive, negative, or zero)
                                 print(f"[DEBUG] PDV power for {base_name} ({material}): {pdv_power_dbm:.2f} dBm")
                             else:
                                 print(f"[DEBUG] PDV power for {base_name} ({material}): too small to calculate")
