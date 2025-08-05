@@ -3,36 +3,37 @@
 ALPSS + SPADE Combined GUI
 A comprehensive GUI for running ALPSS analysis followed by SPADE spall analysis
 """
-# %%
 import sys
 import os
 import glob
 import subprocess
 import threading
 import time
+import json
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
 # Excel support will be checked dynamically when needed
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, 
-                             QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
-                             QLineEdit, QPushButton, QTextEdit, QProgressBar,
-                             QFileDialog, QCheckBox, QComboBox, QSpinBox, 
-                             QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
-                             QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
+    QLineEdit, QPushButton, QTextEdit, QProgressBar,
+    QFileDialog, QCheckBox, QComboBox, QSpinBox,
+    QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
+    QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QFont, QValidator
 from SPADE.spall_analysis_release.spall_analysis import plot_combined_mean_traces, plot_spall_vs_strain_rate, plot_spall_vs_shock_stress
 
+
 class ScientificSpinBox(QDoubleSpinBox):
     """Custom spin box that accepts scientific notation input"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDecimals(15)  # Allow high precision
-        
+
     def textFromValue(self, value):
         """Convert value to scientific notation string with high precision"""
         if abs(value) >= 1e6 or (abs(value) < 1e-3 and value != 0):
@@ -41,7 +42,7 @@ class ScientificSpinBox(QDoubleSpinBox):
         else:
             # For regular numbers, preserve more significant figures
             return f"{value:.9g}"
-            
+
     def valueFromText(self, text):
         """Convert scientific notation string to value"""
         try:
@@ -51,7 +52,7 @@ class ScientificSpinBox(QDoubleSpinBox):
             return float(text)
         except ValueError:
             return 0.0
-            
+
     def validate(self, text, pos):
         """Validate scientific notation input"""
         try:
@@ -60,7 +61,8 @@ class ScientificSpinBox(QDoubleSpinBox):
             # Allow partial input during typing
             if text.endswith('e') or text.endswith('E'):
                 return (QValidator.Intermediate, text, pos)
-            if text.endswith('e+') or text.endswith('E+') or text.endswith('e-') or text.endswith('E-'):
+            if text.endswith(
+                'e+') or text.endswith('E+') or text.endswith('e-') or text.endswith('E-'):
                 return (QValidator.Intermediate, text, pos)
             # Try to parse the value
             text_clean = text.strip().replace('E', 'e').replace('E+', 'e+').replace('E-', 'e-')
@@ -69,12 +71,22 @@ class ScientificSpinBox(QDoubleSpinBox):
         except ValueError:
             return (QValidator.Invalid, text, pos)
 
+
 class AnalysisThread(QThread):
     """Thread for running ALPSS and SPADE analysis"""
     progress_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
-    
-    def __init__(self, alpss_params, spade_params, input_files, output_dir, param_data=None, spade_auto_mode=True, spade_input_files=None, analysis_mode="both"):
+
+    def __init__(
+    self,
+    alpss_params,
+    spade_params,
+    input_files,
+    output_dir,
+    param_data=None,
+    spade_auto_mode=True,
+    spade_input_files=None,
+     analysis_mode="both"):
         super().__init__()
         self.alpss_params = alpss_params
         self.spade_params = spade_params
@@ -84,406 +96,873 @@ class AnalysisThread(QThread):
         self.spade_auto_mode = spade_auto_mode
         self.spade_input_files = spade_input_files
         self.analysis_mode = analysis_mode  # "alpss_only", "spade_only", or "both"
-        
+
     def run(self):
         try:
+            # Add memory management
+            import gc
+            gc.collect()  # Force garbage collection before starting
+            
             # Start timing the entire analysis
             self.start_time = time.time()
-            
+
             # Import ALPSS and SPADE modules
             sys.path.append('ALPSS')
             sys.path.append('SPADE/spall_analysis_release')
-            
+
             from alpss_main import alpss_main
             from spall_analysis import process_velocity_files
-            
+
             # Create output directory
             os.makedirs(self.output_dir, exist_ok=True)
-            
+
             # Initialize successful_files list for both ALPSS and SPADE modes
             successful_files = []
-            
+
             # Process ALPSS files if provided and not SPADE-only mode
             if self.analysis_mode != "spade_only" and self.input_files:
                 total_alpss_time = 0
-                
+
                 # Process all files
                 files_to_process = self.input_files
                 failed_files = []
-                
+
                 for i, input_file in enumerate(files_to_process):
-                    self.progress_signal.emit(f"ALPSS Processing file {i+1}/{len(files_to_process)}: {os.path.basename(input_file)}")
-                    
+                    self.progress_signal.emit(
+                        f"ALPSS Processing file {i+1}/{len(files_to_process)}: {os.path.basename(input_file)}")
+
                     # Start timing for this file
                     file_start_time = time.time()
-                    
+
                     # Run ALPSS with error handling
+                    # Memory management before ALPSS
+                    gc.collect()
                     self.progress_signal.emit("Running ALPSS analysis...")
-                    
+
                     # Update ALPSS parameters with current file
                     alpss_params = self.alpss_params.copy()
                     alpss_params['filename'] = os.path.basename(input_file)
                     alpss_params['exp_data_dir'] = os.path.dirname(input_file)
                     alpss_params['out_files_dir'] = self.output_dir
-                    
+
                     # Add experiment info if parameter data is available
                     if self.param_data:
-                        base_name = os.path.splitext(os.path.basename(input_file))[0]
+                        base_name = os.path.splitext(
+                            os.path.basename(input_file))[0]
                         exp_info = self.param_data.get(base_name, {})
                         if exp_info:
                             alpss_params['experiment_info'] = exp_info
-                            self.progress_signal.emit(f"Linked to experiment: {exp_info.get('exp_id', 'Unknown')} - {exp_info.get('sample_material', 'Unknown')}")
+                            self.progress_signal.emit(
+                                f"Linked to experiment: {exp_info.get('exp_id', 'Unknown')} - {exp_info.get('sample_material', 'Unknown')}")
                         else:
-                            self.progress_signal.emit(f"No experiment info found for {base_name}")
+                            self.progress_signal.emit(
+                                f"No experiment info found for {base_name}")
                             alpss_params['experiment_info'] = {}
                     else:
                         alpss_params['experiment_info'] = {}
-                    
+
                     # Pass image selection parameters to ALPSS
-                    alpss_params['save_velocity_plot'] = self.alpss_params.get('save_velocity_plot', True)
-                    alpss_params['save_stft_plot'] = self.alpss_params.get('save_stft_plot', True)
-                    alpss_params['save_filtered_plot'] = self.alpss_params.get('save_filtered_plot', True)
-                    alpss_params['save_phase_plot'] = self.alpss_params.get('save_phase_plot', True)
-                    alpss_params['save_amplitude_plot'] = self.alpss_params.get('save_amplitude_plot', True)
-                    alpss_params['save_peak_detection_plot'] = self.alpss_params.get('save_peak_detection_plot', True)
-                    alpss_params['save_uncertainty_plot'] = self.alpss_params.get('save_uncertainty_plot', True)
-                    
+                    alpss_params['save_velocity_plot'] = self.alpss_params.get(
+                        'save_velocity_plot', True)
+                    alpss_params['save_stft_plot'] = self.alpss_params.get(
+                        'save_stft_plot', True)
+                    alpss_params['save_filtered_plot'] = self.alpss_params.get(
+                        'save_filtered_plot', True)
+                    alpss_params['save_phase_plot'] = self.alpss_params.get(
+                        'save_phase_plot', True)
+                    alpss_params['save_amplitude_plot'] = self.alpss_params.get(
+                        'save_amplitude_plot', True)
+                    alpss_params['save_peak_detection_plot'] = self.alpss_params.get(
+                        'save_peak_detection_plot', True)
+                    alpss_params['save_uncertainty_plot'] = self.alpss_params.get(
+                        'save_uncertainty_plot', True)
+
                     try:
                         alpss_main(**alpss_params)
-                        
+
                         # Check if required files were generated
-                        base_name = os.path.splitext(os.path.basename(input_file))[0]
-                        velocity_file = os.path.join(self.output_dir, f"{base_name}--velocity--smooth.csv")
-                        results_file = os.path.join(self.output_dir, f"{base_name}--results.csv")
-                        
-                        if os.path.exists(velocity_file) and os.path.exists(results_file):
+                        base_name = os.path.splitext(
+                            os.path.basename(input_file))[0]
+                        velocity_file = os.path.join(
+                            self.output_dir, f"{base_name}--velocity--smooth.csv")
+                        results_file = os.path.join(
+                            self.output_dir, f"{base_name}--results.csv")
+
+                        if os.path.exists(
+                            velocity_file) and os.path.exists(results_file):
                             successful_files.append(input_file)
-                            self.progress_signal.emit(f"✅ Successfully processed: {os.path.basename(input_file)}")
+                            self.progress_signal.emit(
+                                f"✅ Successfully processed: {os.path.basename(input_file)}")
                         else:
-                            failed_files.append((input_file, "Missing required output files"))
-                            self.progress_signal.emit(f"❌ Failed to generate required files: {os.path.basename(input_file)}")
-                            
+                            failed_files.append(
+                                (input_file, "Missing required output files"))
+                            self.progress_signal.emit(
+                                f"❌ Failed to generate required files: {os.path.basename(input_file)}")
+
                     except Exception as e:
                         failed_files.append((input_file, str(e)))
-                        self.progress_signal.emit(f"❌ ALPSS processing failed for {os.path.basename(input_file)}: {str(e)}")
+                        self.progress_signal.emit(
+                            f"❌ ALPSS processing failed for {os.path.basename(input_file)}: {str(e)}")
                         # Continue with next file instead of stopping
                         continue
-                    
+
                     # Calculate timing for this file
                     file_end_time = time.time()
                     file_time = file_end_time - file_start_time
                     total_alpss_time += file_time
-                    
-                    self.progress_signal.emit(f"Completed ALPSS analysis for {os.path.basename(input_file)} in {file_time:.2f} seconds")
-                
+
+                    self.progress_signal.emit(
+                        f"Completed ALPSS analysis for {os.path.basename(input_file)} in {file_time:.2f} seconds")
+
                 # Report ALPSS processing summary
                 self.progress_signal.emit(f"=== ALPSS Processing Summary ===")
-                self.progress_signal.emit(f"Total files: {len(files_to_process)}")
-                self.progress_signal.emit(f"Successfully processed: {len(successful_files)}")
+                self.progress_signal.emit(
+                    f"Total files: {len(files_to_process)}")
+                self.progress_signal.emit(
+                    f"Successfully processed: {len(successful_files)}")
                 self.progress_signal.emit(f"Failed: {len(failed_files)}")
-                
+
                 if failed_files:
                     self.progress_signal.emit(f"=== Failed Files ===")
                     for failed_file, error_msg in failed_files:
-                        self.progress_signal.emit(f"❌ {os.path.basename(failed_file)}: {error_msg}")
-                
+                        self.progress_signal.emit(
+                            f"❌ {os.path.basename(failed_file)}: {error_msg}")
+
                 # Report total ALPSS timing
-                avg_time = total_alpss_time / len(successful_files) if successful_files else 0
-                self.progress_signal.emit(f"ALPSS Analysis Summary: {len(successful_files)} files processed in {total_alpss_time:.2f} seconds (avg: {avg_time:.2f}s per file)")
-                
-                # Report total ALPSS timing
-                avg_time = total_alpss_time / len(self.input_files) if self.input_files else 0
-                self.progress_signal.emit(f"ALPSS Analysis Summary: {len(self.input_files)} files processed in {total_alpss_time:.2f} seconds (avg: {avg_time:.2f}s per file)")
-            
+                avg_time = total_alpss_time / \
+                    len(successful_files) if successful_files else 0
+                self.progress_signal.emit(
+                    f"ALPSS Analysis Summary: {len(successful_files)} files processed in {total_alpss_time:.2f} seconds (avg: {avg_time:.2f}s per file)")
+
             # Run SPADE analysis if not ALPSS-only mode
             if self.analysis_mode != "alpss_only":
                 spade_start_time = time.time()
                 if self.spade_auto_mode:
                     # Automatic mode: use ALPSS output
                     if successful_files:  # Use successful_files instead of self.input_files
-                        self.progress_signal.emit("Running SPADE analysis on ALPSS outputs...")
-                        
+                        self.progress_signal.emit(
+                            "Running SPADE analysis on ALPSS outputs...")
+
                         # Find all velocity files generated by ALPSS
                         vel_files = []
                         missing_spade_files = []
                         for input_file in successful_files:  # Only check successful files
-                            base_name = os.path.splitext(os.path.basename(input_file))[0]
-                            # Use the velocity with uncertainty file (contains smoothed velocity + uncertainty)
-                            vel_file = os.path.join(self.output_dir, f"{base_name}--vel-smooth-with-uncert.csv")
+                            base_name = os.path.splitext(
+                                os.path.basename(input_file))[0]
+                            # Use the velocity with uncertainty file (contains
+                            # smoothed velocity + uncertainty)
+                            vel_file = os.path.join(
+    self.output_dir, f"{base_name}--vel-smooth-with-uncert.csv")
                             if os.path.exists(vel_file):
                                 vel_files.append(vel_file)
                             else:
                                 missing_spade_files.append(base_name)
-                        
+
                         # Report SPADE file availability
-                        self.progress_signal.emit(f"=== SPADE File Availability ===")
-                        self.progress_signal.emit(f"ALPSS successful files: {len(successful_files)}")
-                        self.progress_signal.emit(f"SPADE input files found: {len(vel_files)}")
-                        self.progress_signal.emit(f"Missing SPADE input files: {len(missing_spade_files)}")
-                        
+                        self.progress_signal.emit(
+                            f"=== SPADE File Availability ===")
+                        self.progress_signal.emit(
+                            f"ALPSS successful files: {len(successful_files)}")
+                        self.progress_signal.emit(
+                            f"SPADE input files found: {len(vel_files)}")
+                        self.progress_signal.emit(
+                            f"Missing SPADE input files: {len(missing_spade_files)}")
+
                         if missing_spade_files:
-                            self.progress_signal.emit(f"=== Missing SPADE Input Files ===")
+                            self.progress_signal.emit(
+                                f"=== Missing SPADE Input Files ===")
                             for missing_file in missing_spade_files:
-                                self.progress_signal.emit(f"❌ Missing: {missing_file}--vel-smooth-with-uncert.csv")
+                                self.progress_signal.emit(
+                                    f"❌ Missing: {missing_file}--vel-smooth-with-uncert.csv")
+
+                        # Check if spall analysis is enabled
+                        spall_analysis_enabled = self.spade_params.get('spall_analysis_enabled', False)
                         
-                        if vel_files:
+                        if vel_files and spall_analysis_enabled:
                             # Create SPADE output subdirectory
-                            spade_output_dir = os.path.join(self.output_dir, "SPADE_analysis")
+                            spade_output_dir = os.path.join(
+                                self.output_dir, "SPADE_analysis")
                             os.makedirs(spade_output_dir, exist_ok=True)
-                            
+
                             # Debug: Check paths
-                            self.progress_signal.emit(f"Debug: output_dir = {self.output_dir}")
-                            self.progress_signal.emit(f"Debug: spade_output_dir = {spade_output_dir}")
-                            self.progress_signal.emit(f"Debug: Found {len(vel_files)} velocity files")
-                            
+                            self.progress_signal.emit(
+                                f"Debug: output_dir = {self.output_dir}")
+                            self.progress_signal.emit(
+                                f"Debug: spade_output_dir = {spade_output_dir}")
+                            self.progress_signal.emit(
+                                f"Debug: Found {len(vel_files)} velocity files")
+
                             # Validate paths
                             if not os.path.exists(self.output_dir):
-                                raise ValueError(f"Output directory does not exist: {self.output_dir}")
+                                raise ValueError(
+                                    f"Output directory does not exist: {self.output_dir}")
                             if not os.path.exists(spade_output_dir):
-                                raise ValueError(f"SPADE output directory could not be created: {spade_output_dir}")
-                            
+                                raise ValueError(
+                                    f"SPADE output directory could not be created: {spade_output_dir}")
+
                             # Run SPADE with progress updates
-                            self.progress_signal.emit(f"SPADE Processing file 1/{len(vel_files)}: Starting SPADE analysis...")
-                            
-                            # Add skip_smoothing parameter to avoid double smoothing
+                            self.progress_signal.emit(
+                                f"SPADE Processing file 1/{len(vel_files)}: Starting SPADE analysis...")
+
+                            # Add skip_smoothing parameter to avoid double
+                            # smoothing
                             spade_params_with_skip = self.spade_params.copy()
-                            spade_params_with_skip['skip_smoothing'] = True  # Skip SPADE smoothing since ALPSS already smoothed
-                            
-                            # Remove smooth_window and polyorder when skipping smoothing to avoid confusion
-                            if spade_params_with_skip.get('skip_smoothing', False):
-                                spade_params_with_skip.pop('smooth_window', None)
+                            # Skip SPADE smoothing since ALPSS already smoothed
+                            spade_params_with_skip['skip_smoothing'] = True
+
+                            # Remove smooth_window and polyorder when skipping
+                            # smoothing to avoid confusion
+                            if spade_params_with_skip.get(
+                                'skip_smoothing', False):
+                                spade_params_with_skip.pop(
+                                    'smooth_window', None)
                                 spade_params_with_skip.pop('polyorder', None)
-                            
-                            # Add parameter data for enhanced legends if available
+
+                            # Add parameter data for enhanced legends if
+                            # available
                             if self.param_data:
                                 spade_params_with_skip['param_data'] = self.param_data
-                                self.progress_signal.emit("Using parameter data for enhanced legends")
+                                self.progress_signal.emit(
+                                    "Using parameter data for enhanced legends")
                             else:
                                 spade_params_with_skip['param_data'] = None
-                            
+
                             process_velocity_files(
                                 input_folder=self.output_dir,
-                                file_pattern="*--vel-smooth-with-uncert.csv",  # Use ALPSS smoothed data with uncertainty
+                                # Use ALPSS smoothed data with uncertainty
+                                file_pattern="*--vel-smooth-with-uncert.csv",
                                 output_folder=spade_output_dir,
-                                summary_table_name=os.path.join(spade_output_dir, "spall_summary.csv"),
-                                plot_individual=self.spade_params.get('plot_individual', True),
+                                summary_table_name=os.path.join(
+                                    spade_output_dir, "spall_summary.csv"),
+                                plot_individual=self.spade_params.get(
+                                    'plot_individual', True),
                                 **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                             )
-                            
+
                             # Update progress after completion
                             for i in range(len(vel_files)):
-                                self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(vel_files)}: Completed")
-                            
+                                self.progress_signal.emit(
+                                    f"SPADE Processing file {i+1}/{len(vel_files)}: Completed")
+
                             spade_end_time = time.time()
                             spade_time = spade_end_time - spade_start_time
-                            self.progress_signal.emit(f"Completed SPADE analysis for {len(vel_files)} files in {spade_time:.2f} seconds")
+                            self.progress_signal.emit(
+                                f"Completed SPADE analysis for {len(vel_files)} files in {spade_time:.2f} seconds")
+                        elif vel_files and not spall_analysis_enabled:
+                            self.progress_signal.emit(
+                                f"Found {len(vel_files)} velocity files but spall analysis is disabled - skipping SPADE analysis")
                         else:
-                            self.progress_signal.emit("Warning: No velocity files found for SPADE analysis")
+                            self.progress_signal.emit(
+                                "Warning: No velocity files found for SPADE analysis")
                     else:
-                        self.progress_signal.emit("No ALPSS files to process for automatic SPADE mode")
+                        self.progress_signal.emit(
+                            "No ALPSS files to process for automatic SPADE mode")
                 else:
                     # Manual mode: use provided SPADE input files
                     if self.spade_input_files:
-                        self.progress_signal.emit(f"Running SPADE analysis on {len(self.spade_input_files)} manual input files...")
-                        
+                        self.progress_signal.emit(
+                            f"Running SPADE analysis on {len(self.spade_input_files)} manual input files...")
+
                         # Create SPADE output subdirectory
-                        spade_output_dir = os.path.join(self.output_dir, "SPADE_analysis")
+                        spade_output_dir = os.path.join(
+                            self.output_dir, "SPADE_analysis")
                         os.makedirs(spade_output_dir, exist_ok=True)
-                        
+
                         # Run SPADE - for manual mode, we need to create a temporary directory with the files
-                        # or use a different approach since SPADE expects input_folder and file_pattern
+                        # or use a different approach since SPADE expects
+                        # input_folder and file_pattern
                         if len(self.spade_input_files) == 1:
                             # Single file - use its directory as input_folder
-                            input_dir = os.path.dirname(self.spade_input_files[0])
-                            file_pattern = os.path.basename(self.spade_input_files[0])
+                            input_dir = os.path.dirname(
+                                self.spade_input_files[0])
+                            file_pattern = os.path.basename(
+                                self.spade_input_files[0])
                         else:
-                            # Multiple files - use the first file's directory and a pattern that matches all
-                            input_dir = os.path.dirname(self.spade_input_files[0])
+                            # Multiple files - use the first file's directory
+                            # and a pattern that matches all
+                            input_dir = os.path.dirname(
+                                self.spade_input_files[0])
                             file_pattern = "*--vel-smooth-with-uncert.csv"
-                        
+
                         # Start SPADE processing
-                        self.progress_signal.emit(f"SPADE Processing file 1/{len(self.spade_input_files)}: Starting SPADE analysis...")
-                        
-                        # Add skip_smoothing parameter to avoid double smoothing
+                        self.progress_signal.emit(
+                            f"SPADE Processing file 1/{len(self.spade_input_files)}: Starting SPADE analysis...")
+
+                        # Add skip_smoothing parameter to avoid double
+                        # smoothing
                         spade_params_with_skip = self.spade_params.copy()
-                        spade_params_with_skip['skip_smoothing'] = True  # Skip SPADE smoothing since ALPSS already smoothed
-                        
-                        # Remove smooth_window and polyorder when skipping smoothing to avoid confusion
+                        # Skip SPADE smoothing since ALPSS already smoothed
+                        spade_params_with_skip['skip_smoothing'] = True
+
+                        # Remove smooth_window and polyorder when skipping
+                        # smoothing to avoid confusion
                         if spade_params_with_skip.get('skip_smoothing', False):
                             spade_params_with_skip.pop('smooth_window', None)
                             spade_params_with_skip.pop('polyorder', None)
-                        
+
                         # Add parameter data for enhanced legends if available
                         if self.param_data:
                             spade_params_with_skip['param_data'] = self.param_data
-                            self.progress_signal.emit("Using parameter data for enhanced legends")
+                            self.progress_signal.emit(
+                                "Using parameter data for enhanced legends")
                         else:
                             spade_params_with_skip['param_data'] = None
-                        
+
                         process_velocity_files(
                             input_folder=input_dir,
                             file_pattern=file_pattern,
                             output_folder=spade_output_dir,
-                            summary_table_name=os.path.join(spade_output_dir, "spall_summary.csv"),
-                            plot_individual=self.spade_params.get('plot_individual', True),
+                            summary_table_name=os.path.join(
+                                spade_output_dir, "spall_summary.csv"),
+                            plot_individual=self.spade_params.get(
+                                'plot_individual', True),
                             **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                         )
-                        
+
                         # Update progress after completion
                         for i in range(len(self.spade_input_files)):
-                            self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: Completed")
-                        
+                            self.progress_signal.emit(
+                                f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: Completed")
+
                         spade_end_time = time.time()
                         spade_time = spade_end_time - spade_start_time
-                        self.progress_signal.emit(f"Completed SPADE analysis for {len(self.spade_input_files)} files in {spade_time:.2f} seconds")
+                        self.progress_signal.emit(
+                            f"Completed SPADE analysis for {len(self.spade_input_files)} files in {spade_time:.2f} seconds")
                     else:
-                        self.progress_signal.emit("No SPADE input files provided")
+                        self.progress_signal.emit(
+                            "No SPADE input files provided")
+            # After SPADE analysis, generate mean velocity file and combined
+            # plots
+            output_dir = self.output_dir
+            spade_output_dir = os.path.join(output_dir, "SPADE_analysis")
+            os.makedirs(spade_output_dir, exist_ok=True)
+
+            # Handle different experiment types (can be both)
+            velocity_shots_enabled = self.spade_params.get('velocity_shots_enabled', True)
+            spall_analysis_enabled = self.spade_params.get('spall_analysis_enabled', False)
+
+            if velocity_shots_enabled:
+                self.progress_signal.emit("Running velocity shots analysis...")
+                self.generate_velocity_shots_summary(spade_output_dir)
+            
+            if spall_analysis_enabled:
+                self.progress_signal.emit("Running spall analysis...")
+                self.generate_spall_analysis_summary(spade_output_dir)
+            
+            if not velocity_shots_enabled and not spall_analysis_enabled:
+                self.progress_signal.emit("No experiment types selected, defaulting to velocity shots")
+                self.generate_velocity_shots_summary(spade_output_dir)
+
             # Calculate total processing time
             total_end_time = time.time()
-            total_time = total_end_time - self.start_time if hasattr(self, 'start_time') else 0
-            
+            total_time = total_end_time - \
+                self.start_time if hasattr(self, 'start_time') else 0
+
             self.progress_signal.emit("All analysis completed successfully!")
-            self.progress_signal.emit(f"Total processing time: {total_time:.2f} seconds")
+            self.progress_signal.emit(
+                f"Total processing time: {total_time:.2f} seconds")
             self.finished_signal.emit(True, "Analysis completed successfully")
-            
-            # After SPADE analysis, generate mean velocity file and combined plots
+        except Exception as e:
+            self.progress_signal.emit(f"Error during analysis: {str(e)}")
+            self.finished_signal.emit(False, f"Analysis failed: {str(e)}")
+
+    def generate_velocity_shots_summary(self, spade_output_dir):
+        """Generate velocity shots summary CSV with impact velocity calculations and combined velocity plot"""
+        self.progress_signal.emit("Generating velocity shots summary...")
+
+        # Find all velocity files with uncertainty data (which include noise information)
+        velocity_files = glob.glob(
+    os.path.join(
+        self.output_dir,
+         '*--vel-smooth-with-uncert.csv'))
+
+        if not velocity_files:
+            self.progress_signal.emit(
+                "No velocity files with uncertainty data found for velocity shots summary")
+            return
+
+        velocity_shots_data = []
+        velocity_plot_data = []  # For combined velocity plot
+
+        for file_path in velocity_files:
             try:
-                output_dir = self.output_dir
-                spade_output_dir = os.path.join(output_dir, "SPADE_analysis")
-                os.makedirs(spade_output_dir, exist_ok=True)
+                # Read velocity data with uncertainty
+                df = pd.read_csv(file_path)
+                if df.shape[1] < 3:  # Should have time, velocity, uncertainty
+                    continue
 
-                # 1. Find all ALPSS velocity files (raw, not smooth)
-                velocity_files = glob.glob(os.path.join(output_dir, '*--velocity.csv'))
-                if velocity_files:
-                    # 2. Read and align all velocity files by time
-                    dfs = []
-                    for f in velocity_files:
-                        df = pd.read_csv(f)
-                        if 'Time' in df.columns and 'Velocity' in df.columns:
-                            dfs.append(df[['Time', 'Velocity']].rename(columns={'Velocity': os.path.basename(f)}))
-                    if dfs:
-                        # Merge on Time
-                        merged = dfs[0]
-                        for d in dfs[1:]:
-                            merged = pd.merge(merged, d, on='Time', how='outer')
-                        merged = merged.sort_values('Time').reset_index(drop=True)
-                        # Compute mean and std dev
-                        velocity_cols = [col for col in merged.columns if col != 'Time']
-                        merged['Mean Velocity (m/s)'] = merged[velocity_cols].mean(axis=1)
-                        merged['Std Dev Velocity (m/s)'] = merged[velocity_cols].std(axis=1)
-                        
-                        # Create a properly named file that matches SPADE's expected pattern
-                        # Use a generic name that will work with the plotting function
-                        mean_vel_file = os.path.join(spade_output_dir, 'combined_mean_raw_velocity.csv')
-                        merged[['Time', 'Mean Velocity (m/s)', 'Std Dev Velocity (m/s)']].to_csv(mean_vel_file, index=False)
+                time_data = df.iloc[:, 0].values
+                velocity_data = df.iloc[:, 1].values
+                uncertainty_data = df.iloc[:, 2].values
 
-                        # 3. Plot combined mean velocity - create a simple plot since SPADE's function expects specific naming
-                        try:
-                            fig, ax = plt.subplots(figsize=(12, 8))
-                            time_data = merged['Time']
-                            mean_velocity = merged['Mean Velocity (m/s)']
-                            velocity_std = merged['Std Dev Velocity (m/s)']
-                            
-                            # Plot mean line
-                            ax.plot(time_data, mean_velocity, 'b-', linewidth=2, label='Mean Velocity')
-                            
-                            # Plot shaded uncertainty if available
-                            if not velocity_std.isna().all():
-                                ax.fill_between(time_data, mean_velocity - velocity_std, mean_velocity + velocity_std, 
-                                              alpha=0.3, color='blue', label='±1σ')
-                            
-                            ax.set_xlabel('Time (ns)', fontsize=14)
-                            ax.set_ylabel('Mean Free Surface Velocity (m/s)', fontsize=14)
-                            ax.set_title('Combined Mean Velocity Traces', fontsize=16)
-                            ax.legend()
-                            ax.grid(True, alpha=0.3)
-                            ax.set_ylim(0, 700)
-                            
-                            plt.tight_layout()
-                            plt.savefig(os.path.join(spade_output_dir, 'combined_mean_velocity.png'), dpi=300)
-                            plt.close(fig)
-                            self.progress_signal.emit("Generated combined_mean_velocity.png")
-                        except Exception as e:
-                            msg = f"[WARNING] Failed to generate combined_mean_velocity.png: {e}"
-                            print(msg)
-                            self.progress_signal.emit(msg)
+                # Convert time to ns if needed
+                if np.nanmax(time_data) < 1.0:
+                    time_data = time_data * 1e9
 
-                # --- ENHANCED: Plot all smoothed velocity traces with material and waveplate angle information ---
-                smoothed_files = glob.glob(os.path.join(output_dir, '*--velocity--smooth.csv'))
-                
-                # Report combined plotting file availability
-                self.progress_signal.emit(f"=== Enhanced Combined Velocity Plotting ===")
-                self.progress_signal.emit(f"Found {len(smoothed_files)} velocity files for combined plotting")
-                
-                if len(smoothed_files) != len(successful_files):
-                    missing_plot_files = []
-                    for input_file in successful_files:
-                        base_name = os.path.splitext(os.path.basename(input_file))[0]
-                        expected_file = os.path.join(output_dir, f"{base_name}--velocity--smooth.csv")
-                        if not os.path.exists(expected_file):
-                            missing_plot_files.append(base_name)
-                    
-                    if missing_plot_files:
-                        self.progress_signal.emit(f"Missing velocity files for plotting: {len(missing_plot_files)}")
-                        for missing_file in missing_plot_files:
-                            self.progress_signal.emit(f"❌ Missing: {missing_file}--velocity--smooth.csv")
-                
-                # Create three separate figures for cleaner legends
-                # Figure 1: Individual file legends below the plot
-                fig1, (ax1_1, ax1_2, ax1_3) = plt.subplots(3, 1, figsize=(16, 18), height_ratios=[1, 1, 0.8])
-                
-                # Figure 2: Color meaning legends only
-                fig2, (ax2_1, ax2_2, ax2_3) = plt.subplots(3, 1, figsize=(14, 15), height_ratios=[1, 1, 0.8])
-                
-                # Figure 3: Spread plots with alpha-based coloring (no zoomed subplot)
-                fig3, (ax3_1, ax3_2) = plt.subplots(2, 1, figsize=(14, 12), height_ratios=[1, 1])
-                
-                # Figure 4: Maximum velocity vs waveplate angle scatter plot
-                fig4, ax4 = plt.subplots(1, 1, figsize=(14, 10))
-                
-                # Store all velocity data to determine adaptive y-axis limits
-                all_velocities = []
-                all_times = []
-                plotted_files = []
-                failed_plot_files = []
-                
-                # Color maps for materials and waveplate angles
-                material_colors = {}
-                waveplate_colors = {}
-                material_counter = 0
-                waveplate_counter = 0
-                
-                # Define color palettes
-                material_palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-                waveplate_palette = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#54a0ff', '#5f27cd', '#00d2d3', '#ff9f43']
-                
-                # Data structures for spread plots
-                material_data = {}  # {material: [(time, velocity, file_name), ...]}
-                waveplate_data = {}  # {waveplate_angle: [(time, velocity, file_name), ...]}
-                
-                # Data structures for scatter plot
-                scatter_data = {}  # {material: [(waveplate_angle, max_velocity, file_name), ...]}
-                shot_time_data = {}  # {material: [(shot_time, file_name), ...]}
-                pdv_power_data = {}  # {material: [(pdv_power, file_name), ...]}
-                
-                total_files = len(smoothed_files)
-                self.progress_signal.emit(f"Starting enhanced combined plotting for {total_files} files...")
-                
-                for i, file in enumerate(sorted(smoothed_files)):
-                    if i % 10 == 0:  # Update progress every 10 files
-                        self.progress_signal.emit(f"Processing file {i+1}/{total_files}: {os.path.basename(file)}")
+                # Load noise fraction data and filter velocity data
+                noise_fraction = None
+                velocity_filtered = velocity_data.copy()
+
+                # Try to load noise fraction data
+                noise_file = file_path.replace('--vel-smooth-with-uncert.csv', '--noise--frac.csv')
+                if os.path.exists(noise_file):
                     try:
+                        df_noise = pd.read_csv(noise_file)
+                        if df_noise.shape[1] >= 1:
+                            # Use last column
+                            noise_fraction = df_noise.iloc[:, -1].values
+                            if len(noise_fraction) == len(velocity_data):
+                                # Filter out data points where noise fraction > 1
+                                high_noise_mask = noise_fraction > 1.0
+                                velocity_filtered[high_noise_mask] = np.nan
+                                self.progress_signal.emit(
+                                    f"Filtered {np.sum(high_noise_mask)} high-noise points from {os.path.basename(file_path)}")
+                            else:
+                                self.progress_signal.emit(
+                                    f"Warning: Noise fraction length mismatch for {os.path.basename(file_path)}")
+                        else:
+                            self.progress_signal.emit(
+                                f"Warning: Noise fraction file has insufficient columns: {os.path.basename(noise_file)}")
+                    except Exception as e:
+                        self.progress_signal.emit(
+                            f"Warning: Could not read noise fraction for {os.path.basename(file_path)}: {e}")
+                else:
+                    self.progress_signal.emit(
+                        f"Info: No noise fraction file found for {os.path.basename(file_path)}, using unfiltered data")
+
+                # TRACE ALIGNMENT: Find t=0 when velocity reaches 30 m/s
+                velocity_threshold = 30.0  # m/s
+                t0_idx = None
+                
+                # Find first point where velocity exceeds threshold
+                for i, vel in enumerate(velocity_filtered):
+                    if not np.isnan(vel) and vel >= velocity_threshold:
+                        t0_idx = i
+                        break
+                
+                if t0_idx is None:
+                    self.progress_signal.emit(
+                        f"Warning: Could not find velocity threshold {velocity_threshold} m/s for {os.path.basename(file_path)}")
+                    # Use original time data
+                    time_aligned = time_data
+                else:
+                    # Align time data to t=0 at velocity threshold
+                    t0 = time_data[t0_idx]
+                    time_aligned = time_data - t0
+                    self.progress_signal.emit(
+                        f"Aligned trace: t=0 at {t0:.2f} ns when velocity reached {velocity_threshold} m/s")
+
+                # Calculate mean velocity between 300-400ns using aligned time and filtered data
+                mask_300_400 = (time_aligned >= 300) & (time_aligned <= 400)
+                velocities_300_400 = velocity_filtered[mask_300_400]
+                velocities_300_400 = velocities_300_400[~np.isnan(velocities_300_400)]
+                
+                if len(velocities_300_400) > 0:
+                    mean_velocity_300_400 = np.mean(velocities_300_400)
+                else:
+                    mean_velocity_300_400 = np.nan
+
+                # Get file base name
+                base_name = os.path.splitext(
+    os.path.basename(file_path))[0].replace(
+        '--vel-smooth-with-uncert', '')
+
+                # Get parameter data if available - try multiple matching strategies
+                param_info = {}
+                if self.param_data:
+                    # Try exact match first
+                    if base_name in self.param_data:
+                        param_info = self.param_data[base_name]
+                    else:
+                        # Try partial matches
+                        for key in self.param_data.keys():
+                            if base_name in key or key in base_name:
+                                param_info = self.param_data[key]
+                                break
+                
+                # Debug parameter data
+                if param_info:
+                    self.progress_signal.emit(
+                        f"Found parameter data for {base_name}: {list(param_info.keys())}")
+                else:
+                    self.progress_signal.emit(
+                        f"No parameter data found for {base_name}")
+
+                # Create data row for velocity shots summary
+                shot_data = {
+                    'file_name': base_name,
+                    'mean_velocity_300_400ns_ms': mean_velocity_300_400,
+                    'uncertainty_avg_ms': np.nanmean(uncertainty_data),
+                    't0_ns': t0 if t0_idx is not None else np.nan,
+                    'velocity_threshold_ms': velocity_threshold
+                }
+
+                # Add ALL parameter file data as extra columns (without 'param_' prefix)
+                for key, value in param_info.items():
+                    shot_data[key] = value
+
+                velocity_shots_data.append(shot_data)
+
+                # Create data for combined velocity plot (use aligned time and filtered data)
+                plot_data = {
+                    'time_ns': time_aligned,
+                    'velocity_ms': velocity_filtered,  # Use filtered velocity
+                    'file_name': base_name,
+                    'param_info': param_info
+                }
+                velocity_plot_data.append(plot_data)
+
+            except Exception as e:
+                self.progress_signal.emit(
+                    f"Error processing {os.path.basename(file_path)}: {str(e)}")
+                continue
+
+        # Save velocity shots summary
+        if velocity_shots_data:
+            velocity_shots_df = pd.DataFrame(velocity_shots_data)
+            velocity_shots_path = os.path.join(
+    spade_output_dir, 'velocity_shots_summary.csv')
+            velocity_shots_df.to_csv(velocity_shots_path, index=False)
+            self.progress_signal.emit(
+                f"Generated velocity shots summary with {len(velocity_shots_data)} shots")
+            self.progress_signal.emit(f"Saved to: {velocity_shots_path}")
+
+            # Generate combined velocity plot
+            if velocity_plot_data:
+                self.generate_combined_velocity_plot(velocity_plot_data, spade_output_dir)
+        else:
+            self.progress_signal.emit("No velocity shots data generated")
+
+    def generate_combined_velocity_plot(self, velocity_plot_data, spade_output_dir):
+        """Generate combined velocity plot with color coding based on material information"""
+        self.progress_signal.emit("Generating combined velocity plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Color mapping for materials
+            material_colors = {
+                'Al': 'blue',
+                'Cu': 'red', 
+                'Ti': 'green',
+                'Steel': 'orange',
+                'Other': 'purple'
+            }
+            
+            # Track used materials for legend
+            used_materials = set()
+            
+            for plot_data in velocity_plot_data:
+                time_data = plot_data['time_ns']
+                velocity_data = plot_data['velocity_ms']
+                file_name = plot_data['file_name']
+                param_info = plot_data['param_info']
+                
+                # Determine material and color
+                material = 'Other'
+                if param_info:
+                    # Look for material information in parameter data
+                    for key, value in param_info.items():
+                        if 'material' in key.lower() or 'mat' in key.lower():
+                            material = str(value)
+                            break
+                        elif 'al' in str(value).lower():
+                            material = 'Al'
+                            break
+                        elif 'cu' in str(value).lower():
+                            material = 'Cu'
+                            break
+                        elif 'ti' in str(value).lower():
+                            material = 'Ti'
+                            break
+                        elif 'steel' in str(value).lower():
+                            material = 'Steel'
+                            break
+                
+                color = material_colors.get(material, material_colors['Other'])
+                used_materials.add(material)
+                
+                # Plot velocity trace
+                ax.plot(time_data, velocity_data, color=color, alpha=0.7, linewidth=1, label=f"{file_name} ({material})")
+            
+            # Customize plot
+            ax.set_xlabel('Time (ns) - Aligned to t=0 at 30 m/s', fontsize=12)
+            ax.set_ylabel('Velocity (m/s)', fontsize=12)
+            ax.set_title('Combined Velocity Traces - Aligned (Color-coded by Material)', fontsize=14)
+            ax.grid(True, alpha=0.3)
+            
+            # Create legend with material colors
+            legend_elements = []
+            for material in sorted(used_materials):
+                color = material_colors.get(material, material_colors['Other'])
+                legend_elements.append(mpatches.Patch(color=color, label=material))
+            
+            ax.legend(handles=legend_elements, title='Material', loc='upper right')
+            
+            # Save plot
+            plot_path = os.path.join(spade_output_dir, "combined_velocity_plot.png")
+            fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            
+            self.progress_signal.emit(f"Saved combined velocity plot to {plot_path}")
+            
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating combined velocity plot: {e}")
+
+    def generate_spall_analysis_summary(self, spade_output_dir):
+        """Generate enhanced spall analysis summary with parameter file data"""
+        self.progress_signal.emit(
+            "Generating enhanced spall analysis summary...")
+
+        # Check if spall summary already exists
+        spall_summary_path = os.path.join(
+    spade_output_dir, 'spall_summary.csv')
+        if not os.path.exists(spall_summary_path):
+            self.progress_signal.emit(
+                "No spall summary found - SPADE analysis may not have completed")
+            return
+
+        # Read existing spall summary
+        spall_df = pd.read_csv(spall_summary_path)
+
+        # Enhance with parameter file data
+        enhanced_spall_data = []
+
+        for idx, row in spall_df.iterrows():
+            filename = row.get('Filename', '')
+            if not filename:
+                continue
+
+            # Get parameter data if available
+            param_info = {}
+            if self.param_data and filename in self.param_data:
+                param_info = self.param_data[filename]
+
+            # Create enhanced row
+            enhanced_row = row.copy()
+
+            # Add parameter file data as extra columns
+            for key, value in param_info.items():
+                enhanced_row[f'param_{key}'] = value
+
+            enhanced_spall_data.append(enhanced_row)
+
+        # Save enhanced spall summary
+        if enhanced_spall_data:
+            enhanced_spall_df = pd.DataFrame(enhanced_spall_data)
+            enhanced_spall_path = os.path.join(
+    spade_output_dir, 'enhanced_spall_summary.csv')
+            enhanced_spall_df.to_csv(enhanced_spall_path, index=False)
+            self.progress_signal.emit(
+                f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
+            self.progress_signal.emit(f"Saved to: {enhanced_spall_path}")
+        else:
+            self.progress_signal.emit("No enhanced spall data generated")
+
+        # 1. Find all ALPSS velocity files (raw, not smooth)
+        velocity_files = glob.glob(os.path.join(output_dir, '*--velocity.csv'))
+        if velocity_files:
+            # 2. Read and align all velocity files by time
+            dfs = []
+            for f in velocity_files:
+                try:
+                    # Try reading with headers first
+                    df = pd.read_csv(f)
+                    if 'Time' in df.columns and 'Velocity' in df.columns:
+                        dfs.append(df[['Time', 'Velocity']].rename(
+                            columns={'Velocity': os.path.basename(f)}))
+                    else:
+                        # No headers, assume first column is time, second is velocity
+                        df = pd.read_csv(f, header=None)
+                        if df.shape[1] >= 2:
+                            df.columns = ['Time', 'Velocity']
+                            dfs.append(df[['Time', 'Velocity']].rename(
+                                columns={'Velocity': os.path.basename(f)}))
+                except Exception as e:
+                    print(f"[WARNING] Could not read velocity file {f}: {e}")
+                    continue
+            if dfs:
+                # Merge on Time
+                merged = dfs[0]
+                for d in dfs[1:]:
+                    merged = pd.merge(merged, d, on='Time', how='outer')
+                merged = merged.sort_values('Time').reset_index(drop=True)
+                # Compute mean and std dev
+                velocity_cols = [
+    col for col in merged.columns if col != 'Time']
+                merged['Mean Velocity (m/s)'] = merged[velocity_cols].mean(axis=1)
+                merged['Std Dev Velocity (m/s)'] = merged[velocity_cols].std(axis=1)
+
+                # Create a properly named file that matches SPADE's expected pattern
+                # Use a generic name that will work with the plotting function
+                mean_vel_file = os.path.join(
+    spade_output_dir, 'combined_mean_raw_velocity.csv')
+                merged[['Time',
+    'Mean Velocity (m/s)',
+    'Std Dev Velocity (m/s)']].to_csv(mean_vel_file,
+     index=False)
+
+                # 3. Plot combined mean velocity - create a simple plot since
+                # SPADE's function expects specific naming
+                try:
+                    fig, ax = plt.subplots(figsize=(12, 8))
+                    time_data = merged['Time']
+                    mean_velocity = merged['Mean Velocity (m/s)']
+                    velocity_std = merged['Std Dev Velocity (m/s)']
+
+                    # Plot mean line
+                    ax.plot(
+    time_data,
+    mean_velocity,
+    'b-',
+    linewidth=2,
+     label='Mean Velocity')
+
+                    # Plot shaded uncertainty if available
+                    if not velocity_std.isna().all():
+                        ax.fill_between(time_data, mean_velocity - velocity_std, mean_velocity + velocity_std,
+                                      alpha=0.3, color='blue', label='±1σ')
+
+                    ax.set_xlabel('Time (ns)', fontsize=14)
+                    ax.set_ylabel(
+    'Mean Free Surface Velocity (m/s)', fontsize=14)
+                    ax.set_title('Combined Mean Velocity Traces', fontsize=16)
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    ax.set_ylim(0, 700)
+
+                    plt.tight_layout()
+                    # Save to both spade_output_dir and main output_dir
+                    spade_plot_path = os.path.join(spade_output_dir, 'combined_mean_velocity.png')
+                    main_plot_path = os.path.join(output_dir, 'combined_mean_velocity.png')
+                    
+                    plt.savefig(spade_plot_path, dpi=300)
+                    plt.savefig(main_plot_path, dpi=300)
+                    plt.close(fig)
+                    self.progress_signal.emit(
+                        f"Generated combined_mean_velocity.png in both locations")
+                except Exception as e:
+                    msg = f"[WARNING] Failed to generate combined_mean_velocity.png: {e}"
+                    print(msg)
+                    self.progress_signal.emit(msg)
+
+        # --- ENHANCED: Plot all smoothed velocity traces with material and waveplate angle information ---
+        smoothed_files = glob.glob(
+    os.path.join(
+        output_dir,
+         '*--velocity--smooth.csv'))
+
+        # Report combined plotting file availability
+        self.progress_signal.emit(
+            f"=== Enhanced Combined Velocity Plotting ===")
+        self.progress_signal.emit(
+            f"Found {len(smoothed_files)} velocity files for combined plotting")
+
+        if len(smoothed_files) != len(successful_files):
+            missing_plot_files = []
+            for input_file in successful_files:
+                base_name = os.path.splitext(os.path.basename(input_file))[0]
+                expected_file = os.path.join(
+    output_dir, f"{base_name}--velocity--smooth.csv")
+                if not os.path.exists(expected_file):
+                    missing_plot_files.append(base_name)
+
+            if missing_plot_files:
+                self.progress_signal.emit(
+                    f"Missing velocity files for plotting: {len(missing_plot_files)}")
+                for missing_file in missing_plot_files:
+                    self.progress_signal.emit(
+                        f"❌ Missing: {missing_file}--velocity--smooth.csv")
+
+        # Create three separate figures for cleaner legends
+        # Figure 1: Individual file legends below the plot
+        fig1, (ax1_1, ax1_2, ax1_3) = plt.subplots(
+            3, 1, figsize=(16, 18), height_ratios=[1, 1, 0.8])
+
+        # Figure 2: Color meaning legends only
+        fig2, (ax2_1, ax2_2, ax2_3) = plt.subplots(
+            3, 1, figsize=(14, 15), height_ratios=[1, 1, 0.8])
+
+        # Figure 3: Spread plots with alpha-based coloring (no zoomed subplot)
+        fig3, (ax3_1, ax3_2) = plt.subplots(
+            2, 1, figsize=(14, 12), height_ratios=[1, 1])
+
+        # Figure 4: Maximum velocity vs waveplate angle scatter plot
+        fig4, ax4 = plt.subplots(1, 1, figsize=(14, 10))
+
+        # Store all velocity data to determine adaptive y-axis limits
+        all_velocities = []
+        all_times = []
+        plotted_files = []
+        failed_plot_files = []
+
+        # Color maps for materials and waveplate angles
+        material_colors = {}
+        waveplate_colors = {}
+        material_counter = 0
+        waveplate_counter = 0
+
+        # Define color palettes
+        material_palette = [
+    '#1f77b4',
+    '#ff7f0e',
+    '#2ca02c',
+    '#d62728',
+    '#9467bd',
+    '#8c564b',
+    '#e377c2',
+    '#7f7f7f',
+    '#bcbd22',
+     '#17becf']
+        waveplate_palette = [
+    '#ff6b6b',
+    '#4ecdc4',
+    '#45b7d1',
+    '#96ceb4',
+    '#feca57',
+    '#ff9ff3',
+    '#54a0ff',
+    '#5f27cd',
+    '#00d2d3',
+     '#ff9f43']
+
+        # Data structures for spread plots
+        material_data = {}  # {material: [(time, velocity, file_name), ...]}
+        # {waveplate_angle: [(time, velocity, file_name), ...]}
+        waveplate_data = {}
+
+        # Data structures for scatter plot
+        # {material: [(waveplate_angle, max_velocity, file_name), ...]}
+        scatter_data = {}
+        shot_time_data = {}  # {material: [(shot_time, file_name), ...]}
+        pdv_power_data = {}  # {material: [(pdv_power, file_name), ...]}
+
+        total_files = len(smoothed_files)
+        self.progress_signal.emit(
+            f"Starting enhanced combined plotting for {total_files} files...")
+
+        for i, file in enumerate(sorted(smoothed_files)):
+            if i % 10 == 0:  # Update progress every 10 files
+                self.progress_signal.emit(
+                    f"Processing file {i+1}/{total_files}: {os.path.basename(file)}")
+            try:
                         # Try reading with and without header
                         try:
                             df = pd.read_csv(file)
                             if df.shape[1] < 2:
-                                raise ValueError('File has less than 2 columns')
+                                raise ValueError(
+                                    'File has less than 2 columns')
                         except Exception:
                             df = pd.read_csv(file, header=None)
                         # Use first two columns for time and velocity
                         time_data = df.iloc[:, 0].values
                         velocity = df.iloc[:, 1].values
-                        print(f"[DEBUG] Plotting {file}: using columns {df.columns[0]}, {df.columns[1]}")
+                        print(
+                            f"[DEBUG] Plotting {file}: using columns {df.columns[0]}, {df.columns[1]}")
                         if np.nanmax(time_data) < 1.0:
                             time_data = time_data * 1e9
                         threshold = 0.1 * np.nanmax(velocity)
@@ -494,70 +973,92 @@ class AnalysisThread(QThread):
                             t0_idx = 0
                         t0 = time_data[t0_idx]
                         time_shifted = time_data - t0
-                        
+
+                        # Create base_name early for use in noise filtering
+                        base_name = os.path.basename(file).replace(
+                            '--velocity--smooth.csv', '')
+
                         # Load noise fraction data and filter velocity data
                         noise_fraction = None
                         velocity_filtered = velocity.copy()
-                        
+
                         # Try to load noise fraction data
-                        noise_file = file.replace('--velocity--smooth.csv', '--noise--frac.csv')
+                        noise_file = file.replace(
+    '--velocity--smooth.csv', '--noise--frac.csv')
                         if os.path.exists(noise_file):
                             try:
                                 df_noise = pd.read_csv(noise_file)
                                 if df_noise.shape[1] >= 1:
-                                    noise_fraction = df_noise.iloc[:, -1].values  # Use last column
+                                    # Use last column
+                                    noise_fraction = df_noise.iloc[:, -1].values
                                     if len(noise_fraction) == len(velocity):
-                                        # Filter out data points where noise fraction > 1
+                                        # Filter out data points where noise
+                                        # fraction > 1
                                         high_noise_mask = noise_fraction > 1.0
                                         velocity_filtered[high_noise_mask] = np.nan
-                                        print(f"[DEBUG] Filtered {np.sum(high_noise_mask)} high-noise points from {base_name}")
+                                        print(
+                                            f"[DEBUG] Filtered {np.sum(high_noise_mask)} high-noise points from {base_name}")
                                     else:
-                                        print(f"[WARNING] Noise fraction length mismatch for {file}")
+                                        print(
+                                            f"[WARNING] Noise fraction length mismatch for {file}")
                                 else:
-                                    print(f"[WARNING] Noise fraction file has insufficient columns: {noise_file}")
+                                    print(
+                                        f"[WARNING] Noise fraction file has insufficient columns: {noise_file}")
                             except Exception as e:
-                                print(f"[WARNING] Could not read noise fraction for {file}: {e}")
+                                print(
+                                    f"[WARNING] Could not read noise fraction for {file}: {e}")
                         else:
-                            print(f"[INFO] No noise fraction file found for {file}, using unfiltered data")
-                        
-                        # Create enhanced label using parameter data if available
-                        base_name = os.path.basename(file).replace('--velocity--smooth.csv','')
+                            print(
+                                f"[INFO] No noise fraction file found for {file}, using unfiltered data")
+
+                        # Create enhanced label using parameter data if
+                        # available
                         material = 'Unknown'
                         waveplate_angle = 'Unknown'
-                        
+
                         if self.param_data and base_name in self.param_data:
                             exp_info = self.param_data[base_name]
-                            material = exp_info.get('sample_material', 'Unknown')
-                            waveplate_angle = exp_info.get('waveplate_angle', 'Unknown')
+                            material = exp_info.get(
+                                'sample_material', 'Unknown')
+                            waveplate_angle = exp_info.get(
+                                'waveplate_angle', 'Unknown')
                             exp_id = exp_info.get('exp_id', 'Unknown')
-                            
+
                             # Create labels with material and waveplate angle
                             label_material = f"{base_name} ({material}, {exp_id})"
                             label_waveplate = f"{base_name} ({waveplate_angle}°, {exp_id})"
                         else:
                             label_material = base_name
                             label_waveplate = base_name
-                            
+
                         if i == 0:
-                            print(f"[DEBUG] First 10 time_shifted: {time_shifted[:10]}")
-                            print(f"[DEBUG] First 10 velocity: {velocity[:10]}")
-                            print(f"[DEBUG] First 10 velocity_filtered: {velocity_filtered[:10]}")
-                        
-                        # Store velocity data for adaptive limits (use filtered data)
+                            print(
+                                f"[DEBUG] First 10 time_shifted: {time_shifted[:10]}")
+                            print(
+                                f"[DEBUG] First 10 velocity: {velocity[:10]}")
+                            print(
+                                f"[DEBUG] First 10 velocity_filtered: {velocity_filtered[:10]}")
+
+                        # Store velocity data for adaptive limits (use filtered
+                        # data)
                         all_velocities.extend(velocity_filtered)
                         all_times.extend(time_shifted)
-                        
+
                         # Assign colors for materials and waveplate angles
                         if material not in material_colors:
-                            material_colors[material] = material_palette[material_counter % len(material_palette)]
+                            material_colors[material] = material_palette[material_counter % len(
+                                material_palette)]
                             material_counter += 1
-                        
+
                         if waveplate_angle not in waveplate_colors:
-                            waveplate_colors[waveplate_angle] = waveplate_palette[waveplate_counter % len(waveplate_palette)]
+                            waveplate_colors[waveplate_angle] = waveplate_palette[waveplate_counter % len(
+                                waveplate_palette)]
                             waveplate_counter += 1
-                        
-                        # Plot uncertainty shading (use filtered velocity for shading bounds)
-                        uncert_file = file.replace('--velocity--smooth.csv', '--vel--uncert.csv')
+
+                        # Plot uncertainty shading (use filtered velocity for
+                        # shading bounds)
+                        uncert_file = file.replace(
+    '--velocity--smooth.csv', '--vel--uncert.csv')
                         if os.path.exists(uncert_file):
                             try:
                                 df_unc = pd.read_csv(uncert_file)
@@ -567,147 +1068,176 @@ class AnalysisThread(QThread):
                                     uncert_filtered = uncert.copy()
                                     if noise_fraction is not None:
                                         uncert_filtered[high_noise_mask] = np.nan
-                                    
+
                                     # Plot uncertainty for Figure 1
-                                    ax1_1.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                    ax1_1.fill_between(time_shifted, velocity_filtered - uncert_filtered, velocity_filtered + uncert_filtered,
                                                      alpha=0.2, color=material_colors[material])
-                                    ax1_2.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                    ax1_2.fill_between(time_shifted, velocity_filtered - uncert_filtered, velocity_filtered + uncert_filtered,
                                                      alpha=0.2, color=waveplate_colors[waveplate_angle])
-                                    ax1_3.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                    ax1_3.fill_between(time_shifted, velocity_filtered - uncert_filtered, velocity_filtered + uncert_filtered,
                                                      alpha=0.2, color=material_colors[material])
-                                    
+
                                     # Plot uncertainty for Figure 2
-                                    ax2_1.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                    ax2_1.fill_between(time_shifted, velocity_filtered - uncert_filtered, velocity_filtered + uncert_filtered,
                                                      alpha=0.2, color=material_colors[material])
-                                    ax2_2.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                    ax2_2.fill_between(time_shifted, velocity_filtered - uncert_filtered, velocity_filtered + uncert_filtered,
                                                      alpha=0.2, color=waveplate_colors[waveplate_angle])
-                                    ax2_3.fill_between(time_shifted, velocity_filtered-uncert_filtered, velocity_filtered+uncert_filtered, 
+                                    ax2_3.fill_between(time_shifted, velocity_filtered - uncert_filtered, velocity_filtered + uncert_filtered,
                                                      alpha=0.2, color=material_colors[material])
                             except Exception as e:
-                                print(f"[WARNING] Could not read uncertainty for {file}: {e}")
-                        
-                        # Plot velocity traces for Figure 1 (with individual file legends)
-                        ax1_1.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-', 
+                                print(
+                                    f"[WARNING] Could not read uncertainty for {file}: {e}")
+
+                        # Plot velocity traces for Figure 1 (with individual
+                        # file legends)
+                        ax1_1.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-',
                                   markersize=2, color=material_colors[material])
-                        ax1_2.plot(time_shifted, velocity_filtered, label=label_waveplate, marker='.', linestyle='-', 
+                        ax1_2.plot(time_shifted, velocity_filtered, label=label_waveplate, marker='.', linestyle='-',
                                   markersize=2, color=waveplate_colors[waveplate_angle])
-                        ax1_3.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-', 
+                        ax1_3.plot(time_shifted, velocity_filtered, label=label_material, marker='.', linestyle='-',
                                   markersize=2, color=material_colors[material])
-                        
-                        # Plot velocity traces for Figure 2 (with color meaning legends only)
-                        ax2_1.plot(time_shifted, velocity_filtered, marker='.', linestyle='-', 
+
+                        # Plot velocity traces for Figure 2 (with color meaning
+                        # legends only)
+                        ax2_1.plot(time_shifted, velocity_filtered, marker='.', linestyle='-',
                                   markersize=2, color=material_colors[material])
-                        ax2_2.plot(time_shifted, velocity_filtered, marker='.', linestyle='-', 
+                        ax2_2.plot(time_shifted, velocity_filtered, marker='.', linestyle='-',
                                   markersize=2, color=waveplate_colors[waveplate_angle])
-                        ax2_3.plot(time_shifted, velocity_filtered, marker='.', linestyle='-', 
+                        ax2_3.plot(time_shifted, velocity_filtered, marker='.', linestyle='-',
                                   markersize=2, color=material_colors[material])
-                        
+
                         # Collect data for spread plots (Figure 3)
                         if material not in material_data:
                             material_data[material] = []
-                        material_data[material].append((time_shifted, velocity_filtered, base_name))
-                        
+                        material_data[material].append(
+    (time_shifted, velocity_filtered, base_name))
+
                         if waveplate_angle not in waveplate_data:
                             waveplate_data[waveplate_angle] = []
-                        waveplate_data[waveplate_angle].append((time_shifted, velocity_filtered, base_name))
-                        
+                        waveplate_data[waveplate_angle].append(
+                            (time_shifted, velocity_filtered, base_name))
+
                         # Calculate maximum velocity (average between 300-400ns) for scatter plot
                         # Convert time to ns if needed
                         time_ns = time_shifted.copy()
-                        if np.nanmax(time_ns) < 1000:  # If time is in ns already
+                        if np.nanmax(
+                            time_ns) < 1000:  # If time is in ns already
                             pass
                         else:
                             time_ns = time_ns / 1e9  # Convert to ns
-                        
+
                         # Find data points between 300-400ns
                         mask_300_400 = (time_ns >= 300) & (time_ns <= 400)
                         if np.any(mask_300_400):
                             velocities_300_400 = velocity_filtered[mask_300_400]
-                            velocities_300_400 = velocities_300_400[~np.isnan(velocities_300_400)]
+                            velocities_300_400 = velocities_300_400[~np.isnan(
+                                velocities_300_400)]
                             if len(velocities_300_400) > 0:
                                 max_velocity = np.mean(velocities_300_400)
-                                
-                                # Convert waveplate angle to numeric for plotting
+
+                                # Convert waveplate angle to numeric for
+                                # plotting
                                 try:
-                                    waveplate_angle_numeric = float(str(waveplate_angle).replace('°', '').replace('Unknown', '0'))
+                                    waveplate_angle_numeric = float(
+    str(waveplate_angle).replace(
+        '°', '').replace(
+            'Unknown', '0'))
                                 except:
                                     waveplate_angle_numeric = 0
-                                
+
                                 # Collect data for scatter plot
                                 if material not in scatter_data:
                                     scatter_data[material] = []
-                                scatter_data[material].append((waveplate_angle_numeric, max_velocity, base_name))
-                        
-                        # Get shot time from parameter data instead of calculating from velocity
+                                scatter_data[material].append(
+    (waveplate_angle_numeric, max_velocity, base_name))
+
+                        # Get shot time from parameter data instead of
+                        # calculating from velocity
                         shot_time_s = None
                         if self.param_data and base_name in self.param_data:
                             exp_info = self.param_data[base_name]
-                            shot_time_from_param = exp_info.get('shot_time', None)
+                            shot_time_from_param = exp_info.get(
+                                'shot_time', None)
                             if shot_time_from_param is not None and shot_time_from_param != 'Unknown':
                                 try:
                                     shot_time_s = float(shot_time_from_param)
-                                    print(f"[DEBUG] Shot time from parameter file for {base_name} ({material}): {shot_time_s:.6f} s")
+                                    print(
+                                        f"[DEBUG] Shot time from parameter file for {base_name} ({material}): {shot_time_s:.6f} s")
                                 except (ValueError, TypeError):
-                                    print(f"[WARNING] Invalid shot time value for {base_name}: {shot_time_from_param}")
-                        
+                                    print(
+                                        f"[WARNING] Invalid shot time value for {base_name}: {shot_time_from_param}")
+
                         # If no shot time from parameter file, skip this file
                         if shot_time_s is not None:
                             # Collect data for shot time vs material plot
                             if material not in shot_time_data:
                                 shot_time_data[material] = []
-                            shot_time_data[material].append((shot_time_s, base_name))
+                            shot_time_data[material].append(
+                                (shot_time_s, base_name))
                         else:
-                            print(f"[INFO] No shot time data available for {base_name}")
-                        
-                        # Calculate PDV return power (average power in the signal)
+                            print(
+                                f"[INFO] No shot time data available for {base_name}")
+
+                        # Calculate PDV return power (average power in the
+                        # signal)
                         pdv_power_dbm = None
                         if len(velocity_filtered) > 0:
                             # Convert velocity to power (assuming velocity is proportional to power)
-                            # This is a simplified calculation - in real PDV, power would come from raw data
+                            # This is a simplified calculation - in real PDV,
+                            # power would come from raw data
                             velocity_power = np.abs(velocity_filtered)
                             mean_power = np.mean(velocity_power)
-                            
+
                             # Only calculate if we have meaningful data
-                            if mean_power > 1e-10:  # Avoid very small values that give log(0) errors
+                            # Avoid very small values that give log(0) errors
+                            if mean_power > 1e-10:
                                 # Convert to dBm (assuming 0 dBm = 1 mW reference)
-                                # This is a placeholder calculation - actual PDV power would need raw data
+                                # This is a placeholder calculation - actual
+                                # PDV power would need raw data
                                 pdv_power_dbm = 10 * np.log10(mean_power)
-                                
-                                # Preserve original sign (can be positive, negative, or zero)
-                                print(f"[DEBUG] PDV power for {base_name} ({material}): {pdv_power_dbm:.2f} dBm")
+
+                                # Preserve original sign (can be positive,
+                                # negative, or zero)
+                                print(
+                                    f"[DEBUG] PDV power for {base_name} ({material}): {pdv_power_dbm:.2f} dBm")
                             else:
-                                print(f"[DEBUG] PDV power for {base_name} ({material}): too small to calculate")
-                        
-                        # Collect data for PDV power vs material plot (only if we have valid data)
+                                print(
+                                    f"[DEBUG] PDV power for {base_name} ({material}): too small to calculate")
+
+                        # Collect data for PDV power vs material plot (only if
+                        # we have valid data)
                         if pdv_power_dbm is not None:
                             if material not in pdv_power_data:
                                 pdv_power_data[material] = []
-                            pdv_power_data[material].append((pdv_power_dbm, base_name))
-                        
+                            pdv_power_data[material].append(
+                                (pdv_power_dbm, base_name))
+
                         plotted_files.append(os.path.basename(file))
-                        
-                    except Exception as e:
-                        print(f"[WARNING] Could not plot {file}: {e}")
-                        failed_plot_files.append((os.path.basename(file), str(e)))
-                
-                # Calculate adaptive y-axis limits based on velocity data (ignoring noise/uncertainty)
-                if self.spade_params.get('auto_calculate_limits', True):
-                    if all_velocities:
-                        max_velocity = np.nanmax(all_velocities)
-                        min_velocity = np.nanmin(all_velocities)
-                        velocity_range = max_velocity - min_velocity
-                        y_margin = velocity_range * 0.1  # 10% margin
-                        y_min = max(0, min_velocity - y_margin)
-                        y_max = max_velocity + y_margin
-                    else:
-                        y_min, y_max = 0, 700  # fallback values
-                else:
-                    # Use user-defined limits
-                    y_min = self.spade_params.get('y_min_main', 0)
-                    y_max = self.spade_params.get('y_max_main', 700)
-                
-                # Configure Figure 1 (with individual file legends) - only if selected
-                if self.spade_params.get('plot_individual_legends', True):
+
+            except Exception as e:
+                print(f"[WARNING] Could not plot {file}: {e}")
+                failed_plot_files.append(
+                    (os.path.basename(file), str(e)))
+
+        # Calculate adaptive y-axis limits based on velocity data
+        # (ignoring noise/uncertainty)
+        if self.spade_params.get('auto_calculate_limits', True):
+            if all_velocities:
+                max_velocity = np.nanmax(all_velocities)
+                min_velocity = np.nanmin(all_velocities)
+                velocity_range = max_velocity - min_velocity
+                y_margin = velocity_range * 0.1  # 10% margin
+                y_min = max(0, min_velocity - y_margin)
+                y_max = max_velocity + y_margin
+            else:
+                y_min, y_max = 0, 700  # fallback values
+        else:
+            # Use user-defined limits
+            y_min = self.spade_params.get('y_min_main', 0)
+            y_max = self.spade_params.get('y_max_main', 700)
+        
+        # Configure Figure 1 (with individual file legends) - only if selected
+        if self.spade_params.get('plot_individual_legends', True):
                     self.progress_signal.emit("Creating Figure 1: Individual file legends...")
                     # Material-based subplot (ax1_1)
                     ax1_1.set_xlabel('Time (ns)', fontsize=20)
@@ -773,701 +1303,732 @@ class AnalysisThread(QThread):
                         spine.set_linewidth(3.0)
                         spine.set_color('black')
                 
-                # Configure Figure 2 (with color meaning legends only)
-                self.progress_signal.emit("Creating Figure 2: Color meaning legends...")
-                # Material-based subplot (ax2_1)
-                ax2_1.set_xlabel('Time (ns)', fontsize=20)
-                ax2_1.set_ylabel('Velocity (m/s)', fontsize=20)
-                ax2_1.set_ylim(y_min, y_max)
-                ax2_1.set_title('Velocity Traces by Material (Same Material = Same Color)', fontsize=20, fontweight='bold')
-                ax2_1.grid(True, linestyle='--', alpha=0.5)
-                ax2_1.tick_params(axis='both', which='major', labelsize=16)
-                ax2_1.tick_params(axis='both', which='minor', labelsize=14)
-                ax2_1.minorticks_on()
+        # Configure Figure 2 (with color meaning legends only)
+        self.progress_signal.emit("Creating Figure 2: Color meaning legends...")
+        # Material-based subplot (ax2_1)
+        ax2_1.set_xlabel('Time (ns)', fontsize=20)
+        ax2_1.set_ylabel('Velocity (m/s)', fontsize=20)
+        ax2_1.set_ylim(y_min, y_max)
+        ax2_1.set_title('Velocity Traces by Material (Same Material = Same Color)', fontsize=20, fontweight='bold')
+        ax2_1.grid(True, linestyle='--', alpha=0.5)
+        ax2_1.tick_params(axis='both', which='major', labelsize=16)
+        ax2_1.tick_params(axis='both', which='minor', labelsize=14)
+        ax2_1.minorticks_on()
+        
+        # Add color legend for materials
+        material_legend_elements = []
+        for material, color in material_colors.items():
+            material_legend_elements.append(plt.Line2D([0], [0], color=color, label=f'{material}'))
+        ax2_1.legend(handles=material_legend_elements, fontsize=16, loc='best')
+        
+        # Add bounding box to material subplot
+        for spine in ax2_1.spines.values():
+            spine.set_linewidth(3.0)
+            spine.set_color('black')
+        
+        # Waveplate angle-based subplot (ax2_2)
+        ax2_2.set_xlabel('Time (ns)', fontsize=20)
+        ax2_2.set_ylabel('Velocity (m/s)', fontsize=20)
+        ax2_2.set_ylim(y_min, y_max)
+        ax2_2.set_title('Velocity Traces by Waveplate Angle (Same Angle = Same Color)', fontsize=20, fontweight='bold')
+        ax2_2.grid(True, linestyle='--', alpha=0.5)
+        ax2_2.tick_params(axis='both', which='major', labelsize=16)
+        ax2_2.tick_params(axis='both', which='minor', labelsize=14)
+        ax2_2.minorticks_on()
+        
+        # Add color legend for waveplate angles
+        waveplate_legend_elements = []
+        for waveplate_angle, color in waveplate_colors.items():
+            waveplate_legend_elements.append(plt.Line2D([0], [0], color=color, label=f'{waveplate_angle}'))
+        ax2_2.legend(handles=waveplate_legend_elements, fontsize=16, loc='best')
+        
+        # Add bounding box to waveplate subplot
+        for spine in ax2_2.spines.values():
+            spine.set_linewidth(3.0)
+            spine.set_color('black')
+        
+        # Zoomed subplot (ax2_3)
+        ax2_3.set_xlabel('Time (ns)', fontsize=20)
+        ax2_3.set_ylabel('Velocity (m/s)', fontsize=20)
+        
+        # Set x-axis limits for zoomed plot
+        if not self.spade_params.get('auto_calculate_limits', True):
+            x_min_zoom = self.spade_params.get('x_min_zoom', 0)
+            x_max_zoom = self.spade_params.get('x_max_zoom', 20)
+            ax2_3.set_xlim(x_min_zoom, x_max_zoom)
+            ax2_3.set_title(f'Zoomed Region: 0-20 ns (Material Colors)', fontsize=18, fontweight='bold')
+        else:
+            ax2_3.set_xlim(0, 20)
+            ax2_3.set_title('Zoomed Region: 0-20 ns (Material Colors)', fontsize=18, fontweight='bold')
+        
+        # Set y-axis limits for zoomed plot
+        if not self.spade_params.get('auto_calculate_limits', True):
+            y_min_zoom = self.spade_params.get('y_min_zoom', 0)
+            y_max_zoom = self.spade_params.get('y_max_zoom', 700)
+            ax2_3.set_ylim(y_min_zoom, y_max_zoom)
+        else:
+            ax2_3.set_ylim(y_min, y_max)
+        ax2_3.grid(True, linestyle='--', alpha=0.5)
+        ax2_3.tick_params(axis='both', which='major', labelsize=16)
+        ax2_3.tick_params(axis='both', which='minor', labelsize=14)
+        ax2_3.minorticks_on()
+        
+        # Add color legend for materials in zoomed plot
+        ax2_3.legend(handles=material_legend_elements, fontsize=16, loc='best')
+        
+        # Add bounding box to zoomed subplot
+        for spine in ax2_3.spines.values():
+            spine.set_linewidth(3.0)
+            spine.set_color('black')
+        
+        # Configure Figure 3 (spread plots)
+        self.progress_signal.emit("Creating Figure 3: Spread analysis...")
+        # Material spread subplot (ax3_1)
+        ax3_1.set_xlabel('Time (ns)', fontsize=20)
+        ax3_1.set_ylabel('Velocity (m/s)', fontsize=20)
+        ax3_1.set_ylim(y_min, y_max)
+        ax3_1.set_title('Velocity Traces by Material (Spread Analysis)', fontsize=20, fontweight='bold')
+        ax3_1.grid(True, linestyle='--', alpha=0.5)
+        ax3_1.tick_params(axis='both', which='major', labelsize=16)
+        ax3_1.tick_params(axis='both', which='minor', labelsize=14)
+        ax3_1.minorticks_on()
+        
+        # Add bounding box to material spread subplot
+        for spine in ax3_1.spines.values():
+            spine.set_linewidth(3.0)
+            spine.set_color('black')
+        
+        # Waveplate angle spread subplot (ax3_2)
+        ax3_2.set_xlabel('Time (ns)', fontsize=20)
+        ax3_2.set_ylabel('Velocity (m/s)', fontsize=20)
+        ax3_2.set_ylim(y_min, y_max)
+        ax3_2.set_title('Velocity Traces by Waveplate Angle (Spread Analysis)', fontsize=20, fontweight='bold')
+        ax3_2.grid(True, linestyle='--', alpha=0.5)
+        ax3_2.tick_params(axis='both', which='major', labelsize=16)
+        ax3_2.tick_params(axis='both', which='minor', labelsize=14)
+        ax3_2.minorticks_on()
+        
+        # Add bounding box to waveplate spread subplot
+        for spine in ax3_2.spines.values():
+            spine.set_linewidth(3.0)
+            spine.set_color('black')
+        
+        # Create spread plots for Figure 3
+        # Material spread plot
+        for material, traces in material_data.items():
+            if len(traces) > 0:
+                color = material_colors[material]
+                # Plot individual traces with low alpha
+                for time_data, velocity_data, file_name in traces:
+                    ax3_1.plot(time_data, velocity_data, color=color, alpha=0.3, linewidth=0.5)
                 
-                # Add color legend for materials
-                material_legend_elements = []
-                for material, color in material_colors.items():
-                    material_legend_elements.append(plt.Line2D([0], [0], color=color, label=f'{material}'))
-                ax2_1.legend(handles=material_legend_elements, fontsize=16, loc='best')
+                # Calculate and plot min/max bounds
+                all_times = []
+                all_velocities = []
+                for time_data, velocity_data, _ in traces:
+                    all_times.extend(time_data)
+                    all_velocities.extend(velocity_data)
                 
-                # Add bounding box to material subplot
-                for spine in ax2_1.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-                # Waveplate angle-based subplot (ax2_2)
-                ax2_2.set_xlabel('Time (ns)', fontsize=20)
-                ax2_2.set_ylabel('Velocity (m/s)', fontsize=20)
-                ax2_2.set_ylim(y_min, y_max)
-                ax2_2.set_title('Velocity Traces by Waveplate Angle (Same Angle = Same Color)', fontsize=20, fontweight='bold')
-                ax2_2.grid(True, linestyle='--', alpha=0.5)
-                ax2_2.tick_params(axis='both', which='major', labelsize=16)
-                ax2_2.tick_params(axis='both', which='minor', labelsize=14)
-                ax2_2.minorticks_on()
-                
-                # Add color legend for waveplate angles
-                waveplate_legend_elements = []
-                for waveplate_angle, color in waveplate_colors.items():
-                    waveplate_legend_elements.append(plt.Line2D([0], [0], color=color, label=f'{waveplate_angle}'))
-                ax2_2.legend(handles=waveplate_legend_elements, fontsize=16, loc='best')
-                
-                # Add bounding box to waveplate subplot
-                for spine in ax2_2.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-                # Zoomed subplot (ax2_3)
-                ax2_3.set_xlabel('Time (ns)', fontsize=20)
-                ax2_3.set_ylabel('Velocity (m/s)', fontsize=20)
-                
-                # Set x-axis limits for zoomed plot
-                if not self.spade_params.get('auto_calculate_limits', True):
-                    x_min_zoom = self.spade_params.get('x_min_zoom', 0)
-                    x_max_zoom = self.spade_params.get('x_max_zoom', 20)
-                    ax2_3.set_xlim(x_min_zoom, x_max_zoom)
-                    ax2_3.set_title(f'Zoomed Region: 0-20 ns (Material Colors)', fontsize=18, fontweight='bold')
-                else:
-                    ax2_3.set_xlim(0, 20)
-                    ax2_3.set_title('Zoomed Region: 0-20 ns (Material Colors)', fontsize=18, fontweight='bold')
-                
-                # Set y-axis limits for zoomed plot
-                if not self.spade_params.get('auto_calculate_limits', True):
-                    y_min_zoom = self.spade_params.get('y_min_zoom', 0)
-                    y_max_zoom = self.spade_params.get('y_max_zoom', 700)
-                    ax2_3.set_ylim(y_min_zoom, y_max_zoom)
-                else:
-                    ax2_3.set_ylim(y_min, y_max)
-                ax2_3.grid(True, linestyle='--', alpha=0.5)
-                ax2_3.tick_params(axis='both', which='major', labelsize=16)
-                ax2_3.tick_params(axis='both', which='minor', labelsize=14)
-                ax2_3.minorticks_on()
-                
-                # Add color legend for materials in zoomed plot
-                ax2_3.legend(handles=material_legend_elements, fontsize=16, loc='best')
-                
-                # Add bounding box to zoomed subplot
-                for spine in ax2_3.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-                # Configure Figure 3 (spread plots)
-                self.progress_signal.emit("Creating Figure 3: Spread analysis...")
-                # Material spread subplot (ax3_1)
-                ax3_1.set_xlabel('Time (ns)', fontsize=20)
-                ax3_1.set_ylabel('Velocity (m/s)', fontsize=20)
-                ax3_1.set_ylim(y_min, y_max)
-                ax3_1.set_title('Velocity Traces by Material (Spread Analysis)', fontsize=20, fontweight='bold')
-                ax3_1.grid(True, linestyle='--', alpha=0.5)
-                ax3_1.tick_params(axis='both', which='major', labelsize=16)
-                ax3_1.tick_params(axis='both', which='minor', labelsize=14)
-                ax3_1.minorticks_on()
-                
-                # Add bounding box to material spread subplot
-                for spine in ax3_1.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-                # Waveplate angle spread subplot (ax3_2)
-                ax3_2.set_xlabel('Time (ns)', fontsize=20)
-                ax3_2.set_ylabel('Velocity (m/s)', fontsize=20)
-                ax3_2.set_ylim(y_min, y_max)
-                ax3_2.set_title('Velocity Traces by Waveplate Angle (Spread Analysis)', fontsize=20, fontweight='bold')
-                ax3_2.grid(True, linestyle='--', alpha=0.5)
-                ax3_2.tick_params(axis='both', which='major', labelsize=16)
-                ax3_2.tick_params(axis='both', which='minor', labelsize=14)
-                ax3_2.minorticks_on()
-                
-                # Add bounding box to waveplate spread subplot
-                for spine in ax3_2.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-                # Create spread plots for Figure 3
-                # Material spread plot
-                for material, traces in material_data.items():
-                    if len(traces) > 0:
-                        color = material_colors[material]
-                        # Plot individual traces with low alpha
-                        for time_data, velocity_data, file_name in traces:
-                            ax3_1.plot(time_data, velocity_data, color=color, alpha=0.3, linewidth=0.5)
-                        
-                        # Calculate and plot min/max bounds
-                        all_times = []
-                        all_velocities = []
-                        for time_data, velocity_data, _ in traces:
-                            all_times.extend(time_data)
-                            all_velocities.extend(velocity_data)
-                        
-                        # Find common time range and calculate statistics
-                        if all_times and all_velocities:
-                            time_array = np.array(all_times)
-                            velocity_array = np.array(all_velocities)
-                            
-                            # Group by time bins to calculate statistics
-                            time_bins = np.linspace(min(time_array), max(time_array), 100)
-                            min_velocities = []
-                            max_velocities = []
-                            mean_velocities = []
-                            
-                            for i in range(len(time_bins) - 1):
-                                mask = (time_array >= time_bins[i]) & (time_array < time_bins[i + 1])
-                                if np.any(mask):
-                                    velocities_in_bin = velocity_array[mask]
-                                    velocities_in_bin = velocities_in_bin[~np.isnan(velocities_in_bin)]
-                                    if len(velocities_in_bin) > 0:
-                                        min_velocities.append(np.min(velocities_in_bin))
-                                        max_velocities.append(np.max(velocities_in_bin))
-                                        mean_velocities.append(np.mean(velocities_in_bin))
-                                    else:
-                                        min_velocities.append(np.nan)
-                                        max_velocities.append(np.nan)
-                                        mean_velocities.append(np.nan)
-                                else:
-                                    min_velocities.append(np.nan)
-                                    max_velocities.append(np.nan)
-                                    mean_velocities.append(np.nan)
-                            
-                            # Plot min/max bounds and mean
-                            time_centers = (time_bins[:-1] + time_bins[1:]) / 2
-                            ax3_1.fill_between(time_centers, min_velocities, max_velocities, 
-                                             alpha=0.4, color=color, label=f'{material} (n={len(traces)})')
-                            ax3_1.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
-                
-                # Add legend to material spread subplot
-                ax3_1.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
-                
-                # Waveplate angle spread plot
-                for waveplate_angle, traces in waveplate_data.items():
-                    if len(traces) > 0:
-                        color = waveplate_colors[waveplate_angle]
-                        # Plot individual traces with low alpha
-                        for time_data, velocity_data, file_name in traces:
-                            ax3_2.plot(time_data, velocity_data, color=color, alpha=0.3, linewidth=0.5)
-                        
-                        # Calculate and plot min/max bounds
-                        all_times = []
-                        all_velocities = []
-                        for time_data, velocity_data, _ in traces:
-                            all_times.extend(time_data)
-                            all_velocities.extend(velocity_data)
-                        
-                        # Find common time range and calculate statistics
-                        if all_times and all_velocities:
-                            time_array = np.array(all_times)
-                            velocity_array = np.array(all_velocities)
-                            
-                            # Group by time bins to calculate statistics
-                            time_bins = np.linspace(min(time_array), max(time_array), 100)
-                            min_velocities = []
-                            max_velocities = []
-                            mean_velocities = []
-                            
-                            for i in range(len(time_bins) - 1):
-                                mask = (time_array >= time_bins[i]) & (time_array < time_bins[i + 1])
-                                if np.any(mask):
-                                    velocities_in_bin = velocity_array[mask]
-                                    velocities_in_bin = velocities_in_bin[~np.isnan(velocities_in_bin)]
-                                    if len(velocities_in_bin) > 0:
-                                        min_velocities.append(np.min(velocities_in_bin))
-                                        max_velocities.append(np.max(velocities_in_bin))
-                                        mean_velocities.append(np.mean(velocities_in_bin))
-                                    else:
-                                        min_velocities.append(np.nan)
-                                        max_velocities.append(np.nan)
-                                        mean_velocities.append(np.nan)
-                                else:
-                                    min_velocities.append(np.nan)
-                                    max_velocities.append(np.nan)
-                                    mean_velocities.append(np.nan)
-                            
-                            # Plot min/max bounds and mean
-                            time_centers = (time_bins[:-1] + time_bins[1:]) / 2
-                            ax3_2.fill_between(time_centers, min_velocities, max_velocities, 
-                                             alpha=0.4, color=color, label=f'{waveplate_angle} (n={len(traces)})')
-                            ax3_2.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
-                
-                # Add legend to waveplate spread subplot
-                ax3_2.legend(fontsize=16, loc='best', title='Wave Plate Angle', title_fontsize=18)
-                
-                # Create scatter plot for Figure 4 (Maximum velocity vs waveplate angle)
-                self.progress_signal.emit("Creating Figure 4: Maximum velocity vs waveplate angle...")
-                for material, data_points in scatter_data.items():
-                    if len(data_points) > 0:
-                        color = material_colors[material]
-                        waveplate_angles = [point[0] for point in data_points]
-                        max_velocities = [point[1] for point in data_points]
-                        file_names = [point[2] for point in data_points]
-                        
-                        # Plot scatter points
-                        ax4.scatter(waveplate_angles, max_velocities, color=color, s=100, alpha=0.7, 
-                                   label=f'{material} (n={len(data_points)})')
-                
-                # Configure scatter plot
-                ax4.set_xlabel('Wave Plate Angle (degrees)', fontsize=20)
-                ax4.set_ylabel('Maximum Velocity (m/s)', fontsize=20)
-                ax4.set_title('Maximum Velocity vs Wave Plate Angle by Material', fontsize=20, fontweight='bold')
-                ax4.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
-                ax4.grid(True, linestyle='--', alpha=0.5)
-                ax4.tick_params(axis='both', which='major', labelsize=16)
-                ax4.tick_params(axis='both', which='minor', labelsize=14)
-                ax4.minorticks_on()
-                
-                # Add bounding box to scatter plot
-                for spine in ax4.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-                # Save data for violin plots to CSV file
-                self.progress_signal.emit("Saving data for violin plots to CSV...")
-                
-                # Collect all data for CSV export
-                csv_data = []
-                for material in material_colors.keys():
-                    if material in scatter_data and len(scatter_data[material]) > 0:
-                        for waveplate_angle, max_velocity, file_name in scatter_data[material]:
-                            # Get additional data from parameter file
-                            shot_time_s = None
-                            pdv_power_dbm = None
-                            laser_energy_mj = None
-                            
-                            if self.param_data and file_name in self.param_data:
-                                exp_info = self.param_data[file_name]
-                                
-                                # Get shot time (flexible column name matching)
-                                shot_time_from_param = exp_info.get('shot_time', None)
-                                if shot_time_from_param is not None and shot_time_from_param != 'Unknown':
-                                    try:
-                                        shot_time_s = float(shot_time_from_param)
-                                    except (ValueError, TypeError):
-                                        pass
-                                
-                                # Get laser energy (flexible column name matching)
-                                for key, value in exp_info.items():
-                                    if any(term in key.lower() for term in ['laser', 'energy', 'pulse']) and value != 'Unknown':
-                                        try:
-                                            laser_energy_mj = float(value)
-                                            break
-                                        except (ValueError, TypeError):
-                                            continue
-                            
-                            # Get PDV power from existing data (this should match the calculation above)
-                            pdv_power_dbm = None  # Reset to None for this file
-                            if material in pdv_power_data:
-                                for pdv_power, pdv_file_name in pdv_power_data[material]:
-                                    if pdv_file_name == file_name:
-                                        pdv_power_dbm = pdv_power
-                                        print(f"[DEBUG] Found PDV power for {file_name}: {pdv_power_dbm:.2f} dBm")
-                                        break
-                                else:
-                                    print(f"[DEBUG] No PDV power data found for {file_name}")
+                # Find common time range and calculate statistics
+                if all_times and all_velocities:
+                    time_array = np.array(all_times)
+                    velocity_array = np.array(all_velocities)
+                    
+                    # Group by time bins to calculate statistics
+                    time_bins = np.linspace(min(time_array), max(time_array), 100)
+                    min_velocities = []
+                    max_velocities = []
+                    mean_velocities = []
+                    
+                    for i in range(len(time_bins) - 1):
+                        mask = (time_array >= time_bins[i]) & (time_array < time_bins[i + 1])
+                        if np.any(mask):
+                            velocities_in_bin = velocity_array[mask]
+                            velocities_in_bin = velocities_in_bin[~np.isnan(velocities_in_bin)]
+                            if len(velocities_in_bin) > 0:
+                                min_velocities.append(np.min(velocities_in_bin))
+                                max_velocities.append(np.max(velocities_in_bin))
+                                mean_velocities.append(np.mean(velocities_in_bin))
                             else:
-                                print(f"[DEBUG] No PDV power data for material {material}")
-                            
-                            csv_data.append({
-                                'file_name': file_name,
-                                'material': material,
-                                'waveplate_angle_degrees': waveplate_angle,
-                                'max_velocity_ms': max_velocity,
-                                'shot_time_s': shot_time_s,
-                                'pdv_return_power_dbm': pdv_power_dbm,
-                                'laser_energy_mj': laser_energy_mj
-                            })
-                
-                # Save to CSV file
-                if csv_data:
-                    csv_df = pd.DataFrame(csv_data)
-                    csv_path = os.path.join(spade_output_dir, 'violin_plot_data.csv')
-                    csv_df.to_csv(csv_path, index=False)
-                    self.progress_signal.emit(f"Saved {len(csv_data)} data points to {csv_path}")
-                    self.progress_signal.emit(f"Columns: {list(csv_df.columns)}")
+                                min_velocities.append(np.nan)
+                                max_velocities.append(np.nan)
+                                mean_velocities.append(np.nan)
+                        else:
+                            min_velocities.append(np.nan)
+                            max_velocities.append(np.nan)
+                            mean_velocities.append(np.nan)
                     
-                    # Show data summary
-                    for material in csv_df['material'].unique():
-                        material_data = csv_df[csv_df['material'] == material]
-                        self.progress_signal.emit(f"{material}: {len(material_data)} samples")
-                else:
-                    self.progress_signal.emit("No data available for CSV export")
+                    # Plot min/max bounds and mean
+                    time_centers = (time_bins[:-1] + time_bins[1:]) / 2
+                    ax3_1.fill_between(time_centers, min_velocities, max_velocities, 
+                                     alpha=0.4, color=color, label=f'{material} (n={len(traces)})')
+                    ax3_1.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
+        
+        # Add legend to material spread subplot
+        ax3_1.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
+        
+        # Waveplate angle spread plot
+        for waveplate_angle, traces in waveplate_data.items():
+            if len(traces) > 0:
+                color = waveplate_colors[waveplate_angle]
+                # Plot individual traces with low alpha
+                for time_data, velocity_data, file_name in traces:
+                    ax3_2.plot(time_data, velocity_data, color=color, alpha=0.3, linewidth=0.5)
                 
-
+                # Calculate and plot min/max bounds
+                all_times = []
+                all_velocities = []
+                for time_data, velocity_data, _ in traces:
+                    all_times.extend(time_data)
+                    all_velocities.extend(velocity_data)
                 
-                # Create shot time vs material box plot for Figure 5
-                self.progress_signal.emit("Creating Figure 5: Shot time vs material...")
-                fig5, ax5 = plt.subplots(1, 1, figsize=(14, 10))
-                
-                # Define material order for x-axis
-                material_order = ['Al', 'Ti', 'Cu']
-                material_positions = {material: i for i, material in enumerate(material_order)}
-                
-                # Prepare data for box plot
-                box_data = []
-                box_labels = []
-                box_colors = []
-                
-                for material in material_order:
-                    if material in shot_time_data and len(shot_time_data[material]) > 0:
-                        shot_times = [point[0] for point in shot_time_data[material]]
-                        box_data.append(shot_times)
-                        box_labels.append(f'{material} (n={len(shot_times)})')
-                        box_colors.append(material_colors[material])
-                        print(f"[DEBUG] Box plot data for {material}: {len(shot_times)} points, range: {min(shot_times):.6f} - {max(shot_times):.6f} s")
-                    else:
-                        print(f"[DEBUG] No shot time data for material: {material}")
-                
-                # Create box plot with outlier handling
-                if box_data:
-                    bp = ax5.boxplot(box_data, labels=box_labels, patch_artist=True, 
-                                    showfliers=True, flierprops={'marker': 'o', 'markersize': 6, 'markerfacecolor': 'red'})
+                # Find common time range and calculate statistics
+                if all_times and all_velocities:
+                    time_array = np.array(all_times)
+                    velocity_array = np.array(all_velocities)
                     
-                    # Color the boxes
-                    for patch, color in zip(bp['boxes'], box_colors):
-                        patch.set_facecolor(color)
-                        patch.set_alpha(0.7)
+                    # Group by time bins to calculate statistics
+                    time_bins = np.linspace(min(time_array), max(time_array), 100)
+                    min_velocities = []
+                    max_velocities = []
+                    mean_velocities = []
                     
-                    # Color the medians
-                    for median in bp['medians']:
-                        median.set_color('black')
-                        median.set_linewidth(2)
+                    for i in range(len(time_bins) - 1):
+                        mask = (time_array >= time_bins[i]) & (time_array < time_bins[i + 1])
+                        if np.any(mask):
+                            velocities_in_bin = velocity_array[mask]
+                            velocities_in_bin = velocities_in_bin[~np.isnan(velocities_in_bin)]
+                            if len(velocities_in_bin) > 0:
+                                min_velocities.append(np.min(velocities_in_bin))
+                                max_velocities.append(np.max(velocities_in_bin))
+                                mean_velocities.append(np.mean(velocities_in_bin))
+                            else:
+                                min_velocities.append(np.nan)
+                                max_velocities.append(np.nan)
+                                mean_velocities.append(np.nan)
+                        else:
+                            min_velocities.append(np.nan)
+                            max_velocities.append(np.nan)
+                            mean_velocities.append(np.nan)
+                    
+                    # Plot min/max bounds and mean
+                    time_centers = (time_bins[:-1] + time_bins[1:]) / 2
+                    ax3_2.fill_between(time_centers, min_velocities, max_velocities, 
+                                     alpha=0.4, color=color, label=f'{waveplate_angle} (n={len(traces)})')
+                    ax3_2.plot(time_centers, mean_velocities, color=color, linewidth=2, alpha=0.8)
+        
+        # Add legend to waveplate spread subplot
+        ax3_2.legend(fontsize=16, loc='best', title='Wave Plate Angle', title_fontsize=18)
+        
+        # Create scatter plot for Figure 4 (Maximum velocity vs waveplate angle)
+        self.progress_signal.emit("Creating Figure 4: Maximum velocity vs waveplate angle...")
+        for material, data_points in scatter_data.items():
+            if len(data_points) > 0:
+                color = material_colors[material]
+                waveplate_angles = [point[0] for point in data_points]
+                max_velocities = [point[1] for point in data_points]
+                file_names = [point[2] for point in data_points]
                 
-                # Configure shot time vs material box plot
-                ax5.set_xlabel('Material', fontsize=20)
-                ax5.set_ylabel('Shot Time (s)', fontsize=20)
-                ax5.set_title('Shot Time vs Material (Box Plot with Outliers)', fontsize=20, fontweight='bold')
-                ax5.set_ylim(0, 20)  # Limit y-axis to 0-20 seconds
-                ax5.grid(True, linestyle='--', alpha=0.5)
-                ax5.tick_params(axis='both', which='major', labelsize=16)
-                ax5.tick_params(axis='both', which='minor', labelsize=14)
-                ax5.minorticks_on()
-                
-                # Add bounding box to shot time box plot
-                for spine in ax5.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-
-                
-                # Create PDV power vs material scatter plot for Figure 6
-                self.progress_signal.emit("Creating Figure 6: PDV power vs material...")
-                fig6, ax6 = plt.subplots(1, 1, figsize=(14, 10))
-                
-                # Define material order for x-axis (same as shot time plot)
-                material_order = ['Al', 'Ti', 'Cu']
-                material_positions = {material: i for i, material in enumerate(material_order)}
-                
-                for material, data_points in pdv_power_data.items():
-                    if len(data_points) > 0 and material in material_positions:
-                        color = material_colors[material]
-                        pdv_powers = [point[0] for point in data_points]
-                        file_names = [point[1] for point in data_points]
+                # Plot scatter points
+                ax4.scatter(waveplate_angles, max_velocities, color=color, s=100, alpha=0.7, 
+                           label=f'{material} (n={len(data_points)})')
+        
+        # Configure scatter plot
+        ax4.set_xlabel('Wave Plate Angle (degrees)', fontsize=20)
+        ax4.set_ylabel('Maximum Velocity (m/s)', fontsize=20)
+        ax4.set_title('Maximum Velocity vs Wave Plate Angle by Material', fontsize=20, fontweight='bold')
+        ax4.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
+        ax4.grid(True, linestyle='--', alpha=0.5)
+        ax4.tick_params(axis='both', which='major', labelsize=16)
+        ax4.tick_params(axis='both', which='minor', labelsize=14)
+        ax4.minorticks_on()
+        
+        # Add bounding box to scatter plot
+        for spine in ax4.spines.values():
+            spine.set_linewidth(3.0)
+            spine.set_color('black')
+        
+        # Save data for analysis to CSV file
+        self.progress_signal.emit("Saving data for analysis to CSV...")
+        
+        # Collect all data for CSV export
+        csv_data = []
+        for material in material_colors.keys():
+            if material in scatter_data and len(scatter_data[material]) > 0:
+                for waveplate_angle, max_velocity, file_name in scatter_data[material]:
+                    # Get additional data from parameter file
+                    shot_time_s = None
+                    pdv_power_dbm = None
+                    laser_energy_mj = None
+                    
+                    if self.param_data and file_name in self.param_data:
+                        exp_info = self.param_data[file_name]
                         
-                        # Use material position for x-axis
-                        x_pos = material_positions[material]
-                        x_positions = [x_pos] * len(pdv_powers)
+                        # Get shot time (flexible column name matching)
+                        shot_time_from_param = exp_info.get('shot_time', None)
+                        if shot_time_from_param is not None and shot_time_from_param != 'Unknown':
+                            try:
+                                shot_time_s = float(shot_time_from_param)
+                            except (ValueError, TypeError):
+                                pass
                         
-                        # Plot scatter points
-                        ax6.scatter(x_positions, pdv_powers, color=color, s=100, alpha=0.7, 
-                                   label=f'{material} (n={len(data_points)})')
-                        
-                        # Add file name annotations for some points (avoid overcrowding)
-                        if len(data_points) <= 10:  # Only annotate if few points
-                            for i, (pdv_power, file_name) in enumerate(data_points):
-                                ax6.annotate(file_name, (x_pos, pdv_power), xytext=(5, 5), 
-                                           textcoords='offset points', fontsize=10, alpha=0.8)
-                
-                # Configure PDV power vs material scatter plot
-                ax6.set_xlabel('Material', fontsize=20)
-                ax6.set_ylabel('PDV Return Power (dBm)', fontsize=20)
-                ax6.set_title('PDV Return Power vs Material', fontsize=20, fontweight='bold')
-                ax6.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
-                ax6.grid(True, linestyle='--', alpha=0.5)
-                ax6.tick_params(axis='both', which='major', labelsize=16)
-                ax6.tick_params(axis='both', which='minor', labelsize=14)
-                ax6.minorticks_on()
-                
-                # Set x-axis ticks to material names
-                ax6.set_xticks(range(len(material_order)))
-                ax6.set_xticklabels(material_order)
-                
-                # Add bounding box to PDV power scatter plot
-                for spine in ax6.spines.values():
-                    spine.set_linewidth(3.0)
-                    spine.set_color('black')
-                
-
-                
-                # Adjust layout and save all six figures (with speed optimization)
-                optimize_saving = self.spade_params.get('optimize_saving', True)
-                save_pdf_only = self.spade_params.get('save_pdf_only', False)
-                ultra_fast_mode = self.spade_params.get('ultra_fast_mode', False)  # Skip PNG entirely for speed
-                
-                # Check matplotlib version for optimize parameter support
-                import matplotlib
-                matplotlib_version = matplotlib.__version__
-                use_optimize = optimize_saving and matplotlib_version >= '3.3.0'
-                
-                if ultra_fast_mode:
-                    png_dpi = 72  # Very low DPI for maximum speed
-                    self.progress_signal.emit("Saving all figures (ultra-fast mode - 72 DPI)...")
-                elif optimize_saving:
-                    png_dpi = 100  # Reduced from 150 for much faster saving
-                    self.progress_signal.emit("Saving all figures (optimized for speed - 100 DPI)...")
-                else:
-                    png_dpi = 200  # Reduced from 300 for better balance
-                    self.progress_signal.emit("Saving all figures (high quality - 200 DPI)...")
-                
-                fig1.tight_layout()
-                out_path1_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
-                out_path1_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.pdf')
-                self.progress_signal.emit("Saving Figure 1...")
-                if not save_pdf_only:
-                    if use_optimize:
-                        fig1.savefig(out_path1_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
+                        # Get laser energy (flexible column name matching)
+                        for key, value in exp_info.items():
+                            if any(term in key.lower() for term in ['laser', 'energy', 'pulse']) and value != 'Unknown':
+                                try:
+                                    laser_energy_mj = float(value)
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+                    
+                    # Get PDV power from existing data (this should match the calculation above)
+                    pdv_power_dbm = None  # Reset to None for this file
+                    if material in pdv_power_data:
+                        for pdv_power, pdv_file_name in pdv_power_data[material]:
+                            if pdv_file_name == file_name:
+                                pdv_power_dbm = pdv_power
+                                print(f"[DEBUG] Found PDV power for {file_name}: {pdv_power_dbm:.2f} dBm")
+                                break
+                        else:
+                            print(f"[DEBUG] No PDV power data found for {file_name}")
                     else:
-                        fig1.savefig(out_path1_png, dpi=png_dpi, bbox_inches='tight')
-                fig1.savefig(out_path1_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig1)
+                        print(f"[DEBUG] No PDV power data for material {material}")
+                    
+                    csv_data.append({
+                        'file_name': file_name,
+                        'material': material,
+                        'waveplate_angle_degrees': waveplate_angle,
+                        'max_velocity_ms': max_velocity,
+                        'shot_time_s': shot_time_s,
+                        'pdv_return_power_dbm': pdv_power_dbm,
+                        'laser_energy_mj': laser_energy_mj
+                    })
+        
+        # Save to CSV file
+        if csv_data:
+            csv_df = pd.DataFrame(csv_data)
+            csv_path = os.path.join(spade_output_dir, 'analysis_data.csv')
+            main_csv_path = os.path.join(output_dir, 'analysis_data.csv')
+            csv_df.to_csv(csv_path, index=False)
+            csv_df.to_csv(main_csv_path, index=False)
+            self.progress_signal.emit(f"Saved {len(csv_data)} data points to both locations")
+            self.progress_signal.emit(f"Columns: {list(csv_df.columns)}")
+            
+            # Show data summary
+            for material in csv_df['material'].unique():
+                material_data = csv_df[csv_df['material'] == material]
+                self.progress_signal.emit(f"{material}: {len(material_data)} samples")
+        else:
+            self.progress_signal.emit("No data available for CSV export")
+        
+        # Create shot time vs material box plot for Figure 5
+        self.progress_signal.emit("Creating Figure 5: Shot time vs material...")
+        fig5, ax5 = plt.subplots(1, 1, figsize=(12, 8))
+        
+        # Define material order for x-axis
+        material_order = ['Al', 'Ti', 'Cu']
+        material_positions = {material: i for i, material in enumerate(material_order)}
+        
+        # Prepare data for box plot and CSV export
+        box_data = []
+        box_labels = []
+        box_colors = []
+        csv_data = []  # For saving to CSV
+        
+        for material in material_order:
+            if material in shot_time_data and len(shot_time_data[material]) > 0:
+                shot_times = [point[0] for point in shot_time_data[material]]
+                box_data.append(shot_times)
+                box_labels.append(f'{material} (n={len(shot_times)})')
+                box_colors.append(material_colors[material])
                 
-                fig2.tight_layout()
-                out_path2_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
-                out_path2_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.pdf')
-                self.progress_signal.emit("Saving Figure 2...")
-                if not save_pdf_only:
-                    if use_optimize:
-                        fig2.savefig(out_path2_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                    else:
-                        fig2.savefig(out_path2_png, dpi=png_dpi, bbox_inches='tight')
-                fig2.savefig(out_path2_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig2)
+                # Prepare CSV data
+                for shot_time in shot_times:
+                    csv_data.append({
+                        'material': material,
+                        'shot_time_s': shot_time
+                    })
                 
-                fig3.tight_layout()
-                out_path3_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.png')
-                out_path3_pdf = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.pdf')
-                self.progress_signal.emit("Saving Figure 3...")
-                if not save_pdf_only:
-                    if use_optimize:
-                        fig3.savefig(out_path3_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                    else:
-                        fig3.savefig(out_path3_png, dpi=png_dpi, bbox_inches='tight')
-                fig3.savefig(out_path3_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig3)
+                print(f"[DEBUG] Box plot data for {material}: {len(shot_times)} points, range: {min(shot_times):.6f} - {max(shot_times):.6f} s")
+            else:
+                print(f"[DEBUG] No shot time data for material: {material}")
+        
+        # Save shot time data to CSV
+        if csv_data:
+            csv_df = pd.DataFrame(csv_data)
+            csv_path = os.path.join(spade_output_dir, "shot_time_data.csv")
+            csv_df.to_csv(csv_path, index=False)
+            self.progress_signal.emit(f"Saved shot time data to: {csv_path}")
+        
+        # Create box plot with outlier handling and tighter spacing
+        if box_data:
+            # Calculate appropriate y-axis limits based on data
+            all_times = [time for data in box_data for time in data]
+            if all_times:
+                y_min = max(0, min(all_times) * 0.9)  # 10% margin below min
+                y_max = max(all_times) * 1.1  # 10% margin above max
                 
-                fig4.tight_layout()
-                out_path4_png = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.png')
-                out_path4_pdf = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.pdf')
-                self.progress_signal.emit("Saving Figure 4...")
-                if not save_pdf_only:
-                    if use_optimize:
-                        fig4.savefig(out_path4_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                    else:
-                        fig4.savefig(out_path4_png, dpi=png_dpi, bbox_inches='tight')
-                fig4.savefig(out_path4_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig4)
+                # Ensure reasonable limits if data is very small
+                if y_max - y_min < 0.001:  # If range is very small
+                    y_max = y_min + 0.001
                 
-                fig5.tight_layout()
-                out_path5_png = os.path.join(spade_output_dir, 'shot_time_vs_material.png')
-                out_path5_pdf = os.path.join(spade_output_dir, 'shot_time_vs_material.pdf')
-                self.progress_signal.emit("Saving Figure 5...")
-                if not save_pdf_only:
-                    if use_optimize:
-                        fig5.savefig(out_path5_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                    else:
-                        fig5.savefig(out_path5_png, dpi=png_dpi, bbox_inches='tight')
-                fig5.savefig(out_path5_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig5)
+                bp = ax5.boxplot(box_data, labels=box_labels, patch_artist=True, 
+                                showfliers=True, flierprops={'marker': 'o', 'markersize': 4, 'markerfacecolor': 'red'},
+                                widths=0.6)  # Reduce box width for tighter spacing
+            
+                # Color the boxes
+                for patch, color in zip(bp['boxes'], box_colors):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.7)
                 
-                fig6.tight_layout()
-                out_path6_png = os.path.join(spade_output_dir, 'pdv_power_vs_material.png')
-                out_path6_pdf = os.path.join(spade_output_dir, 'pdv_power_vs_material.pdf')
-                self.progress_signal.emit("Saving Figure 6...")
-                if not save_pdf_only:
-                    if use_optimize:
-                        fig6.savefig(out_path6_png, dpi=png_dpi, bbox_inches='tight', optimize=True)
-                    else:
-                        fig6.savefig(out_path6_png, dpi=png_dpi, bbox_inches='tight')
-                fig6.savefig(out_path6_pdf, format='pdf', bbox_inches='tight')
-                plt.close(fig6)
+                # Color the medians
+                for median in bp['medians']:
+                    median.set_color('black')
+                    median.set_linewidth(2)
+                
+                # Set y-axis limits based on actual data
+                ax5.set_ylim(y_min, y_max)
+            else:
+                # Fallback if no data
+                bp = ax5.boxplot(box_data, labels=box_labels, patch_artist=True, 
+                                showfliers=True, flierprops={'marker': 'o', 'markersize': 4, 'markerfacecolor': 'red'},
+                                widths=0.6)
+                ax5.set_ylim(0, 1)  # Default range
+        
+        # Configure shot time vs material box plot
+        ax5.set_xlabel('Material', fontsize=16)
+        ax5.set_ylabel('Shot Time (s)', fontsize=16)
+        ax5.set_title('Shot Time vs Material (Box Plot with Outliers)', fontsize=18, fontweight='bold')
+        ax5.grid(True, linestyle='--', alpha=0.3)
+        ax5.tick_params(axis='both', which='major', labelsize=14)
+        ax5.tick_params(axis='both', which='minor', labelsize=12)
+        ax5.minorticks_on()
+        
+        # Add bounding box to shot time box plot
+        for spine in ax5.spines.values():
+            spine.set_linewidth(2.0)
+            spine.set_color('black')
+        
+        # Create PDV power vs material scatter plot for Figure 6
+        self.progress_signal.emit("Creating Figure 6: PDV power vs material...")
+        fig6, ax6 = plt.subplots(1, 1, figsize=(14, 10))
+        
+        # Define material order for x-axis (same as shot time plot)
+        material_order = ['Al', 'Ti', 'Cu']
+        material_positions = {material: i for i, material in enumerate(material_order)}
+        
+        for material, data_points in pdv_power_data.items():
+            if len(data_points) > 0 and material in material_positions:
+                color = material_colors[material]
+                pdv_powers = [point[0] for point in data_points]
+                file_names = [point[1] for point in data_points]
+                
+                # Use material position for x-axis
+                x_pos = material_positions[material]
+                x_positions = [x_pos] * len(pdv_powers)
+                
+                # Plot scatter points
+                ax6.scatter(x_positions, pdv_powers, color=color, s=100, alpha=0.7, 
+                           label=f'{material} (n={len(data_points)})')
+                
+                # Add file name annotations for some points (avoid overcrowding)
+                if len(data_points) <= 10:  # Only annotate if few points
+                    for i, (pdv_power, file_name) in enumerate(data_points):
+                        ax6.annotate(file_name, (x_pos, pdv_power), xytext=(5, 5), 
+                                   textcoords='offset points', fontsize=10, alpha=0.8)
+        
+        # Configure PDV power vs material scatter plot
+        ax6.set_xlabel('Material', fontsize=20)
+        ax6.set_ylabel('PDV Return Power (dBm)', fontsize=20)
+        ax6.set_title('PDV Return Power vs Material', fontsize=20, fontweight='bold')
+        ax6.legend(fontsize=16, loc='best', title='Flyer Material', title_fontsize=18)
+        ax6.grid(True, linestyle='--', alpha=0.5)
+        ax6.tick_params(axis='both', which='major', labelsize=16)
+        ax6.tick_params(axis='both', which='minor', labelsize=14)
+        ax6.minorticks_on()
+        
+        # Set x-axis ticks to material names
+        ax6.set_xticks(range(len(material_order)))
+        ax6.set_xticklabels(material_order)
+        
+        # Add bounding box to PDV power scatter plot
+        for spine in ax6.spines.values():
+            spine.set_linewidth(3.0)
+            spine.set_color('black')
+        
+        # Standard saving with fixed DPI
+        png_dpi = 300  # Standard high quality DPI
+        self.progress_signal.emit("Saving all figures (standard quality - 300 DPI)...")
+        
+        fig1.tight_layout()
+        out_path1_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_with_legends.png')
+        main_path1_png = os.path.join(output_dir, 'all_smoothed_velocity_traces_with_legends.png')
+        self.progress_signal.emit("Saving Figure 1...")
+        fig1.savefig(out_path1_png, dpi=png_dpi, bbox_inches='tight')
+        fig1.savefig(main_path1_png, dpi=png_dpi, bbox_inches='tight')
+        plt.close(fig1)
+        
+        fig2.tight_layout()
+        out_path2_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
+        main_path2_png = os.path.join(output_dir, 'all_smoothed_velocity_traces_color_meaning.png')
+        self.progress_signal.emit("Saving Figure 2...")
+        fig2.savefig(out_path2_png, dpi=png_dpi, bbox_inches='tight')
+        fig2.savefig(main_path2_png, dpi=png_dpi, bbox_inches='tight')
+        plt.close(fig2)
+        
+        fig3.tight_layout()
+        out_path3_png = os.path.join(spade_output_dir, 'all_smoothed_velocity_traces_spread.png')
+        main_path3_png = os.path.join(output_dir, 'all_smoothed_velocity_traces_spread.png')
+        self.progress_signal.emit("Saving Figure 3...")
+        fig3.savefig(out_path3_png, dpi=png_dpi, bbox_inches='tight')
+        fig3.savefig(main_path3_png, dpi=png_dpi, bbox_inches='tight')
+        plt.close(fig3)
+        
+        fig4.tight_layout()
+        out_path4_png = os.path.join(spade_output_dir, 'max_velocity_vs_waveplate_angle.png')
+        main_path4_png = os.path.join(output_dir, 'max_velocity_vs_waveplate_angle.png')
+        self.progress_signal.emit("Saving Figure 4...")
+        fig4.savefig(out_path4_png, dpi=png_dpi, bbox_inches='tight')
+        fig4.savefig(main_path4_png, dpi=png_dpi, bbox_inches='tight')
+        plt.close(fig4)
+        
+        fig5.tight_layout()
+        out_path5_png = os.path.join(spade_output_dir, 'shot_time_vs_material.png')
+        main_path5_png = os.path.join(output_dir, 'shot_time_vs_material.png')
+        self.progress_signal.emit("Saving Figure 5...")
+        fig5.savefig(out_path5_png, dpi=png_dpi, bbox_inches='tight')
+        fig5.savefig(main_path5_png, dpi=png_dpi, bbox_inches='tight')
+        plt.close(fig5)
+        
+        fig6.tight_layout()
+        out_path6_png = os.path.join(spade_output_dir, 'pdv_power_vs_material.png')
+        main_path6_png = os.path.join(output_dir, 'pdv_power_vs_material.png')
+        self.progress_signal.emit("Saving Figure 6...")
+        fig6.savefig(out_path6_png, dpi=png_dpi, bbox_inches='tight')
+        fig6.savefig(main_path6_png, dpi=png_dpi, bbox_inches='tight')
+        plt.close(fig6)
                 
 
                 
 
                 
                 # Report combined plotting summary
-                self.progress_signal.emit("Enhanced combined plotting completed successfully!")
-                self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
-                self.progress_signal.emit(f"Successfully plotted: {len(plotted_files)} files")
-                self.progress_signal.emit(f"Failed to plot: {len(failed_plot_files)} files")
-                self.progress_signal.emit(f"Materials found: {list(material_colors.keys())}")
-                self.progress_signal.emit(f"Waveplate angles found: {list(waveplate_colors.keys())}")
-                
-                if failed_plot_files:
-                    self.progress_signal.emit(f"=== Failed Plot Files ===")
-                    for failed_file, error_msg in failed_plot_files:
-                        self.progress_signal.emit(f"❌ {failed_file}: {error_msg}")
-                
-                self.progress_signal.emit(f"Figure 1 (with individual file legends): all_smoothed_velocity_traces_with_legends.png/.pdf")
-                self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png/.pdf")
-                self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png/.pdf")
-                self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png/.pdf")
-                self.progress_signal.emit(f"Data for violin plots: violin_plot_data.csv")
-                self.progress_signal.emit(f"Figure 5 (shot time vs material): shot_time_vs_material.png/.pdf")
-                self.progress_signal.emit(f"Figure 6 (PDV power vs material): pdv_power_vs_material.png/.pdf")
-                # --- END ENHANCED PLOT ---
+        self.progress_signal.emit("Enhanced combined plotting completed successfully!")
+        self.progress_signal.emit(f"=== Enhanced Combined Plotting Summary ===")
+        self.progress_signal.emit(f"Successfully plotted: {len(plotted_files)} files")
+        self.progress_signal.emit(f"Failed to plot: {len(failed_plot_files)} files")
+        self.progress_signal.emit(f"Materials found: {list(material_colors.keys())}")
+        self.progress_signal.emit(f"Waveplate angles found: {list(waveplate_colors.keys())}")
+        
+        if failed_plot_files:
+            self.progress_signal.emit(f"=== Failed Plot Files ===")
+            for failed_file, error_msg in failed_plot_files:
+                self.progress_signal.emit(f"❌ {failed_file}: {error_msg}")
+        
+        self.progress_signal.emit(f"Figure 1 (with individual file legends): all_smoothed_velocity_traces_with_legends.png")
+        self.progress_signal.emit(f"Figure 2 (color meaning only): all_smoothed_velocity_traces_color_meaning.png")
+        self.progress_signal.emit(f"Figure 3 (spread analysis): all_smoothed_velocity_traces_spread.png")
+        self.progress_signal.emit(f"Figure 4 (scatter plot): max_velocity_vs_waveplate_angle.png")
+        self.progress_signal.emit(f"Data for analysis: analysis_data.csv")
+        self.progress_signal.emit(f"Figure 5 (shot time vs material): shot_time_vs_material.png")
+        self.progress_signal.emit(f"Figure 6 (PDV power vs material): pdv_power_vs_material.png")
+        # --- END ENHANCED PLOT ---
 
-                # 4. Spall Strength vs. Strain Rate and Shock Stress
-                summary_csv = os.path.join(spade_output_dir, 'spall_summary.csv')
-                if os.path.exists(summary_csv):
-                    summary_df = pd.read_csv(summary_csv)
-                    # Get density and acoustic velocity from GUI/spade_params
-                    density = self.spade_params.get('density', 8960)
-                    acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
+        # 4. Spall Strength vs. Strain Rate and Shock Stress (only if spall analysis is enabled)
+        experiment_type = self.spade_params.get('experiment_type', 'velocity_shots')
+        
+        if experiment_type == "spall_analysis":
+            summary_csv = os.path.join(spade_output_dir, 'spall_summary.csv')
+            if os.path.exists(summary_csv):
+                summary_df = pd.read_csv(summary_csv)
+                # Get density and acoustic velocity from GUI/spade_params
+                density = self.spade_params.get('density', 8960)
+                acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
+                
+                # Enhance SPADE summary with ALPSS results and additional calculations
+                enhanced_summary = []
+                
+                for idx, row in summary_df.iterrows():
+                    enhanced_row = row.copy()
+                    filename = row.get('Filename', '')
                     
-                    # Enhance SPADE summary with ALPSS results and additional calculations
-                    enhanced_summary = []
+                    # Try to find corresponding ALPSS results file
+                    alpss_results_file = os.path.join(self.output_dir, f"{filename}--results.csv")
+                    if os.path.exists(alpss_results_file):
+                        try:
+                            # Read ALPSS results
+                            alpss_results = pd.read_csv(alpss_results_file, header=None, names=['Name', 'Value'])
+                            alpss_dict = dict(zip(alpss_results['Name'], alpss_results['Value']))
+                            
+                            # Add ALPSS results to enhanced summary
+                            enhanced_row['ALPSS_Spall_Strength_GPa'] = alpss_dict.get('Spall Strength', np.nan)
+                            enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa'] = alpss_dict.get('Spall Strength Uncertainty', np.nan)
+                            enhanced_row['ALPSS_Strain_Rate_s1'] = alpss_dict.get('Strain Rate', np.nan)
+                            enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1'] = alpss_dict.get('Strain Rate Uncertainty', np.nan)
+                            enhanced_row['ALPSS_Peak_Shock_Stress_GPa'] = alpss_dict.get('Peak Shock Stress', np.nan)
+                            enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] = alpss_dict.get('Velocity at Max Compression', np.nan)
+                            enhanced_row['ALPSS_Velocity_at_Max_Tension_ms'] = alpss_dict.get('Velocity at Max Tension', np.nan)
+                            enhanced_row['ALPSS_Velocity_at_Recompression_ms'] = alpss_dict.get('Velocity at Recompression', np.nan)
+                            enhanced_row['ALPSS_Time_at_Max_Compression_ns'] = alpss_dict.get('Time at Max Compression', np.nan)
+                            enhanced_row['ALPSS_Time_at_Max_Tension_ns'] = alpss_dict.get('Time at Max Tension', np.nan)
+                            enhanced_row['ALPSS_Time_at_Recompression_ns'] = alpss_dict.get('Time at Recompression', np.nan)
+                            enhanced_row['ALPSS_Carrier_Frequency_Hz'] = alpss_dict.get('Carrier Frequency', np.nan)
+                            enhanced_row['ALPSS_Signal_Start_Time_s'] = alpss_dict.get('Signal Start Time', np.nan)
+                            enhanced_row['ALPSS_Smoothing_Characteristic_Time_s'] = alpss_dict.get('Smoothing Characteristic Time', np.nan)
+                            
+                        except Exception as e:
+                            print(f"[WARNING] Could not read ALPSS results for {filename}: {e}")
                     
-                    for idx, row in summary_df.iterrows():
-                        enhanced_row = row.copy()
-                        filename = row.get('Filename', '')
-                        
-                        # Try to find corresponding ALPSS results file
-                        alpss_results_file = os.path.join(self.output_dir, f"{filename}--results.csv")
-                        if os.path.exists(alpss_results_file):
-                            try:
-                                # Read ALPSS results
-                                alpss_results = pd.read_csv(alpss_results_file, header=None, names=['Name', 'Value'])
-                                alpss_dict = dict(zip(alpss_results['Name'], alpss_results['Value']))
-                                
-                                # Add ALPSS results to enhanced summary
-                                enhanced_row['ALPSS_Spall_Strength_GPa'] = alpss_dict.get('Spall Strength', np.nan)
-                                enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa'] = alpss_dict.get('Spall Strength Uncertainty', np.nan)
-                                enhanced_row['ALPSS_Strain_Rate_s1'] = alpss_dict.get('Strain Rate', np.nan)
-                                enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1'] = alpss_dict.get('Strain Rate Uncertainty', np.nan)
-                                enhanced_row['ALPSS_Peak_Shock_Stress_GPa'] = alpss_dict.get('Peak Shock Stress', np.nan)
-                                enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] = alpss_dict.get('Velocity at Max Compression', np.nan)
-                                enhanced_row['ALPSS_Velocity_at_Max_Tension_ms'] = alpss_dict.get('Velocity at Max Tension', np.nan)
-                                enhanced_row['ALPSS_Velocity_at_Recompression_ms'] = alpss_dict.get('Velocity at Recompression', np.nan)
-                                enhanced_row['ALPSS_Time_at_Max_Compression_ns'] = alpss_dict.get('Time at Max Compression', np.nan)
-                                enhanced_row['ALPSS_Time_at_Max_Tension_ns'] = alpss_dict.get('Time at Max Tension', np.nan)
-                                enhanced_row['ALPSS_Time_at_Recompression_ns'] = alpss_dict.get('Time at Recompression', np.nan)
-                                enhanced_row['ALPSS_Carrier_Frequency_Hz'] = alpss_dict.get('Carrier Frequency', np.nan)
-                                enhanced_row['ALPSS_Signal_Start_Time_s'] = alpss_dict.get('Signal Start Time', np.nan)
-                                enhanced_row['ALPSS_Smoothing_Characteristic_Time_s'] = alpss_dict.get('Smoothing Characteristic Time', np.nan)
-                                
-                            except Exception as e:
-                                print(f"[WARNING] Could not read ALPSS results for {filename}: {e}")
-                        
-                        # Calculate shock stress uncertainty if we have velocity uncertainty
-                        if 'ALPSS_Velocity_at_Max_Compression_ms' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Velocity_at_Max_Compression_ms']):
-                            # Estimate velocity uncertainty as 1% of velocity (typical for PDV)
-                            vel_uncertainty = enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] * 0.01
-                            enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = 0.5 * density * acoustic_velocity * vel_uncertainty * 1e-9
+                    # Calculate shock stress uncertainty if we have velocity uncertainty
+                    if 'ALPSS_Velocity_at_Max_Compression_ms' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Velocity_at_Max_Compression_ms']):
+                        # Estimate velocity uncertainty as 1% of velocity (typical for PDV)
+                        vel_uncertainty = enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] * 0.01
+                        enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = 0.5 * density * acoustic_velocity * vel_uncertainty * 1e-9
+                    else:
+                        enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = np.nan
+                    
+                    # Use ALPSS values if available, otherwise use SPADE values
+                    if 'ALPSS_Spall_Strength_GPa' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Spall_Strength_GPa']):
+                        enhanced_row['Spall_Strength_GPa_Final'] = enhanced_row['ALPSS_Spall_Strength_GPa']
+                        enhanced_row['Spall_Strength_Uncertainty_GPa_Final'] = enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa']
+                    else:
+                        enhanced_row['Spall_Strength_GPa_Final'] = row.get('Spall Strength (GPa)', np.nan)
+                        enhanced_row['Spall_Strength_Uncertainty_GPa_Final'] = row.get('Spall Strength Uncertainty (GPa)', np.nan)
+                    
+                    if 'ALPSS_Strain_Rate_s1' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Strain_Rate_s1']):
+                        enhanced_row['Strain_Rate_s1_Final'] = enhanced_row['ALPSS_Strain_Rate_s1']
+                        enhanced_row['Strain_Rate_Uncertainty_s1_Final'] = enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1']
+                    else:
+                        enhanced_row['Strain_Rate_s1_Final'] = row.get('Strain Rate (s^-1)', np.nan)
+                        enhanced_row['Strain_Rate_Uncertainty_s1_Final'] = row.get('Strain Rate Uncertainty (s^-1)', np.nan)
+                    
+                    if 'ALPSS_Peak_Shock_Stress_GPa' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Peak_Shock_Stress_GPa']):
+                        enhanced_row['Peak_Shock_Stress_GPa_Final'] = enhanced_row['ALPSS_Peak_Shock_Stress_GPa']
+                        enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa']
+                    else:
+                        # Calculate from SPADE's Plateau Mean Velocity
+                        if 'Plateau Mean Velocity (m/s)' in row and not pd.isna(row['Plateau Mean Velocity (m/s)']):
+                            enhanced_row['Peak_Shock_Stress_GPa_Final'] = row.get('Peak Shock Stress (GPa)', np.nan)
+                            enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = row.get('Peak Shock Stress Uncertainty (GPa)', np.nan)
                         else:
-                            enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = np.nan
-                        
-                        # Use ALPSS values if available, otherwise use SPADE values
-                        if 'ALPSS_Spall_Strength_GPa' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Spall_Strength_GPa']):
-                            enhanced_row['Spall_Strength_GPa_Final'] = enhanced_row['ALPSS_Spall_Strength_GPa']
-                            enhanced_row['Spall_Strength_Uncertainty_GPa_Final'] = enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa']
-                        else:
-                            enhanced_row['Spall_Strength_GPa_Final'] = row.get('Spall Strength (GPa)', np.nan)
-                            enhanced_row['Spall_Strength_Uncertainty_GPa_Final'] = row.get('Spall Strength Uncertainty (GPa)', np.nan)
-                        
-                        if 'ALPSS_Strain_Rate_s1' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Strain_Rate_s1']):
-                            enhanced_row['Strain_Rate_s1_Final'] = enhanced_row['ALPSS_Strain_Rate_s1']
-                            enhanced_row['Strain_Rate_Uncertainty_s1_Final'] = enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1']
-                        else:
-                            enhanced_row['Strain_Rate_s1_Final'] = row.get('Strain Rate (s^-1)', np.nan)
-                            enhanced_row['Strain_Rate_Uncertainty_s1_Final'] = row.get('Strain Rate Uncertainty (s^-1)', np.nan)
-                        
-                        if 'ALPSS_Peak_Shock_Stress_GPa' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Peak_Shock_Stress_GPa']):
-                            enhanced_row['Peak_Shock_Stress_GPa_Final'] = enhanced_row['ALPSS_Peak_Shock_Stress_GPa']
-                            enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa']
-                        else:
-                            # Calculate from SPADE's Plateau Mean Velocity
-                            if 'Plateau Mean Velocity (m/s)' in row and not pd.isna(row['Plateau Mean Velocity (m/s)']):
-                                enhanced_row['Peak_Shock_Stress_GPa_Final'] = row.get('Peak Shock Stress (GPa)', np.nan)
-                                enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = row.get('Peak Shock Stress Uncertainty (GPa)', np.nan)
-                            else:
-                                enhanced_row['Peak_Shock_Stress_GPa_Final'] = np.nan
-                                enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = np.nan
-                        
-                        enhanced_summary.append(enhanced_row)
+                            enhanced_row['Peak_Shock_Stress_GPa_Final'] = np.nan
+                            enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = np.nan
                     
-                    # Create enhanced summary DataFrame
-                    enhanced_summary_df = pd.DataFrame(enhanced_summary)
+                    enhanced_summary.append(enhanced_row)
+                
+                # Create enhanced summary DataFrame
+                enhanced_summary_df = pd.DataFrame(enhanced_summary)
+                
+                # Save enhanced summary
+                enhanced_summary_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
+                enhanced_summary_df.to_csv(enhanced_summary_path, index=False)
+                
+                # Update the original summary with key columns for plotting
+                summary_df['Peak Shock Stress (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_GPa_Final']
+                summary_df['Peak Shock Stress Uncertainty (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
+                summary_df['Spall Strength (GPa)'] = enhanced_summary_df['Spall_Strength_GPa_Final']
+                summary_df['Spall Strength Uncertainty (GPa)'] = enhanced_summary_df['Spall_Strength_Uncertainty_GPa_Final']
+                summary_df['Strain Rate Uncertainty (s^-1)'] = enhanced_summary_df['Strain_Rate_Uncertainty_s1_Final']
+                summary_df.to_csv(summary_csv, index=False)
+                
+                self.progress_signal.emit("Enhanced SPADE summary with ALPSS results and uncertainty calculations")
+                
+                # Log available outputs for spall analysis
+                self.progress_signal.emit("Available outputs (Spall Analysis):")
+                self.progress_signal.emit("  - spall_summary.csv: Basic SPADE results")
+                self.progress_signal.emit("  - enhanced_spall_summary.csv: Complete results with ALPSS data and uncertainties")
+                self.progress_signal.emit("  - spall_vs_strain_rate.png: Spall strength vs strain rate plot")
+                self.progress_signal.emit("  - spall_vs_shock_stress.png: Spall strength vs shock stress plot")
+                self.progress_signal.emit("  - Individual ALPSS files: *--results.csv, *--velocity.csv, etc.")
+                self.progress_signal.emit("  - Individual SPADE analysis plots (if enabled)")
+                self.progress_signal.emit("  - ALPSS velocity files: 4 columns (Time, Velocity, Uncertainty, Velocity+Uncertainty)")
+                self.progress_signal.emit("  - SPADE uses ALPSS uncertainty data for error bars and analysis")
+                
+                # Spall Strength vs. Strain Rate
+                try:
+                    plot_spall_vs_strain_rate(
+                        df=summary_df,
+                        output_filename=os.path.join(spade_output_dir, 'spall_vs_strain_rate.png'),
+                        literature_data_file=None,  # Disable literature data to avoid column mismatch errors
+                        spall_unc_col='Spall Strength Uncertainty (GPa)'
+                    )
+                    self.progress_signal.emit("✅ Generated spall_vs_strain_rate.png")
+                except Exception as e:
+                    msg = f"[WARNING] Failed to generate spall_vs_strain_rate.png: {e}"
+                    print(msg)
+                    self.progress_signal.emit(msg)
+                try:
+                    plot_spall_vs_shock_stress(
+                        df=summary_df,
+                        output_filename=os.path.join(spade_output_dir, 'spall_vs_shock_stress.png'),
+                        literature_data_file=None,  # Disable literature data to avoid column mismatch errors
+                        spall_unc_col='Spall Strength Uncertainty (GPa)'
+                    )
+                    self.progress_signal.emit("✅ Generated spall_vs_shock_stress.png")
+                except Exception as e:
+                    msg = f"[WARNING] Failed to generate spall_vs_shock_stress.png: {e}"
+                    print(msg)
+                    self.progress_signal.emit(msg)
+                
+                # Generate combined velocity traces plot
+                try:
+                    # Find all velocity files
+                    vel_files = []
+                    for root, dirs, files in os.walk(self.output_dir):
+                        for file in files:
+                            if file.endswith("--vel-smooth-with-uncert.csv"):
+                                vel_files.append(os.path.join(root, file))
                     
-                    # Save enhanced summary
-                    enhanced_summary_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
-                    enhanced_summary_df.to_csv(enhanced_summary_path, index=False)
-                    
-                    # Update the original summary with key columns for plotting
-                    summary_df['Peak Shock Stress (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_GPa_Final']
-                    summary_df['Peak Shock Stress Uncertainty (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
-                    summary_df['Spall Strength (GPa)'] = enhanced_summary_df['Spall_Strength_GPa_Final']
-                    summary_df['Spall Strength Uncertainty (GPa)'] = enhanced_summary_df['Spall_Strength_Uncertainty_GPa_Final']
-                    summary_df['Strain Rate Uncertainty (s^-1)'] = enhanced_summary_df['Strain_Rate_Uncertainty_s1_Final']
-                    summary_df.to_csv(summary_csv, index=False)
-                    
-                    self.progress_signal.emit("Enhanced SPADE summary with ALPSS results and uncertainty calculations")
-                    
-                    # Log available outputs
-                    self.progress_signal.emit("Available outputs:")
-                    self.progress_signal.emit("  - spall_summary.csv: Basic SPADE results")
-                    self.progress_signal.emit("  - enhanced_spall_summary.csv: Complete results with ALPSS data and uncertainties")
-                    self.progress_signal.emit("  - spall_vs_strain_rate.png: Spall strength vs strain rate plot")
-                    self.progress_signal.emit("  - spall_vs_shock_stress.png: Spall strength vs shock stress plot")
-                    self.progress_signal.emit("  - all_smoothed_velocity_traces.png: Combined velocity traces")
-                    self.progress_signal.emit("  - Individual ALPSS files: *--results.csv, *--velocity.csv, etc.")
-                    self.progress_signal.emit("  - Individual SPADE analysis plots (if enabled)")
-                    self.progress_signal.emit("  - ALPSS velocity files: 4 columns (Time, Velocity, Uncertainty, Velocity+Uncertainty)")
-                    self.progress_signal.emit("  - SPADE uses ALPSS uncertainty data for error bars and analysis")
-                    
-                    # Spall Strength vs. Strain Rate
-                    try:
-                        plot_spall_vs_strain_rate(
-                            df=summary_df,
-                            output_filename=os.path.join(spade_output_dir, 'spall_vs_strain_rate.png'),
-                            literature_data_file=os.path.join('SPADE', 'spall_analysis_release', 'data', 'combined_lit_table.csv'),
-                            spall_unc_col='Spall Strength Uncertainty (GPa)'
+                    if vel_files:
+                        plot_combined_mean_traces(
+                            mean_trace_files=vel_files,
+                            output_filename=os.path.join(spade_output_dir, 'combined_mean_velocity.png'),
+                            title="Combined Mean Velocity Traces"
                         )
-                    except Exception as e:
-                        msg = f"[WARNING] Failed to generate spall_vs_strain_rate.png: {e}"
-                        print(msg)
-                        self.progress_signal.emit(msg)
-                    try:
-                        plot_spall_vs_shock_stress(
-                            df=summary_df,
-                            output_filename=os.path.join(spade_output_dir, 'spall_vs_shock_stress.png'),
-                            literature_data_file=os.path.join('SPADE', 'spall_analysis_release', 'data', 'combined_lit_table_only_poly.csv'),
-                            spall_unc_col='Spall Strength Uncertainty (GPa)'
-                        )
-                    except Exception as e:
-                        msg = f"[WARNING] Failed to generate spall_vs_shock_stress.png: {e}"
-                        print(msg)
-                        self.progress_signal.emit(msg)
-                # Check for missing plots and warn
-                for plot_name in [
-                    'combined_mean_velocity.png',
-                    'spall_vs_strain_rate.png',
-                    'spall_vs_shock_stress.png',
-                    'all_smoothed_velocity_traces.png']:
-                    plot_path = os.path.join(spade_output_dir, plot_name)
-                    if not os.path.exists(plot_path):
-                        msg = f"[WARNING] Expected plot missing: {plot_name}"
-                        print(msg)
-                        self.progress_signal.emit(msg)
-            except Exception as e:
-                print(f"[WARNING] Post-processing for SPADE plots failed: {e}")
-                self.progress_signal.emit(f"[WARNING] Post-processing for SPADE plots failed: {e}")
-            
-        except Exception as e:
-            self.progress_signal.emit(f"Error: {str(e)}")
-            self.finished_signal.emit(False, str(e))
+                        self.progress_signal.emit("✅ Generated combined_mean_velocity.png")
+                    else:
+                        self.progress_signal.emit("[WARNING] No velocity files found for combined plot")
+                except Exception as e:
+                    msg = f"[WARNING] Failed to generate combined_mean_velocity.png: {e}"
+                    print(msg)
+                    self.progress_signal.emit(msg)
+            else:
+                self.progress_signal.emit("[WARNING] Spall analysis selected but no spall_summary.csv found")
+        else:
+            # Velocity shots mode - only log velocity-related outputs
+            self.progress_signal.emit("Available outputs (Velocity Shots):")
+            self.progress_signal.emit("  - Individual ALPSS files: *--results.csv, *--velocity.csv, etc.")
+            self.progress_signal.emit("  - ALPSS velocity files: 4 columns (Time, Velocity, Uncertainty, Velocity+Uncertainty)")
+            self.progress_signal.emit("  - Combined velocity plots (if enabled)")
+        
+        # Check for missing plots and warn (only check velocity plots for velocity mode, all plots for spall mode)
+        if experiment_type == "spall_analysis":
+            expected_plots = [
+                'combined_mean_velocity.png',
+                'spall_vs_strain_rate.png',
+                'spall_vs_shock_stress.png',
+                'all_smoothed_velocity_traces.png'
+            ]
+        else:
+            expected_plots = [
+                'combined_mean_velocity.png',
+                'all_smoothed_velocity_traces.png'
+            ]
+        
+        for plot_name in expected_plots:
+            plot_path = os.path.join(spade_output_dir, plot_name)
+            if not os.path.exists(plot_path):
+                msg = f"[WARNING] Expected plot missing: {plot_name}"
+                print(msg)
+                self.progress_signal.emit(msg)
 
 class ALPSSSPADEGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_theme = 'light'
+        self.config_file = os.path.join(os.path.expanduser('~'), '.alpss_spade_config.json')
         self.init_ui()
+        self.load_settings()
         
     def init_ui(self):
         self.setWindowTitle("HELIX Analysis Toolbox")
@@ -1514,6 +2075,159 @@ class ALPSSSPADEGUI(QMainWindow):
         
         # Initialize analysis thread
         self.analysis_thread = None
+        
+    def save_settings(self):
+        """Save current settings to configuration file"""
+        try:
+            settings = {
+                'file_paths': {
+                    'input_files': self.get_input_files(),
+                    'output_dir': self.output_path.text() if hasattr(self, 'output_path') else '',
+                    'param_folder': self.param_folder_path.text() if hasattr(self, 'param_folder_path') else '',
+                    'spade_input': self.spade_input_path.text() if hasattr(self, 'spade_input_path') else ''
+                },
+                'alpss_params': self.get_alpss_params() if hasattr(self, 'get_alpss_params') else {},
+                'spade_params': self.get_spade_params() if hasattr(self, 'get_spade_params') else {},
+                'ui_settings': {
+                    'theme': self.current_theme,
+                    'file_mode': self.file_mode_combo.currentText() if hasattr(self, 'file_mode_combo') else 'Single File',
+                    'analysis_mode': self.mode_alpss_only.isChecked() if hasattr(self, 'mode_alpss_only') else True,
+                    'spade_input_mode': self.spade_auto_mode.isChecked() if hasattr(self, 'spade_auto_mode') else True
+                }
+            }
+            
+            with open(self.config_file, 'w') as f:
+                json.dump(settings, f, indent=2)
+                
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+    
+    def load_settings(self):
+        """Load settings from configuration file"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
+                    settings = json.load(f)
+                
+                # Load file paths
+                if 'file_paths' in settings:
+                    file_paths = settings['file_paths']
+                    if hasattr(self, 'output_path') and 'output_dir' in file_paths:
+                        self.output_path.setText(file_paths['output_dir'])
+                    if hasattr(self, 'param_folder_path') and 'param_folder' in file_paths:
+                        self.param_folder_path.setText(file_paths['param_folder'])
+                    if hasattr(self, 'spade_input_path') and 'spade_input' in file_paths:
+                        self.spade_input_path.setText(file_paths['spade_input'])
+                
+                # Load UI settings
+                if 'ui_settings' in settings:
+                    ui_settings = settings['ui_settings']
+                    if 'theme' in ui_settings:
+                        self.current_theme = ui_settings['theme']
+                        if ui_settings['theme'] == 'dark':
+                            self.theme_switch.setChecked(True)
+                        self.apply_theme(ui_settings['theme'])
+                    
+                    if hasattr(self, 'file_mode_combo') and 'file_mode' in ui_settings:
+                        index = self.file_mode_combo.findText(ui_settings['file_mode'])
+                        if index >= 0:
+                            self.file_mode_combo.setCurrentIndex(index)
+                    
+                    if hasattr(self, 'mode_alpss_only') and 'analysis_mode' in ui_settings:
+                        if ui_settings['analysis_mode']:
+                            self.mode_alpss_only.setChecked(True)
+                        else:
+                            self.mode_both.setChecked(True)
+                    
+                    if hasattr(self, 'spade_auto_mode') and 'spade_input_mode' in ui_settings:
+                        if ui_settings['spade_input_mode']:
+                            self.spade_auto_mode.setChecked(True)
+                        else:
+                            self.spade_manual_mode.setChecked(True)
+                
+                # Load ALPSS parameters
+                if 'alpss_params' in settings and hasattr(self, 'get_alpss_params'):
+                    alpss_params = settings['alpss_params']
+                    # Apply ALPSS parameters to UI widgets
+                    self.apply_alpss_params(alpss_params)
+                
+                # Load SPADE parameters
+                if 'spade_params' in settings and hasattr(self, 'get_spade_params'):
+                    spade_params = settings['spade_params']
+                    # Apply SPADE parameters to UI widgets
+                    self.apply_spade_params(spade_params)
+                    
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+    
+    def apply_alpss_params(self, params):
+        """Apply ALPSS parameters to UI widgets"""
+        try:
+            if hasattr(self, 'carrier_frequency') and 'carrier_frequency' in params:
+                self.carrier_frequency.setValue(params['carrier_frequency'])
+            if hasattr(self, 'signal_start_time') and 'signal_start_time' in params:
+                self.signal_start_time.setValue(params['signal_start_time'])
+            if hasattr(self, 'smoothing_characteristic_time') and 'smoothing_characteristic_time' in params:
+                self.smoothing_characteristic_time.setValue(params['smoothing_characteristic_time'])
+            if hasattr(self, 'save_velocity_plot') and 'save_velocity_plot' in params:
+                if hasattr(self.save_velocity_plot, 'setChecked'):
+                    self.save_velocity_plot.setChecked(params['save_velocity_plot'])
+            if hasattr(self, 'save_iq_amplitude') and 'save_iq_amplitude' in params:
+                if hasattr(self.save_iq_amplitude, 'setChecked'):
+                    self.save_iq_amplitude.setChecked(params['save_iq_amplitude'])
+            if hasattr(self, 'save_error_plot') and 'save_error_plot' in params:
+                if hasattr(self.save_error_plot, 'setChecked'):
+                    self.save_error_plot.setChecked(params['save_error_plot'])
+            if hasattr(self, 'uncert_mult') and 'uncert_mult' in params:
+                self.uncert_mult.setValue(params['uncert_mult'])
+            if hasattr(self, 'spall_calculation') and 'spall_calculation' in params:
+                if hasattr(self.spall_calculation, 'setChecked'):
+                    self.spall_calculation.setChecked(params['spall_calculation'] == 'yes')
+        except Exception as e:
+            print(f"Error applying ALPSS parameters: {e}")
+    
+    def apply_spade_params(self, params):
+        """Apply SPADE parameters to UI widgets"""
+        try:
+            if hasattr(self, 'spade_density') and 'density' in params:
+                self.spade_density.setValue(params['density'])
+            if hasattr(self, 'spade_acoustic_velocity') and 'acoustic_velocity' in params:
+                self.spade_acoustic_velocity.setValue(params['acoustic_velocity'])
+            if hasattr(self, 'analysis_model') and 'analysis_model' in params:
+                index = self.analysis_model.findText(params['analysis_model'])
+                if index >= 0:
+                    self.analysis_model.setCurrentIndex(index)
+            if hasattr(self, 'prominence_factor') and 'prominence_factor' in params:
+                self.prominence_factor.setValue(params['prominence_factor'])
+            if hasattr(self, 'peak_distance_ns') and 'peak_distance_ns' in params:
+                self.peak_distance_ns.setValue(params['peak_distance_ns'])
+            if hasattr(self, 'spade_smooth_window') and 'smooth_window' in params:
+                self.spade_smooth_window.setValue(params['smooth_window'])
+            if hasattr(self, 'polyorder') and 'polyorder' in params:
+                self.polyorder.setValue(params['polyorder'])
+            if hasattr(self, 'plot_individual') and 'plot_individual' in params:
+                if hasattr(self.plot_individual, 'setChecked'):
+                    self.plot_individual.setChecked(params['plot_individual'])
+            if hasattr(self, 'save_summary') and 'save_summary_table' in params:
+                if hasattr(self.save_summary, 'setChecked'):
+                    self.save_summary.setChecked(params['save_summary_table'])
+            if hasattr(self, 'show_plots') and 'show_plots' in params:
+                if hasattr(self.show_plots, 'setChecked'):
+                    self.show_plots.setChecked(params['show_plots'])
+            if hasattr(self, 'experiment_velocity_shots') and 'experiment_type' in params:
+                if params['experiment_type'] == 'velocity_shots':
+                    if hasattr(self.experiment_velocity_shots, 'setChecked'):
+                        self.experiment_velocity_shots.setChecked(True)
+                elif params['experiment_type'] == 'spall_analysis':
+                    if hasattr(self.experiment_spall_analysis, 'setChecked'):
+                        self.experiment_spall_analysis.setChecked(True)
+        except Exception as e:
+            print(f"Error applying SPADE parameters: {e}")
+    
+    def closeEvent(self, event):
+        """Save settings when closing the application"""
+        self.save_settings()
+        event.accept()
         
     def toggle_theme(self, state):
         if state == Qt.Checked:
@@ -2418,6 +3132,33 @@ class ALPSSSPADEGUI(QMainWindow):
         layout = QVBoxLayout(scroll_widget)
         layout.setSpacing(15)  # Increase spacing between groups
         
+        # Experiment type selection
+        experiment_group = QGroupBox("Experiment Type")
+        experiment_layout = QVBoxLayout(experiment_group)
+        experiment_layout.setSpacing(10)
+        
+        # Checkboxes for experiment type (can select both)
+        self.experiment_velocity_shots = QCheckBox("Velocity Shots")
+        self.experiment_velocity_shots.setChecked(True)
+        experiment_layout.addWidget(self.experiment_velocity_shots)
+        
+        self.experiment_spall_analysis = QCheckBox("Spall Analysis")
+        self.experiment_spall_analysis.setChecked(False)
+        experiment_layout.addWidget(self.experiment_spall_analysis)
+        
+        # Description text for experiment types
+        experiment_desc = QTextEdit()
+        experiment_desc.setMaximumHeight(120)
+        experiment_desc.setReadOnly(True)
+        experiment_desc.setPlainText(
+            "Velocity Shots: Generate velocity shot summary with impact velocity calculations and combined velocity plot.\n"
+            "Spall Analysis: Generate spall summary with spall strength and strain rate analysis.\n"
+            "Note: You can select both options to run both analyses."
+        )
+        experiment_layout.addWidget(experiment_desc)
+        
+        layout.addWidget(experiment_group)
+        
         # Material properties
         material_group = QGroupBox("Material Properties")
         material_layout = QGridLayout(material_group)
@@ -2559,21 +3300,7 @@ class ALPSSSPADEGUI(QMainWindow):
         self.plot_pdv_power_vs_material.setChecked(True)
         combined_plot_layout.addWidget(self.plot_pdv_power_vs_material, 1, 2)
         
-        # Speed optimization options
-        self.optimize_saving = QCheckBox("Optimize for Speed (100 DPI PNG)")
-        self.optimize_saving.setChecked(True)
-        self.optimize_saving.setToolTip("Reduce PNG DPI from 200 to 100 for faster saving")
-        combined_plot_layout.addWidget(self.optimize_saving, 2, 0)
-        
-        self.ultra_fast_mode = QCheckBox("Ultra-Fast Mode (72 DPI PNG)")
-        self.ultra_fast_mode.setChecked(False)
-        self.ultra_fast_mode.setToolTip("Use very low DPI (72) for maximum speed")
-        combined_plot_layout.addWidget(self.ultra_fast_mode, 2, 1)
-        
-        self.save_pdf_only = QCheckBox("Save PDF Only (Skip PNG)")
-        self.save_pdf_only.setChecked(False)
-        self.save_pdf_only.setToolTip("Save only PDF files for maximum speed")
-        combined_plot_layout.addWidget(self.save_pdf_only, 2, 2)
+        # Standard saving (no speed options)
         
         layout.addWidget(combined_plot_group)
         
@@ -3046,6 +3773,8 @@ Output Files:
             self.signal_length_spin.setEnabled(True)
         else:
             self.signal_length_spin.setEnabled(False)
+    
+    # Experiment type change handler removed - now allows both options to be selected
             
     def select_single_file(self):
         """Select single input file"""
@@ -3059,10 +3788,37 @@ Output Files:
             
     def select_multi_file_dir(self):
         """Select directory for multiple files"""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Input Directory")
-        if dir_path:
-            self.multi_file_path.setText(dir_path)
-            self.update_file_list()
+        try:
+            print("Opening directory dialog...")
+            
+            # Try with different options for macOS compatibility
+            try:
+                dir_path = QFileDialog.getExistingDirectory(
+                    self, 
+                    "Select Input Directory",
+                    os.getcwd(),  # Start from current working directory
+                    QFileDialog.ShowDirsOnly
+                )
+            except Exception as dialog_error:
+                print(f"First dialog attempt failed: {dialog_error}")
+                # Fallback to simpler dialog
+                dir_path = QFileDialog.getExistingDirectory(
+                    self, 
+                    "Select Input Directory"
+                )
+            
+            print(f"Directory dialog result: {dir_path}")
+            if dir_path:
+                self.multi_file_path.setText(dir_path)
+                print(f"Set directory path: {dir_path}")
+                self.update_file_list()
+            else:
+                print("No directory selected")
+        except Exception as e:
+            print(f"Error in select_multi_file_dir: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.warning(self, "Error", f"Failed to select directory: {e}")
             
     def select_output_dir(self):
         """Select output directory"""
@@ -3201,24 +3957,42 @@ Output Files:
             
     def update_file_list(self):
         """Update the file list display"""
-        self.file_list.clear()
-        
-        if self.single_file_radio.isChecked():
-            file_path = self.single_file_path.text()
-            if file_path and os.path.exists(file_path):
-                self.file_list.append(f"Single file: {os.path.basename(file_path)}")
-        else:
-            dir_path = self.multi_file_path.text()
-            pattern = self.file_pattern.text()
+        try:
+            print("Updating file list...")
+            self.file_list.clear()
             
-            if dir_path and os.path.exists(dir_path):
-                files = glob.glob(os.path.join(dir_path, pattern))
-                if files:
-                    self.file_list.append(f"Found {len(files)} files in {dir_path}:")
-                    for file_path in sorted(files):
-                        self.file_list.append(f"  • {os.path.basename(file_path)}")
+            if self.single_file_radio.isChecked():
+                file_path = self.single_file_path.text()
+                if file_path and os.path.exists(file_path):
+                    self.file_list.append(f"Single file: {os.path.basename(file_path)}")
+            else:
+                dir_path = self.multi_file_path.text()
+                pattern = self.file_pattern.text()
+                print(f"Multi-file mode - Directory: {dir_path}, Pattern: {pattern}")
+                
+                if dir_path and os.path.exists(dir_path):
+                    try:
+                        print(f"Scanning directory: {dir_path}")
+                        files = glob.glob(os.path.join(dir_path, pattern))
+                        print(f"Found {len(files)} files matching pattern")
+                        if files:
+                            self.file_list.append(f"Found {len(files)} files in {dir_path}:")
+                            for file_path in sorted(files):
+                                self.file_list.append(f"  • {os.path.basename(file_path)}")
+                        else:
+                            self.file_list.append(f"No files found matching pattern '{pattern}' in {dir_path}")
+                    except Exception as e:
+                        print(f"Error scanning directory: {e}")
+                        self.file_list.append(f"Error scanning directory: {e}")
                 else:
-                    self.file_list.append(f"No files found matching pattern '{pattern}' in {dir_path}")
+                    print(f"Invalid directory: {dir_path}")
+                    self.file_list.append("No valid directory selected")
+            print("File list update complete")
+        except Exception as e:
+            print(f"Error in update_file_list: {e}")
+            import traceback
+            traceback.print_exc()
+            self.file_list.append(f"Error updating file list: {e}")
                     
     def get_input_files(self):
         """Get list of input files based on current selection"""
@@ -3295,39 +4069,14 @@ Output Files:
                     # Convert PDV file name to string to ensure consistency
                     pdv_file_str = str(pdv_file)
                         
-                    # Extract only essential experiment info to prevent memory issues
-                    exp_info = {
-                        'exp_id': row.get('Exp_ID', f'Exp_{idx+1}'),
-                        'sample_material': row.get('Sample_material', 'Unknown'),
-                    }
-                    
-                    # Handle sample material column with flexible matching
-                    sample_material_col = None
+                    # Extract ALL columns from the row (except the PDV filename column itself)
+                    exp_info = {}
                     for col in df.columns:
-                        col_lower = col.lower()
-                        # Check for various possible column names including spaces, underscores, and different formats
-                        if any(name in col_lower for name in [
-                            'sample_material', 'samplematerial', 'sample material', 'sample-material',
-                            'material', 'sample', 'sample_mat', 'sample mat', 'sample-mat'
-                        ]):
-                            sample_material_col = col
-                            break
+                        if col != pdv_col:  # Skip the PDV filename column
+                            value = row.get(col)
+                            if not pd.isna(value):  # Only include non-NaN values
+                                exp_info[col] = value
                     
-                    if sample_material_col:
-                        exp_info['sample_material'] = row.get(sample_material_col, 'Unknown')
-                    
-                    # Handle other columns with flexible matching
-                    for col in df.columns:
-                        col_lower = col.lower()
-                        if 'flyer_material' in col_lower or 'flyermaterial' in col_lower:
-                            exp_info['flyer_material'] = row.get(col, 'Unknown')
-                        elif 'thickness' in col_lower:
-                            exp_info['thickness'] = row.get(col, 'Unknown')
-                        elif 'waveplate_angle' in col_lower or 'waveplate angle' in col_lower or 'waveplate' in col_lower:
-                            exp_info['waveplate_angle'] = row.get(col, 'Unknown')
-                        elif 'shot_time' in col_lower or 'shot time' in col_lower or 'shottime' in col_lower or 'shot_time (seconds)' in col_lower:
-                            exp_info['shot_time'] = row.get(col, 'Unknown')
-                            
                     # Add to combined data (later files override earlier ones if same PDV file)
                     combined_param_data[pdv_file_str] = exp_info
                     
@@ -3407,6 +4156,14 @@ Output Files:
             signal_length_ns = None
         else:
             signal_length_ns = self.signal_length_spin.value()
+        
+        # Get experiment types (can be both)
+        velocity_shots_enabled = self.experiment_velocity_shots.isChecked()
+        spall_analysis_enabled = self.experiment_spall_analysis.isChecked()
+        
+        # Default to velocity_shots if neither is selected
+        if not velocity_shots_enabled and not spall_analysis_enabled:
+            velocity_shots_enabled = True
             
         return {
             'density': self.spade_density.value(),
@@ -3420,6 +4177,9 @@ Output Files:
             'plot_individual': self.plot_individual.isChecked(),
             'save_summary_table': self.save_summary.isChecked(),
             'show_plots': self.show_plots.isChecked(),
+            # Experiment types
+            'velocity_shots_enabled': velocity_shots_enabled,
+            'spall_analysis_enabled': spall_analysis_enabled,
             # Axis limits for combined plots
             'auto_calculate_limits': self.auto_calculate_limits.isChecked(),
             'x_min_main': self.x_min_main.value(),
@@ -3438,9 +4198,7 @@ Output Files:
             'plot_shot_time_vs_material': self.plot_shot_time_vs_material.isChecked(),
             'plot_pdv_power_vs_material': self.plot_pdv_power_vs_material.isChecked(),
             # Speed optimization options
-            'optimize_saving': self.optimize_saving.isChecked(),
-            'ultra_fast_mode': self.ultra_fast_mode.isChecked(),
-            'save_pdf_only': self.save_pdf_only.isChecked(),
+            # Speed optimization options removed
         }
         
     def run_analysis(self):

@@ -32,10 +32,7 @@ from .literature import load_literature_data
 # --- End Consolidated Imports ---
 nn=.5
 # --- Plotting Style Configuration ---
-try:
-    plt.style.use('seaborn-v0_8-darkgrid')
-except OSError:
-    logging.warning("Seaborn-v0_8-darkgrid style not available. Using default style.")
+# Using default matplotlib style
 plt.rcParams['figure.figsize'] = (10, 6)
 plt.rcParams['axes.labelsize'] = 20
 plt.rcParams['xtick.labelsize'] = 20
