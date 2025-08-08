@@ -20,8 +20,8 @@ if errorlevel 1 (
 )
 
 REM Check if we're in the right directory
-if not exist "alpss_spade_gui.py" (
-    echo ERROR: alpss_spade_gui.py not found in current directory
+if not exist "helix_analysis_toolbox.py" (
+    echo ERROR: helix_analysis_toolbox.py not found in current directory
     echo Please run this batch file from the HELIX_Toolbox directory
     echo.
     pause
@@ -61,7 +61,7 @@ echo Starting HELIX Toolbox...
 echo.
 
 REM Launch the GUI
-python alpss_spade_gui.py
+python helix_analysis_toolbox.py
 
 REM Check if the GUI exited with an error
 if errorlevel 1 (

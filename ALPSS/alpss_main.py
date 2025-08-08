@@ -1165,14 +1165,20 @@ def simple_plotting(
         print(f"[{datetime.now()}] No plots to save")
     
     try:
-        # Get image selection parameters (default to True if not specified)
-        save_velocity_plot = inputs.get('save_velocity_plot', True)
-        save_stft_plot = inputs.get('save_stft_plot', True)
-        save_filtered_plot = inputs.get('save_filtered_plot', True)
-        save_phase_plot = inputs.get('save_phase_plot', True)
-        save_amplitude_plot = inputs.get('save_amplitude_plot', True)
-        save_peak_detection_plot = inputs.get('save_peak_detection_plot', True)
-        save_uncertainty_plot = inputs.get('save_uncertainty_plot', True)
+        # Get image selection parameters (default to False if not specified)
+        save_velocity_plot = inputs.get('save_velocity_plot', False)
+        save_stft_plot = inputs.get('save_stft_plot', False)
+        save_filtered_plot = inputs.get('save_filtered_plot', False)
+        save_phase_plot = inputs.get('save_phase_plot', False)
+        save_amplitude_plot = inputs.get('save_amplitude_plot', False)
+        save_iq_start_time_plot = inputs.get('save_iq_start_time_plot', False)
+        save_peak_detection_plot = inputs.get('save_peak_detection_plot', False)
+        save_uncertainty_plot = inputs.get('save_uncertainty_plot', False)
+        # New: fine-grained STFT plot controls (all default to False)
+        save_stft_roi_plot = inputs.get('save_stft_roi_plot', False)
+        save_stft_filtered_roi_plot = inputs.get('save_stft_filtered_roi_plot', False)
+        save_stft_thresholded_plot = inputs.get('save_stft_thresholded_plot', False)
+        save_stft_velocity_overlay_plot = inputs.get('save_stft_velocity_overlay_plot', False)
         
         # Get experiment info for enhanced titles
         experiment_info = inputs.get('experiment_info', {})
@@ -1296,8 +1302,9 @@ def simple_plotting(
             plt.tight_layout()
             plt.savefig(os.path.join(plot_dir, f"{base_filename}--imported_spectrogram.png"), dpi=300, bbox_inches='tight')
             plt.close(fig6)
-            
-            # 3. ROI spectrogram (STFT)
+        
+        # 3. ROI spectrogram (STFT) - optional
+        if save_stft_roi_plot:
             fig7 = plt.figure(figsize=(12, 8))
             plt.imshow(10 * np.log10(sdf_out["mag"] ** 2), aspect="auto", origin="lower", 
                        extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
@@ -1312,8 +1319,9 @@ def simple_plotting(
             plt.tight_layout()
             plt.savefig(os.path.join(plot_dir, f"{base_filename}--roi_spectrogram.png"), dpi=300, bbox_inches='tight')
             plt.close(fig7)
-            
-            # 4. Filtered spectrogram (STFT)
+
+        # 4. Filtered spectrogram (STFT) - optional
+        if save_stft_filtered_roi_plot:
             fig8 = plt.figure(figsize=(12, 8))
             plt.imshow(cf_out["power_filt"], aspect="auto", origin="lower", 
                        extent=[cf_out["t_filt"][0] / 1e-9, cf_out["t_filt"][-1] / 1e-9, 
@@ -1328,8 +1336,9 @@ def simple_plotting(
             plt.tight_layout()
             plt.savefig(os.path.join(plot_dir, f"{base_filename}--filtered_roi_spectrogram.png"), dpi=300, bbox_inches='tight')
             plt.close(fig8)
-            
-            # 5. Thresholded spectrogram (STFT)
+
+        # 5. Thresholded spectrogram (STFT) - optional
+        if save_stft_thresholded_plot:
             fig9 = plt.figure(figsize=(12, 8))
             plt.imshow(sdf_out["th3"], aspect="auto", origin="lower", 
                        extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
@@ -1359,8 +1368,8 @@ def simple_plotting(
             plt.savefig(os.path.join(plot_dir, f"{base_filename}--voltage_roi.png"), dpi=300, bbox_inches='tight')
             plt.close(fig10)
         
-        # 7. Velocity spectrogram overlay (STFT)
-        if save_stft_plot:
+        # 7. Velocity spectrogram overlay (STFT) - optional
+        if save_stft_velocity_overlay_plot:
             fig11 = plt.figure(figsize=(12, 8))
             plt.imshow(10 * np.log10(sdf_out["mag"] ** 2), aspect="auto", origin="lower", 
                        extent=[sdf_out["t"][0] / 1e-9, sdf_out["t"][-1] / 1e-9, 
@@ -1500,28 +1509,50 @@ def saving(
             print(f"[{datetime.now()}] Saved main plots.png.")
         else:
             print(f"[{datetime.now()}] Skipping main plots.png (fig is None or save_all_plots is 'no')")
+        
+        # Always save inputs file (needed for debugging)
         inputs_df = pd.DataFrame.from_dict(inputs, orient="index", columns=["Input"])
         print(f"[{datetime.now()}] Saving inputs_df...")
         inputs_df.to_csv(
             os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--inputs" + ".csv"), index=True, header=False
         )
         print(f"[{datetime.now()}] Saved inputs_df.")
-        velocity_data = np.stack((vc_out["time_f"], vc_out["velocity_f"]), axis=1)
-        print(f"[{datetime.now()}] Saving velocity data...")
-        np.savetxt(
-            os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--velocity" + ".csv"), velocity_data, delimiter=","
-        )
-        print(f"[{datetime.now()}] Saved velocity data.")
-        velocity_data_smooth = np.stack(
-            (vc_out["time_f"], vc_out["velocity_f_smooth"]), axis=1
-        )
-        print(f"[{datetime.now()}] Saving velocity smooth...")
-        np.savetxt(
-            os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--velocity--smooth" + ".csv"),
-            velocity_data_smooth,
-            delimiter=",",
-        )
-        print(f"[{datetime.now()}] Saved velocity smooth.")
+        
+        # Check output file selection parameters
+        save_velocity_csv = inputs.get("save_velocity_csv", True)
+        save_velocity_smooth_csv = inputs.get("save_velocity_smooth_csv", True)
+        save_velocity_uncert_csv = inputs.get("save_velocity_uncert_csv", True)
+        save_velocity_smooth_uncert_csv = inputs.get("save_velocity_smooth_uncert_csv", True)
+        save_results_csv = inputs.get("save_results_csv", True)
+        save_noise_csv = inputs.get("save_noise_csv", True)
+        
+        # Save velocity data if selected
+        if save_velocity_csv:
+            velocity_data = np.stack((vc_out["time_f"], vc_out["velocity_f"]), axis=1)
+            print(f"[{datetime.now()}] Saving velocity data...")
+            np.savetxt(
+                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--velocity" + ".csv"), velocity_data, delimiter=","
+            )
+            print(f"[{datetime.now()}] Saved velocity data.")
+        else:
+            print(f"[{datetime.now()}] Skipping velocity data (not selected)")
+        
+        # Save velocity smooth data if selected
+        if save_velocity_smooth_csv:
+            velocity_data_smooth = np.stack(
+                (vc_out["time_f"], vc_out["velocity_f_smooth"]), axis=1
+            )
+            print(f"[{datetime.now()}] Saving velocity smooth...")
+            np.savetxt(
+                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--velocity--smooth" + ".csv"),
+                velocity_data_smooth,
+                delimiter=",",
+            )
+            print(f"[{datetime.now()}] Saved velocity smooth.")
+        else:
+            print(f"[{datetime.now()}] Skipping velocity smooth (not selected)")
+        
+        # Save voltage data (always save for debugging)
         voltage_data = np.stack(
             (
                 sdf_out["time"],
@@ -1535,90 +1566,135 @@ def saving(
             os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--voltage" + ".csv"), voltage_data, delimiter=","
         )
         print(f"[{datetime.now()}] Saved voltage data.")
-        noise_data = np.stack((vc_out["time_f"], iua_out["inst_noise"]), axis=1)
-        print(f"[{datetime.now()}] Saving noise data...")
-        np.savetxt(
-            os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--noise--frac" + ".csv"), noise_data, delimiter=","
-        )
-        print(f"[{datetime.now()}] Saved noise data.")
-        vel_uncert_data = np.stack((vc_out["time_f"], iua_out["vel_uncert"]), axis=1)
-        print(f"[{datetime.now()}] Saving velocity uncertainty data...")
-        np.savetxt(
-            os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel--uncert" + ".csv"),
-            vel_uncert_data,
-            delimiter=",",
-        )
-        print(f"[{datetime.now()}] Saved velocity uncertainty data.")
-        results_to_save = {
-            "Name": [
-                "Date",
-                "Time",
-                "File Name",
-                "Run Time",
-                "Velocity at Max Compression",
-                "Time at Max Compression",
-                "Velocity at Max Tension",
-                "Time at Max Tension",
-                "Velocity at Recompression",
-                "Time at Recompression",
-                "Carrier Frequency",
-                "Spall Strength",
-                "Spall Strength Uncertainty",
-                "Strain Rate",
-                "Strain Rate Uncertainty",
-                "Peak Shock Stress",
-                "Spect Time Res",
-                "Spect Freq Res",
-                "Spect Velocity Res",
-                "Signal Start Time",
-                "Smoothing Characteristic Time",
-            ],
-            "Value": [
-                start_time.strftime("%b %d %Y"),
-                start_time.strftime("%I:%M %p"),
-                inputs["filename"],
-                (end_time - start_time),
-                sa_out["v_max_comp"],
-                sa_out["t_max_comp"],
-                sa_out["v_max_ten"],
-                sa_out["t_max_ten"],
-                sa_out["v_rc"],
-                sa_out["t_rc"],
-                cen,
-                sa_out["spall_strength_est"],
-                fua_out["spall_uncert"],
-                sa_out["strain_rate_est"],
-                fua_out["strain_rate_uncert"],
-                (0.5 * inputs["density"] * inputs["C0"] * sa_out["v_max_comp"]),
-                sdf_out["t_res"],
-                sdf_out["f_res"],
-                0.5 * (inputs["lam"] * sdf_out["f_res"]),
-                sdf_out["t_start_corrected"],
-                iua_out["tau"],
-            ],
-        }
-        print(f"[{datetime.now()}] Saving results_df...")
-        results_df = pd.DataFrame(data=results_to_save)
-        results_df.to_csv(
-            os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--results" + ".csv"), index=False, header=False
-        )
-        print(f"[{datetime.now()}] Saved results_df.")
-        vel_smooth_with_uncert = np.stack(
-            (
-                vc_out["time_f"],
-                vc_out["velocity_f_smooth"],
-                iua_out["vel_uncert"],  # Uncertainty
-                vc_out["velocity_f_smooth"] + iua_out["vel_uncert"],  # Velocity + Uncertainty
-            ),
-            axis=1,
-        )
-        print(f"[{datetime.now()}] Saving vel_smooth_with_uncert...")
-        np.savetxt(
-            os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel-smooth-with-uncert" + ".csv"),
-            vel_smooth_with_uncert,
-            delimiter=",",
-        )
-        print(f"[{datetime.now()}] Saved vel_smooth_with_uncert.")
+        
+        # Save noise data if selected
+        if save_noise_csv:
+            noise_data = np.stack((vc_out["time_f"], iua_out["inst_noise"]), axis=1)
+            print(f"[{datetime.now()}] Saving noise data...")
+            np.savetxt(
+                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--noise--frac" + ".csv"), noise_data, delimiter=","
+            )
+            print(f"[{datetime.now()}] Saved noise data.")
+        else:
+            print(f"[{datetime.now()}] Skipping noise data (not selected)")
+        
+        # Save velocity uncertainty data if selected
+        if save_velocity_uncert_csv:
+            vel_uncert_data = np.stack((vc_out["time_f"], iua_out["vel_uncert"]), axis=1)
+            print(f"[{datetime.now()}] Saving velocity uncertainty data...")
+            np.savetxt(
+                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel--uncert" + ".csv"),
+                vel_uncert_data,
+                delimiter=",",
+            )
+            print(f"[{datetime.now()}] Saved velocity uncertainty data.")
+        else:
+            print(f"[{datetime.now()}] Skipping velocity uncertainty data (not selected)")
+        
+        # Save results data if selected
+        if save_results_csv:
+            results_to_save = {
+                "Name": [
+                    "Date",
+                    "Time",
+                    "File Name",
+                    "Run Time",
+                    "Velocity at Max Compression",
+                    "Time at Max Compression",
+                    "Velocity at Max Tension",
+                    "Time at Max Tension",
+                    "Velocity at Recompression",
+                    "Time at Recompression",
+                    "Carrier Frequency",
+                    "Spall Strength",
+                    "Spall Strength Uncertainty",
+                    "Strain Rate",
+                    "Strain Rate Uncertainty",
+                    "Peak Shock Stress",
+                    "Spect Time Res",
+                    "Spect Freq Res",
+                    "Spect Velocity Res",
+                    "Signal Start Time",
+                    "Smoothing Characteristic Time",
+                ],
+                "Value": [
+                    start_time.strftime("%b %d %Y"),
+                    start_time.strftime("%I:%M %p"),
+                    inputs["filename"],
+                    (end_time - start_time),
+                    sa_out["v_max_comp"],
+                    sa_out["t_max_comp"],
+                    sa_out["v_max_ten"],
+                    sa_out["t_max_ten"],
+                    sa_out["v_rc"],
+                    sa_out["t_rc"],
+                    cen,
+                    sa_out["spall_strength_est"],
+                    fua_out["spall_uncert"],
+                    sa_out["strain_rate_est"],
+                    fua_out["strain_rate_uncert"],
+                    (0.5 * inputs["density"] * inputs["C0"] * sa_out["v_max_comp"]),
+                    sdf_out["t_res"],
+                    sdf_out["f_res"],
+                    0.5 * (inputs["lam"] * sdf_out["f_res"]),
+                    sdf_out["t_start_corrected"],
+                    iua_out["tau"],
+                ],
+            }
+            print(f"[{datetime.now()}] Saving results_df...")
+            results_df = pd.DataFrame(data=results_to_save)
+            results_df.to_csv(
+                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--results" + ".csv"), index=False, header=False
+            )
+            print(f"[{datetime.now()}] Saved results_df.")
+        else:
+            print(f"[{datetime.now()}] Skipping results data (not selected)")
+        
+        # Save velocity smooth with uncertainty data if selected (this is the key file for SPADE)
+        if save_velocity_smooth_uncert_csv:
+            try:
+                # Ensure arrays have the same length
+                min_length = min(len(vc_out["time_f"]), len(vc_out["velocity_f_smooth"]), len(iua_out["vel_uncert"]))
+                
+                vel_smooth_with_uncert = np.stack(
+                    (
+                        vc_out["time_f"][:min_length],
+                        vc_out["velocity_f_smooth"][:min_length],
+                        iua_out["vel_uncert"][:min_length],  # Uncertainty
+                        vc_out["velocity_f_smooth"][:min_length] + iua_out["vel_uncert"][:min_length],  # Velocity + Uncertainty
+                    ),
+                    axis=1,
+                )
+                print(f"[{datetime.now()}] Saving vel_smooth_with_uncert...")
+                np.savetxt(
+                    os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel-smooth-with-uncert" + ".csv"),
+                    vel_smooth_with_uncert,
+                    delimiter=",",
+                )
+                print(f"[{datetime.now()}] Saved vel_smooth_with_uncert.")
+            except Exception as e:
+                print(f"[{datetime.now()}] ERROR saving vel_smooth_with_uncert: {e}")
+                # Try to save without uncertainty if there's a shape mismatch
+                try:
+                    vel_smooth_only = np.stack(
+                        (
+                            vc_out["time_f"],
+                            vc_out["velocity_f_smooth"],
+                        ),
+                        axis=1,
+                    )
+                    print(f"[{datetime.now()}] Saving vel_smooth_only (without uncertainty)...")
+                    np.savetxt(
+                        os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel-smooth-only" + ".csv"),
+                        vel_smooth_only,
+                        delimiter=",",
+                    )
+                    print(f"[{datetime.now()}] Saved vel_smooth_only.")
+                except Exception as e2:
+                    print(f"[{datetime.now()}] ERROR saving vel_smooth_only: {e2}")
+        else:
+            print(f"[{datetime.now()}] Skipping vel_smooth_with_uncert (not selected)")
+            
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in saving: {e}\n{traceback.format_exc()}")
 
@@ -1832,7 +1908,13 @@ def spall_doi_finder(**inputs):
     # Find initial stable amplitude
     initial_amplitude = np.mean(amplitude[:int(len(amplitude)/4.5)])
     # initial_phase = np.mean(phase[:int(len(phase)/4)])
-    threshold = 0.4 * initial_amplitude
+    # Allow user-defined threshold factor via inputs; default to existing 0.4
+    iq_threshold_factor = inputs.get('iq_threshold_factor', 0.4)
+    try:
+        iq_threshold_factor = float(iq_threshold_factor)
+    except Exception:
+        iq_threshold_factor = 0.4
+    threshold = iq_threshold_factor * initial_amplitude
     
     # Detect start time using 50% amplitude drop
     start_index = np.where(amplitude < threshold)[0][0]
@@ -1871,10 +1953,15 @@ def spall_doi_finder(**inputs):
     # Plot with matched array lengths and square aspect ratio
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
     ax1.plot(time_us, amplitude_mV, label='Complex Amplitude')
-    ax1.plot(time_us, initial_amplitude * 1e3 * np.where(time_us < t_start_detected_iq * 1e6, 1, 0.5), 
-            label='Step Function')
-    ax1.axvline(x=t_start_detected_iq * 1e6, color='r', linestyle='--', 
-                label='Start Time (IQ)')
+    
+    # Create the actual step function used for detection
+    # Before start time: amplitude is above threshold (normal)
+    # After start time: amplitude drops below threshold (detected)
+    step_function = np.where(time_us < t_start_detected_iq * 1e6, initial_amplitude * 1e3, threshold * 1e3)
+    ax1.plot(time_us, step_function, 'r--', linewidth=2, label='Detection Threshold')
+    ax1.axhline(y=threshold * 1e3, color='orange', linestyle=':', alpha=0.7, label=f'Threshold ({threshold*1e3:.1f} mV)')
+    ax1.axvline(x=t_start_detected_iq * 1e6, color='red', linestyle='-', linewidth=2, 
+                label=f'Start Time (IQ): {t_start_detected_iq*1e6:.1f} μs')
     ax1.set_ylabel('Amplitude (mV)', fontsize=20)
     ax1.set_xlabel('Time (μs)', fontsize=20)
     ax1.legend(fontsize=12)
@@ -1883,8 +1970,9 @@ def spall_doi_finder(**inputs):
     # Save IQ amplitude plot as a separate figure (only if plots are enabled)
     save_all_plots = inputs.get("save_all_plots", "no")
     save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
+    save_iq_start_time_plot = inputs.get('save_iq_start_time_plot', False)
     
-    if save_all_plots == "yes":
+    if save_all_plots == "yes" and save_iq_start_time_plot:
         if save_in_subfolder:
             # Create subfolder for this file's plots
             base_filename = inputs["filename"][0:-4]  # Remove file extension
@@ -1896,18 +1984,27 @@ def spall_doi_finder(**inputs):
             plot_dir = inputs["out_files_dir"]
         
         fname_prefix = os.path.splitext(inputs.get('filename', 'ALPSS'))[0]
-        fig_iq, ax_iq = plt.subplots(figsize=(8, 8))
-        ax_iq.plot(time_us, amplitude_mV, label='Complex Amplitude')
-        ax_iq.plot(time_us, initial_amplitude * 1e3 * np.where(time_us < t_start_detected_iq * 1e6, 1, 0.5), 
-                label='Step Function')
-        ax_iq.axvline(x=t_start_detected_iq * 1e6, color='r', linestyle='--', 
-                    label='Start Time (IQ)')
-        ax_iq.set_ylabel('Amplitude (mV)', fontsize=20)
-        ax_iq.set_xlabel('Time (μs)', fontsize=20)
-        ax_iq.legend(fontsize=12)
-        ax_iq.tick_params(axis='both', labelsize=20)
+        fig_iq, ax_iq = plt.subplots(figsize=(10, 6))
+        ax_iq.plot(time_us, amplitude_mV, label='Complex Amplitude', linewidth=1.5)
+        
+        # Create the actual step function used for detection
+        # Before start time: amplitude is above threshold (normal)
+        # After start time: amplitude drops below threshold (detected)
+        step_function = np.where(time_us < t_start_detected_iq * 1e6, initial_amplitude * 1e3, threshold * 1e3)
+        ax_iq.plot(time_us, step_function, 'r--', linewidth=2, label='Detection Step Function')
+        ax_iq.axhline(y=threshold * 1e3, color='orange', linestyle=':', alpha=0.7, linewidth=2, 
+                    label=f'Detection Threshold ({threshold*1e3:.1f} mV)')
+        ax_iq.axvline(x=t_start_detected_iq * 1e6, color='red', linestyle='-', linewidth=3, 
+                    label=f'Start Time Detected: {t_start_detected_iq*1e6:.1f} μs')
+        
+        ax_iq.set_ylabel('Amplitude (mV)', fontsize=16)
+        ax_iq.set_xlabel('Time (μs)', fontsize=16)
+        ax_iq.set_title('IQ Analysis: Start Time Detection', fontsize=18, fontweight='bold')
+        ax_iq.legend(fontsize=12, loc='upper right')
+        ax_iq.tick_params(axis='both', labelsize=14)
+        ax_iq.grid(True, alpha=0.3)
         plt.tight_layout()
-        fig_iq.savefig(os.path.join(plot_dir, f"{fname_prefix}--IQ_amplitude.png"), dpi=inputs.get('plot_dpi', 300), format='png', facecolor='w')
+        fig_iq.savefig(os.path.join(plot_dir, f"{fname_prefix}--IQ_start_time_detection.png"), dpi=inputs.get('plot_dpi', 300), format='png', facecolor='w')
         plt.close(fig_iq)
 
     # Adjust phase plotting similarly
@@ -2015,6 +2112,7 @@ def spall_doi_finder(**inputs):
 
         # work backwards from the highest point on the signal top line until it matches or dips below f_doi_carr_top_idx
         highest_idx = np.argmax(f_doi_top_line_clean)
+        cidx = highest_idx  # Default to highest point if loop doesn't find suitable point
         for check_idx in range(highest_idx):
             cidx = highest_idx - check_idx - 1
             if top_line_clean[cidx] <= f_doi_carr_top_idx:
@@ -2056,6 +2154,9 @@ def spall_doi_finder(**inputs):
         t_doi_end_spec_idx = np.argmin(np.abs(t - t_doi_end))
         mag_doi = mag_cut[:, t_doi_start_spec_idx:t_doi_end_spec_idx]
         power_doi = 10 * np.log10(mag_doi**2)
+        
+        # Set t_start_detected_old to avoid undefined variable error
+        t_start_detected_old = t_start_detected
         
 
     cen=carrier_frequency # measured frequency 

@@ -48,7 +48,7 @@ jobs:
         DISPLAY: :99
         QT_QPA_PLATFORM: offscreen
       run: |
-        python -c "import alpss_spade_gui; print('HELIX Toolbox GUI module imported successfully!')"
+        python -c "import helix_analysis_toolbox; print('HELIX Toolbox GUI module imported successfully!')"
     
     - name: Test GUI creation (headless)
       env:
@@ -61,10 +61,10 @@ jobs:
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         
         from PyQt5.QtWidgets import QApplication
-        from alpss_spade_gui import ALPSSSPADEGUI
+        from helix_analysis_toolbox import HELIXAnalysisToolbox
         
         app = QApplication([])
-        gui = ALPSSSPADEGUI()
+        gui = HELIXAnalysisToolbox()
         print('GUI created successfully!')
         app.quit()
         "
@@ -80,10 +80,10 @@ jobs:
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         
         from PyQt5.QtWidgets import QApplication
-        from alpss_spade_gui import ALPSSSPADEGUI
+        from helix_analysis_toolbox import HELIXAnalysisToolbox
         
         app = QApplication([])
-        gui = ALPSSSPADEGUI()
+        gui = HELIXAnalysisToolbox()
         
         # Test ALPSS parameters
         alpss_params = gui.get_alpss_params()

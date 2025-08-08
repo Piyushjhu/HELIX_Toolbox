@@ -53,7 +53,7 @@ setup(
     install_requires=read_requirements(),
     entry_points={
         "console_scripts": [
-            "helix-toolbox=alpss_spade_gui:main",
+            "helix-toolbox=helix_analysis_toolbox:main",
         ],
     },
     keywords=[

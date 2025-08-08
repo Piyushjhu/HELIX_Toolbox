@@ -63,7 +63,7 @@ HELIX Toolbox is a comprehensive graphical user interface (GUI) that combines AL
 git clone https://github.com/Piyushjhu/HELIX_Toolbox.git
 cd HELIX_Toolbox
 pip install -r requirements.txt
-python alpss_spade_gui.py
+python helix_analysis_toolbox.py
 ```
 
 #### macOS/Linux
@@ -76,7 +76,7 @@ cd HELIX_Toolbox
 pip install -r requirements.txt
 
 # Run the GUI
-python alpss_spade_gui.py
+python helix_analysis_toolbox.py
 ```
 
 ### Platform-Specific Installation

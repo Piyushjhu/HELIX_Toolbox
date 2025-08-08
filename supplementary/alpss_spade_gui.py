@@ -16,34 +16,24 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # Excel support will be checked dynamically when needed
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QProgressBar,
-    QFileDialog, QCheckBox, QComboBox, QSpinBox,
-    QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
-    QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, 
+                             QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
+                             QLineEdit, QPushButton, QTextEdit, QProgressBar,
+                             QFileDialog, QCheckBox, QComboBox, QSpinBox, 
+                             QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
+    QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget, QRadioButton, QButtonGroup)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QFont, QValidator
 from SPADE.spall_analysis_release.spall_analysis import plot_combined_mean_traces, plot_spall_vs_strain_rate, plot_spall_vs_shock_stress
 
-# Configure matplotlib for non-interactive backend
-import matplotlib
-matplotlib.use('Agg')  # Set non-interactive backend
-
-def cleanup_matplotlib():
-    """Clean up matplotlib figures to prevent memory leaks"""
-    import matplotlib.pyplot as plt
-    plt.close('all')  # Close all figures
-    plt.clf()  # Clear current figure
-    plt.cla()  # Clear current axes
 
 class ScientificSpinBox(QDoubleSpinBox):
     """Custom spin box that accepts scientific notation input"""
-
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDecimals(15)  # Allow high precision
-
+        
     def textFromValue(self, value):
         """Convert value to scientific notation string with high precision"""
         if abs(value) >= 1e6 or (abs(value) < 1e-3 and value != 0):
@@ -52,7 +42,7 @@ class ScientificSpinBox(QDoubleSpinBox):
         else:
             # For regular numbers, preserve more significant figures
             return f"{value:.9g}"
-
+            
     def valueFromText(self, text):
         """Convert scientific notation string to value"""
         try:
@@ -62,7 +52,7 @@ class ScientificSpinBox(QDoubleSpinBox):
             return float(text)
         except ValueError:
             return 0.0
-
+            
     def validate(self, text, pos):
         """Validate scientific notation input"""
         try:
@@ -86,7 +76,7 @@ class AnalysisThread(QThread):
     """Thread for running ALPSS and SPADE analysis"""
     progress_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
-
+    
     def __init__(
     self,
     alpss_params,
@@ -106,7 +96,7 @@ class AnalysisThread(QThread):
         self.spade_auto_mode = spade_auto_mode
         self.spade_input_files = spade_input_files
         self.analysis_mode = analysis_mode  # "alpss_only", "spade_only", or "both"
-
+        
     def run(self):
         try:
             # Add memory management
@@ -119,16 +109,16 @@ class AnalysisThread(QThread):
             # Import ALPSS and SPADE modules
             sys.path.append('ALPSS')
             sys.path.append('SPADE/spall_analysis_release')
-
+            
             from alpss_main import alpss_main
             from spall_analysis import process_velocity_files
-
+            
             # Create output directory
             os.makedirs(self.output_dir, exist_ok=True)
 
             # Initialize successful_files list for both ALPSS and SPADE modes
-            self.successful_files = []
-
+            successful_files = []
+            
             # Process ALPSS files if provided and not SPADE-only mode
             if self.analysis_mode != "spade_only" and self.input_files:
                 total_alpss_time = 0
@@ -148,13 +138,13 @@ class AnalysisThread(QThread):
                     # Memory management before ALPSS
                     gc.collect()
                     self.progress_signal.emit("Running ALPSS analysis...")
-
+                    
                     # Update ALPSS parameters with current file
                     alpss_params = self.alpss_params.copy()
                     alpss_params['filename'] = os.path.basename(input_file)
                     alpss_params['exp_data_dir'] = os.path.dirname(input_file)
                     alpss_params['out_files_dir'] = self.output_dir
-
+                    
                     # Add experiment info if parameter data is available
                     if self.param_data:
                         base_name = os.path.splitext(
@@ -189,75 +179,37 @@ class AnalysisThread(QThread):
                         'save_peak_detection_plot', True)
                     alpss_params['save_uncertainty_plot'] = self.alpss_params.get(
                         'save_uncertainty_plot', True)
-                    
-                    # Handle smart selection for combined mode
-                    smart_selection_enabled = self.alpss_params.get('smart_selection_enabled', False)
-                    if smart_selection_enabled and self.analysis_mode == "both":
-                        # For combined mode, save files needed for SPADE + enhanced analysis
-                        alpss_params['save_velocity_csv'] = False
-                        alpss_params['save_velocity_smooth_csv'] = False
-                        alpss_params['save_velocity_uncert_csv'] = False
-                        alpss_params['save_velocity_smooth_uncert_csv'] = True  # Main file needed for SPADE
-                        alpss_params['save_results_csv'] = False
-                        alpss_params['save_noise_csv'] = True  # Also save noise file for enhanced filtering
-                    else:
-                        # Pass output file selection parameters to ALPSS
-                        alpss_params['save_velocity_csv'] = self.alpss_params.get('save_velocity_csv', True)
-                        alpss_params['save_velocity_smooth_csv'] = self.alpss_params.get('save_velocity_smooth_csv', True)
-                        alpss_params['save_velocity_uncert_csv'] = self.alpss_params.get('save_velocity_uncert_csv', True)
-                        alpss_params['save_velocity_smooth_uncert_csv'] = self.alpss_params.get('save_velocity_smooth_uncert_csv', True)
-                        alpss_params['save_results_csv'] = self.alpss_params.get('save_results_csv', True)
-                        alpss_params['save_noise_csv'] = self.alpss_params.get('save_noise_csv', True)
+                    # Fine-grained STFT flags (optional)
+                    alpss_params['save_stft_roi_plot'] = self.alpss_params.get(
+                        'save_stft_roi_plot', False)
+                    alpss_params['save_stft_filtered_roi_plot'] = self.alpss_params.get(
+                        'save_stft_filtered_roi_plot', False)
+                    alpss_params['save_stft_thresholded_plot'] = self.alpss_params.get(
+                        'save_stft_thresholded_plot', False)
+                    alpss_params['save_stft_velocity_overlay_plot'] = self.alpss_params.get(
+                        'save_stft_velocity_overlay_plot', False)
 
                     try:
-                        alpss_main(**alpss_params)
-
-                        # Check if required files were generated based on analysis mode
+                    alpss_main(**alpss_params)
+                    
+                        # Check if required files were generated
                         base_name = os.path.splitext(
                             os.path.basename(input_file))[0]
-                        
-                        # Define required files based on analysis mode and smart selection
-                        required_files = []
-                        if smart_selection_enabled and self.analysis_mode == "both":
-                            # For combined mode with smart selection, check for SPADE input file + noise file
-                            required_files.append(os.path.join(
-                                self.output_dir, f"{base_name}--vel-smooth-with-uncert.csv"))
-                            required_files.append(os.path.join(
-                                self.output_dir, f"{base_name}--noise--frac.csv"))
-                        else:
-                            # Check all selected output files
-                            if self.alpss_params.get('save_velocity_csv', True):
-                                required_files.append(os.path.join(
-                                    self.output_dir, f"{base_name}--velocity.csv"))
-                            if self.alpss_params.get('save_velocity_smooth_csv', True):
-                                required_files.append(os.path.join(
-                                    self.output_dir, f"{base_name}--velocity--smooth.csv"))
-                            if self.alpss_params.get('save_velocity_uncert_csv', True):
-                                required_files.append(os.path.join(
-                                    self.output_dir, f"{base_name}--vel--uncert.csv"))
-                            if self.alpss_params.get('save_velocity_smooth_uncert_csv', True):
-                                required_files.append(os.path.join(
-                                    self.output_dir, f"{base_name}--vel-smooth-with-uncert.csv"))
-                            if self.alpss_params.get('save_results_csv', True):
-                                required_files.append(os.path.join(
-                                    self.output_dir, f"{base_name}--results.csv"))
-                            if self.alpss_params.get('save_noise_csv', True):
-                                required_files.append(os.path.join(
-                                    self.output_dir, f"{base_name}--noise--frac.csv"))
-                        
-                        # Check if all required files exist
-                        missing_files = [f for f in required_files if not os.path.exists(f)]
-                        
-                        if not missing_files:
-                            self.successful_files.append(input_file)
+                        velocity_file = os.path.join(
+                            self.output_dir, f"{base_name}--velocity--smooth.csv")
+                        results_file = os.path.join(
+                            self.output_dir, f"{base_name}--results.csv")
+
+                        if os.path.exists(
+                            velocity_file) and os.path.exists(results_file):
+                            successful_files.append(input_file)
                             self.progress_signal.emit(
                                 f"✅ Successfully processed: {os.path.basename(input_file)}")
                         else:
-                            missing_file_names = [os.path.basename(f) for f in missing_files]
                             failed_files.append(
-                                (input_file, f"Missing files: {', '.join(missing_file_names)}"))
+                                (input_file, "Missing required output files"))
                             self.progress_signal.emit(
-                                f"❌ Failed to generate required files: {os.path.basename(input_file)} - Missing: {', '.join(missing_file_names)}")
+                                f"❌ Failed to generate required files: {os.path.basename(input_file)}")
 
                     except Exception as e:
                         failed_files.append((input_file, str(e)))
@@ -279,7 +231,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(
                     f"Total files: {len(files_to_process)}")
                 self.progress_signal.emit(
-                    f"Successfully processed: {len(self.successful_files)}")
+                    f"Successfully processed: {len(successful_files)}")
                 self.progress_signal.emit(f"Failed: {len(failed_files)}")
 
                 if failed_files:
@@ -290,42 +242,23 @@ class AnalysisThread(QThread):
 
                 # Report total ALPSS timing
                 avg_time = total_alpss_time / \
-                    len(self.successful_files) if self.successful_files else 0
+                    len(successful_files) if successful_files else 0
                 self.progress_signal.emit(
-                    f"ALPSS Analysis Summary: {len(self.successful_files)} files processed in {total_alpss_time:.2f} seconds (avg: {avg_time:.2f}s per file)")
-                
-                # Save failed files list as CSV
-                if failed_files:
-                    try:
-                        failed_files_data = []
-                        for failed_file, error_msg in failed_files:
-                            failed_files_data.append({
-                                'input_file': os.path.basename(failed_file),
-                                'input_file_path': failed_file,
-                                'error_message': error_msg,
-                                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                            })
-                        
-                        failed_files_df = pd.DataFrame(failed_files_data)
-                        failed_files_path = os.path.join(self.output_dir, 'failed_data_files.csv')
-                        failed_files_df.to_csv(failed_files_path, index=False)
-                        self.progress_signal.emit(f"Saved failed files list to: {failed_files_path}")
-                    except Exception as e:
-                        self.progress_signal.emit(f"Warning: Could not save failed files list: {str(e)}")
-
+                    f"ALPSS Analysis Summary: {len(successful_files)} files processed in {total_alpss_time:.2f} seconds (avg: {avg_time:.2f}s per file)")
+            
             # Run SPADE analysis if not ALPSS-only mode
             if self.analysis_mode != "alpss_only":
                 spade_start_time = time.time()
                 if self.spade_auto_mode:
                     # Automatic mode: use ALPSS output
-                    if self.successful_files:  # Use successful_files instead of self.input_files
+                    if successful_files:  # Use successful_files instead of self.input_files
                         self.progress_signal.emit(
                             "Running SPADE analysis on ALPSS outputs...")
-
+                        
                         # Find all velocity files generated by ALPSS
                         vel_files = []
                         missing_spade_files = []
-                        for input_file in self.successful_files:  # Only check successful files
+                        for input_file in successful_files:  # Only check successful files
                             base_name = os.path.splitext(
                                 os.path.basename(input_file))[0]
                             # Use the velocity with uncertainty file (contains
@@ -341,7 +274,7 @@ class AnalysisThread(QThread):
                         self.progress_signal.emit(
                             f"=== SPADE File Availability ===")
                         self.progress_signal.emit(
-                            f"ALPSS successful files: {len(self.successful_files)}")
+                            f"ALPSS successful files: {len(successful_files)}")
                         self.progress_signal.emit(
                             f"SPADE input files found: {len(vel_files)}")
                         self.progress_signal.emit(
@@ -362,7 +295,7 @@ class AnalysisThread(QThread):
                             spade_output_dir = os.path.join(
                                 self.output_dir, "SPADE_analysis")
                             os.makedirs(spade_output_dir, exist_ok=True)
-
+                            
                             # Debug: Check paths
                             self.progress_signal.emit(
                                 f"Debug: output_dir = {self.output_dir}")
@@ -370,7 +303,7 @@ class AnalysisThread(QThread):
                                 f"Debug: spade_output_dir = {spade_output_dir}")
                             self.progress_signal.emit(
                                 f"Debug: Found {len(vel_files)} velocity files")
-
+                            
                             # Validate paths
                             if not os.path.exists(self.output_dir):
                                 raise ValueError(
@@ -378,11 +311,11 @@ class AnalysisThread(QThread):
                             if not os.path.exists(spade_output_dir):
                                 raise ValueError(
                                     f"SPADE output directory could not be created: {spade_output_dir}")
-
+                            
                             # Run SPADE with progress updates
                             self.progress_signal.emit(
                                 f"SPADE Processing file 1/{len(vel_files)}: Starting SPADE analysis...")
-
+                            
                             # Add skip_smoothing parameter to avoid double
                             # smoothing
                             spade_params_with_skip = self.spade_params.copy()
@@ -396,7 +329,7 @@ class AnalysisThread(QThread):
                                 spade_params_with_skip.pop(
                                     'smooth_window', None)
                                 spade_params_with_skip.pop('polyorder', None)
-
+                            
                             # Add parameter data for enhanced legends if
                             # available
                             if self.param_data:
@@ -405,7 +338,7 @@ class AnalysisThread(QThread):
                                     "Using parameter data for enhanced legends")
                             else:
                                 spade_params_with_skip['param_data'] = None
-
+                            
                             process_velocity_files(
                                 input_folder=self.output_dir,
                                 # Use ALPSS smoothed data with uncertainty
@@ -417,7 +350,7 @@ class AnalysisThread(QThread):
                                     'plot_individual', True),
                                 **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                             )
-
+                            
                             # Update progress after completion
                             for i in range(len(vel_files)):
                                 self.progress_signal.emit(
@@ -441,12 +374,12 @@ class AnalysisThread(QThread):
                     if self.spade_input_files:
                         self.progress_signal.emit(
                             f"Running SPADE analysis on {len(self.spade_input_files)} manual input files...")
-
+                        
                         # Create SPADE output subdirectory
                         spade_output_dir = os.path.join(
                             self.output_dir, "SPADE_analysis")
                         os.makedirs(spade_output_dir, exist_ok=True)
-
+                        
                         # Run SPADE - for manual mode, we need to create a temporary directory with the files
                         # or use a different approach since SPADE expects
                         # input_folder and file_pattern
@@ -462,23 +395,23 @@ class AnalysisThread(QThread):
                             input_dir = os.path.dirname(
                                 self.spade_input_files[0])
                             file_pattern = "*--vel-smooth-with-uncert.csv"
-
+                        
                         # Start SPADE processing
                         self.progress_signal.emit(
                             f"SPADE Processing file 1/{len(self.spade_input_files)}: Starting SPADE analysis...")
-
+                        
                         # Add skip_smoothing parameter to avoid double
                         # smoothing
                         spade_params_with_skip = self.spade_params.copy()
                         # Skip SPADE smoothing since ALPSS already smoothed
                         spade_params_with_skip['skip_smoothing'] = True
-
+                        
                         # Remove smooth_window and polyorder when skipping
                         # smoothing to avoid confusion
                         if spade_params_with_skip.get('skip_smoothing', False):
                             spade_params_with_skip.pop('smooth_window', None)
                             spade_params_with_skip.pop('polyorder', None)
-
+                        
                         # Add parameter data for enhanced legends if available
                         if self.param_data:
                             spade_params_with_skip['param_data'] = self.param_data
@@ -486,7 +419,7 @@ class AnalysisThread(QThread):
                                 "Using parameter data for enhanced legends")
                         else:
                             spade_params_with_skip['param_data'] = None
-
+                        
                         process_velocity_files(
                             input_folder=input_dir,
                             file_pattern=file_pattern,
@@ -497,12 +430,12 @@ class AnalysisThread(QThread):
                                 'plot_individual', True),
                             **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                         )
-
+                        
                         # Update progress after completion
                         for i in range(len(self.spade_input_files)):
                             self.progress_signal.emit(
                                 f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: Completed")
-
+                        
                         spade_end_time = time.time()
                         spade_time = spade_end_time - spade_start_time
                         self.progress_signal.emit(
@@ -512,8 +445,9 @@ class AnalysisThread(QThread):
                             "No SPADE input files provided")
             # After SPADE analysis, generate mean velocity file and combined
             # plots
-            spade_output_dir = os.path.join(self.output_dir, "SPADE_analysis")
-            os.makedirs(spade_output_dir, exist_ok=True)
+                output_dir = self.output_dir
+                spade_output_dir = os.path.join(output_dir, "SPADE_analysis")
+                os.makedirs(spade_output_dir, exist_ok=True)
 
             # Handle different experiment types (can be both)
             velocity_shots_enabled = self.spade_params.get('velocity_shots_enabled', True)
@@ -540,7 +474,7 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(
                 f"Total processing time: {total_time:.2f} seconds")
             self.finished_signal.emit(True, "Analysis completed successfully")
-        except Exception as e:
+                        except Exception as e:
             self.progress_signal.emit(f"Error during analysis: {str(e)}")
             self.finished_signal.emit(False, f"Analysis failed: {str(e)}")
 
@@ -554,32 +488,10 @@ class AnalysisThread(QThread):
         self.output_dir,
          '*--vel-smooth-with-uncert.csv'))
 
-        # Filter out empty files
-        valid_velocity_files = []
-        for file_path in velocity_files:
-            if os.path.getsize(file_path) > 0:
-                valid_velocity_files.append(file_path)
-            else:
-                self.progress_signal.emit(f"Warning: Empty velocity file found: {os.path.basename(file_path)}")
-
-        if not valid_velocity_files:
+        if not velocity_files:
             self.progress_signal.emit(
-                "No valid velocity files with uncertainty data found for velocity shots summary")
+                "No velocity files with uncertainty data found for velocity shots summary")
             return
-
-        self.progress_signal.emit(f"Found {len(valid_velocity_files)} valid velocity files to process")
-        velocity_files = valid_velocity_files
-
-        # Debug: Report available parameter data
-        if self.param_data:
-            self.progress_signal.emit(f"Available parameter data keys: {list(self.param_data.keys())}")
-            # Show sample of parameter data structure
-            if self.param_data:
-                sample_key = list(self.param_data.keys())[0]
-                sample_data = self.param_data[sample_key]
-                self.progress_signal.emit(f"Sample parameter data structure for '{sample_key}': {list(sample_data.keys())}")
-        else:
-            self.progress_signal.emit("No parameter data available")
 
         velocity_shots_data = []
         velocity_plot_data = []  # For combined velocity plot
@@ -623,7 +535,7 @@ class AnalysisThread(QThread):
                         else:
                             self.progress_signal.emit(
                                 f"Warning: Noise fraction file has insufficient columns: {os.path.basename(noise_file)}")
-                    except Exception as e:
+                            except Exception as e:
                         self.progress_signal.emit(
                             f"Warning: Could not read noise fraction for {os.path.basename(file_path)}: {e}")
                 else:
@@ -645,56 +557,48 @@ class AnalysisThread(QThread):
                         f"Warning: Could not find velocity threshold {velocity_threshold} m/s for {os.path.basename(file_path)}")
                     # Use original time data
                     time_aligned = time_data
-                else:
+                    else:
                     # Align time data to t=0 at velocity threshold
                     t0 = time_data[t0_idx]
                     time_aligned = time_data - t0
                     self.progress_signal.emit(
                         f"Aligned trace: t=0 at {t0:.2f} ns when velocity reached {velocity_threshold} m/s")
 
-                # Calculate mean velocity using aligned time and filtered data
-                # First, determine the actual time range of the data
-                time_range = np.max(time_aligned) - np.min(time_aligned)
-                self.progress_signal.emit(f"Time range after alignment: {np.min(time_aligned):.1f} to {np.max(time_aligned):.1f} ns (span: {time_range:.1f} ns)")
+                # Calculate mean velocity between 300-400ns using aligned time and filtered data
+                mask_300_400 = (time_aligned >= 300) & (time_aligned <= 400)
+                velocities_300_400 = velocity_filtered[mask_300_400]
+                velocities_300_400 = velocities_300_400[~np.isnan(velocities_300_400)]
                 
-                # Use adaptive time windows based on actual data range
-                if time_range > 1000:  # Long time range (>1μs)
-                    # Use windows relative to the middle of the data
-                    mid_time = (np.min(time_aligned) + np.max(time_aligned)) / 2
-                    window_start = mid_time - 50  # 50ns window around middle
-                    window_end = mid_time + 50
-                    time_window_used = f"{window_start:.0f}-{window_end:.0f}ns (adaptive)"
-                elif time_range > 100:  # Medium time range (100ns-1μs)
-                    # Use the middle 100ns of the data
-                    mid_time = (np.min(time_aligned) + np.max(time_aligned)) / 2
-                    window_start = mid_time - 50
-                    window_end = mid_time + 50
-                    time_window_used = f"{window_start:.0f}-{window_end:.0f}ns (adaptive)"
-                else:  # Short time range (<100ns)
-                    # Use the entire available range
-                    window_start = np.min(time_aligned)
-                    window_end = np.max(time_aligned)
-                    time_window_used = f"{window_start:.0f}-{window_end:.0f}ns (full range)"
-                
-                # Calculate mean velocity in the adaptive window
-                mask_window = (time_aligned >= window_start) & (time_aligned <= window_end)
-                velocities_window = velocity_filtered[mask_window]
-                velocities_window = velocities_window[~np.isnan(velocities_window)]
-                
-                if len(velocities_window) > 0:
-                    mean_velocity_300_400 = np.mean(velocities_window)
-                    self.progress_signal.emit(f"Using {len(velocities_window)} data points in window {time_window_used}")
+                if len(velocities_300_400) > 0:
+                    mean_velocity_300_400 = np.mean(velocities_300_400)
+                    time_window_used = "300-400ns"
                 else:
-                    # Fallback: use all available data
-                    velocities_all = velocity_filtered[~np.isnan(velocity_filtered)]
-                    if len(velocities_all) > 0:
-                        mean_velocity_300_400 = np.mean(velocities_all)
-                        time_window_used = f"All data ({len(velocities_all)} points)"
-                        self.progress_signal.emit(f"Warning: No data in adaptive window, using all available data")
+                    # Fallback: Try 200-300ns window
+                    mask_200_300 = (time_aligned >= 200) & (time_aligned <= 300)
+                    velocities_200_300 = velocity_filtered[mask_200_300]
+                    velocities_200_300 = velocities_200_300[~np.isnan(velocities_200_300)]
+                    
+                    if len(velocities_200_300) > 0:
+                        mean_velocity_300_400 = np.mean(velocities_200_300)
+                        time_window_used = "200-300ns (fallback)"
+                        self.progress_signal.emit(
+                            f"Warning: No data in 300-400ns window for {os.path.basename(file_path)}, using 200-300ns fallback")
                     else:
-                        mean_velocity_300_400 = np.nan
-                        time_window_used = "No data available"
-                        self.progress_signal.emit(f"Error: No velocity data available for {os.path.basename(file_path)}")
+                        # Second fallback: Try 400-500ns window
+                        mask_400_500 = (time_aligned >= 400) & (time_aligned <= 500)
+                        velocities_400_500 = velocity_filtered[mask_400_500]
+                        velocities_400_500 = velocities_400_500[~np.isnan(velocities_400_500)]
+                        
+                        if len(velocities_400_500) > 0:
+                            mean_velocity_300_400 = np.mean(velocities_400_500)
+                            time_window_used = "400-500ns (fallback)"
+                            self.progress_signal.emit(
+                                f"Warning: No data in 300-400ns or 200-300ns windows for {os.path.basename(file_path)}, using 400-500ns fallback")
+                        else:
+                            mean_velocity_300_400 = np.nan
+                            time_window_used = "No data available"
+                            self.progress_signal.emit(
+                                f"Error: No velocity data available in any time window (200-300ns, 300-400ns, 400-500ns) for {os.path.basename(file_path)}")
 
                 # Get file base name
                 base_name = os.path.splitext(
@@ -707,34 +611,12 @@ class AnalysisThread(QThread):
                     # Try exact match first
                     if base_name in self.param_data:
                         param_info = self.param_data[base_name]
-                        self.progress_signal.emit(f"Exact match found for {base_name}")
-                    else:
-                        # Try partial matches with more robust matching
-                        best_match = None
-                        best_match_score = 0
-                        
+                else:
+                        # Try partial matches
                         for key in self.param_data.keys():
-                            # Clean both names for comparison
-                            clean_base = base_name.lower().replace('_', '').replace('-', '').replace(' ', '')
-                            clean_key = str(key).lower().replace('_', '').replace('-', '').replace(' ', '')
-                            
-                            # Calculate match score
-                            if clean_base == clean_key:
-                                best_match = key
-                                best_match_score = 100
+                            if base_name in key or key in base_name:
+                                param_info = self.param_data[key]
                                 break
-                            elif clean_base in clean_key or clean_key in clean_base:
-                                # Calculate similarity score
-                                score = len(set(clean_base) & set(clean_key)) / len(set(clean_base) | set(clean_key))
-                                if score > best_match_score:
-                                    best_match = key
-                                    best_match_score = score
-                        
-                        if best_match and best_match_score > 0.3:  # Threshold for acceptable match
-                            param_info = self.param_data[best_match]
-                            self.progress_signal.emit(f"Partial match found for {base_name} -> {best_match} (score: {best_match_score:.2f})")
-                        else:
-                            self.progress_signal.emit(f"No suitable parameter match found for {base_name}")
                 
                 # Debug parameter data
                 if param_info:
@@ -776,88 +658,19 @@ class AnalysisThread(QThread):
 
         # Save velocity shots summary
         if velocity_shots_data:
-            # Ensure all parameter columns are included consistently
-            all_param_columns = set()
-            for shot_data in velocity_shots_data:
-                for key in shot_data.keys():
-                    if key not in ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 
-                                 'uncertainty_avg_ms', 't0_ns', 'velocity_threshold_ms']:
-                        all_param_columns.add(key)
-            
-            # Add missing parameter columns with NaN values
-            for shot_data in velocity_shots_data:
-                for param_col in all_param_columns:
-                    if param_col not in shot_data:
-                        shot_data[param_col] = np.nan
-            
             velocity_shots_df = pd.DataFrame(velocity_shots_data)
-            
-            # Reorder columns to put standard columns first, then parameter columns
-            standard_cols = ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 
-                           'uncertainty_avg_ms', 't0_ns', 'velocity_threshold_ms']
-            param_cols = sorted([col for col in velocity_shots_df.columns if col not in standard_cols])
-            final_cols = standard_cols + param_cols
-            velocity_shots_df = velocity_shots_df[final_cols]
-            
             velocity_shots_path = os.path.join(
     spade_output_dir, 'velocity_shots_summary.csv')
             velocity_shots_df.to_csv(velocity_shots_path, index=False)
             self.progress_signal.emit(
                 f"Generated velocity shots summary with {len(velocity_shots_data)} shots")
             self.progress_signal.emit(f"Saved to: {velocity_shots_path}")
-            self.progress_signal.emit(f"Parameter columns included: {param_cols}")
 
             # Generate combined velocity plot
             if velocity_plot_data:
                 self.generate_combined_velocity_plot(velocity_plot_data, spade_output_dir)
-            
-            # Create parameter mapping report for debugging
-            self.create_parameter_mapping_report(velocity_shots_data, spade_output_dir)
         else:
             self.progress_signal.emit("No velocity shots data generated")
-
-    def create_parameter_mapping_report(self, velocity_shots_data, spade_output_dir):
-        """Create a detailed report of parameter mapping for debugging"""
-        try:
-            report_lines = []
-            report_lines.append("=== PARAMETER MAPPING REPORT ===")
-            report_lines.append(f"Generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-            report_lines.append("")
-            
-            if self.param_data:
-                report_lines.append(f"Total parameter entries available: {len(self.param_data)}")
-                report_lines.append("Available parameter keys:")
-                for key in sorted(self.param_data.keys()):
-                    report_lines.append(f"  - {key}")
-                report_lines.append("")
-            else:
-                report_lines.append("No parameter data available")
-                report_lines.append("")
-            
-            report_lines.append("=== VELOCITY FILE MAPPING ===")
-            for shot_data in velocity_shots_data:
-                file_name = shot_data['file_name']
-                param_keys = [k for k in shot_data.keys() if k not in ['file_name', 'mean_velocity_300_400ns_ms', 
-                                                                      'time_window_used', 'uncertainty_avg_ms', 
-                                                                      't0_ns', 'velocity_threshold_ms']]
-                report_lines.append(f"File: {file_name}")
-                report_lines.append(f"  Parameter columns: {param_keys}")
-                if param_keys:
-                    non_nan_params = [k for k in param_keys if not pd.isna(shot_data.get(k, np.nan))]
-                    report_lines.append(f"  Non-NaN parameters: {non_nan_params}")
-                else:
-                    report_lines.append("  No parameters mapped")
-                report_lines.append("")
-            
-            # Save report
-            report_path = os.path.join(spade_output_dir, 'parameter_mapping_report.txt')
-            with open(report_path, 'w') as f:
-                f.write('\n'.join(report_lines))
-            
-            self.progress_signal.emit(f"Created parameter mapping report: {report_path}")
-            
-        except Exception as e:
-            self.progress_signal.emit(f"Error creating parameter mapping report: {str(e)}")
 
     def generate_combined_velocity_plot(self, velocity_plot_data, spade_output_dir):
         """Generate combined velocity plot with color coding based on material information"""
@@ -932,7 +745,7 @@ class AnalysisThread(QThread):
             # Save plot
             plot_path = os.path.join(spade_output_dir, "combined_velocity_plot.png")
             fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-            plt.close(fig)
+                plt.close(fig)
             
             self.progress_signal.emit(f"Saved combined velocity plot to {plot_path}")
             
@@ -940,18 +753,20 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"Error generating combined velocity plot: {e}")
 
     def generate_spall_analysis_summary(self, spade_output_dir):
-        """Generate enhanced spall analysis summary with comprehensive parameter file data"""
-        self.progress_signal.emit("Generating enhanced spall analysis summary...")
+        """Generate enhanced spall analysis summary with parameter file data"""
+        self.progress_signal.emit(
+            "Generating enhanced spall analysis summary...")
 
         # Check if spall summary already exists
-        spall_summary_path = os.path.join(spade_output_dir, 'spall_summary.csv')
+        spall_summary_path = os.path.join(
+    spade_output_dir, 'spall_summary.csv')
         if not os.path.exists(spall_summary_path):
-            self.progress_signal.emit("No spall summary found - SPADE analysis may not have completed")
+            self.progress_signal.emit(
+                "No spall summary found - SPADE analysis may not have completed")
             return
 
         # Read existing spall summary
         spall_df = pd.read_csv(spall_summary_path)
-        self.progress_signal.emit(f"Found {len(spall_df)} entries in spall summary")
 
         # Enhance with parameter file data
         enhanced_spall_data = []
@@ -961,297 +776,36 @@ class AnalysisThread(QThread):
             if not filename:
                 continue
 
-            # Get file base name for parameter matching
-            base_name = os.path.splitext(filename)[0]
-
-            # Get parameter data if available - try multiple matching strategies
+            # Get parameter data if available
             param_info = {}
-            if self.param_data:
-                # Try exact match first
-                if base_name in self.param_data:
-                    param_info = self.param_data[base_name]
-                else:
-                    # Try partial matches
-                    for key in self.param_data.keys():
-                        if base_name in key or key in base_name:
-                            param_info = self.param_data[key]
-                            break
+            if self.param_data and filename in self.param_data:
+                param_info = self.param_data[filename]
 
-            # Debug parameter data
-            if param_info:
-                self.progress_signal.emit(f"Found parameter data for {base_name}: {list(param_info.keys())}")
-            else:
-                self.progress_signal.emit(f"No parameter data found for {base_name}")
-
-            # Create enhanced row with all original SPADE data
+            # Create enhanced row
             enhanced_row = row.copy()
 
-            # Add ALL parameter file data as extra columns (without 'param_' prefix)
+            # Add parameter file data as extra columns
             for key, value in param_info.items():
-                enhanced_row[key] = value
-
-            # Try to find corresponding ALPSS results file for additional data
-            alpss_results_file = os.path.join(self.output_dir, f"{base_name}--results.csv")
-            if os.path.exists(alpss_results_file):
-                try:
-                    # Read ALPSS results
-                    alpss_results = pd.read_csv(alpss_results_file, header=None, names=['Name', 'Value'])
-                    alpss_dict = dict(zip(alpss_results['Name'], alpss_results['Value']))
-                    
-                    # Add ALPSS results to enhanced summary
-                    enhanced_row['ALPSS_Spall_Strength_GPa'] = alpss_dict.get('Spall Strength', np.nan)
-                    enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa'] = alpss_dict.get('Spall Strength Uncertainty', np.nan)
-                    enhanced_row['ALPSS_Strain_Rate_s1'] = alpss_dict.get('Strain Rate', np.nan)
-                    enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1'] = alpss_dict.get('Strain Rate Uncertainty', np.nan)
-                    enhanced_row['ALPSS_Peak_Shock_Stress_GPa'] = alpss_dict.get('Peak Shock Stress', np.nan)
-                    enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] = alpss_dict.get('Velocity at Max Compression', np.nan)
-                    enhanced_row['ALPSS_Velocity_at_Max_Tension_ms'] = alpss_dict.get('Velocity at Max Tension', np.nan)
-                    enhanced_row['ALPSS_Velocity_at_Recompression_ms'] = alpss_dict.get('Velocity at Recompression', np.nan)
-                    enhanced_row['ALPSS_Time_at_Max_Compression_ns'] = alpss_dict.get('Time at Max Compression', np.nan)
-                    enhanced_row['ALPSS_Time_at_Max_Tension_ns'] = alpss_dict.get('Time at Max Tension', np.nan)
-                    enhanced_row['ALPSS_Time_at_Recompression_ns'] = alpss_dict.get('Time at Recompression', np.nan)
-                    enhanced_row['ALPSS_Carrier_Frequency_Hz'] = alpss_dict.get('Carrier Frequency', np.nan)
-                    enhanced_row['ALPSS_Signal_Start_Time_s'] = alpss_dict.get('Signal Start Time', np.nan)
-                    enhanced_row['ALPSS_Smoothing_Characteristic_Time_s'] = alpss_dict.get('Smoothing Characteristic Time', np.nan)
-                    
-                    self.progress_signal.emit(f"Added ALPSS results for {base_name}")
-                except Exception as e:
-                    self.progress_signal.emit(f"Warning: Could not read ALPSS results for {base_name}: {e}")
-            else:
-                self.progress_signal.emit(f"No ALPSS results file found for {base_name}")
+                enhanced_row[f'param_{key}'] = value
 
             enhanced_spall_data.append(enhanced_row)
 
         # Save enhanced spall summary
         if enhanced_spall_data:
             enhanced_spall_df = pd.DataFrame(enhanced_spall_data)
-            enhanced_spall_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
+            enhanced_spall_path = os.path.join(
+    spade_output_dir, 'enhanced_spall_summary.csv')
             enhanced_spall_df.to_csv(enhanced_spall_path, index=False)
-            self.progress_signal.emit(f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
+            self.progress_signal.emit(
+                f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
             self.progress_signal.emit(f"Saved to: {enhanced_spall_path}")
-            
-            # Generate additional analysis plots if parameter data is available
-            self.generate_spall_analysis_plots(enhanced_spall_df, spade_output_dir)
         else:
             self.progress_signal.emit("No enhanced spall data generated")
-
-    def generate_spall_analysis_plots(self, enhanced_spall_df, spade_output_dir):
-        """Generate additional analysis plots for spall data with parameter information"""
-        self.progress_signal.emit("Generating spall analysis plots...")
-        
-        try:
-            import matplotlib.pyplot as plt
-            import matplotlib.patches as mpatches
-            
-            # Check if we have material information for color coding
-            material_cols = [col for col in enhanced_spall_df.columns if 'material' in col.lower()]
-            color_col = material_cols[0] if material_cols else None
-            
-            # Create color mapping for materials if available
-            if color_col and len(enhanced_spall_df[color_col].unique()) > 1:
-                materials = enhanced_spall_df[color_col].unique()
-                colors = plt.cm.Set3(np.linspace(0, 1, len(materials)))
-                color_map = dict(zip(materials, colors))
-                
-                # Create legend patches
-                legend_patches = [mpatches.Patch(color=color_map[mat], label=mat) for mat in materials]
-            else:
-                color_map = None
-                legend_patches = []
-            
-            # Plot 1: Spall Strength vs Strain Rate
-            if 'Spall Strength (GPa)' in enhanced_spall_df.columns and 'Strain Rate (s^-1)' in enhanced_spall_df.columns:
-                fig, ax = plt.subplots(figsize=(10, 8))
-                
-                for idx, row in enhanced_spall_df.iterrows():
-                    spall_strength = row.get('Spall Strength (GPa)', np.nan)
-                    strain_rate = row.get('Strain Rate (s^-1)', np.nan)
-                    
-                    if not pd.isna(spall_strength) and not pd.isna(strain_rate):
-                        if color_col and color_map:
-                            color = color_map.get(row[color_col], 'blue')
-                            ax.scatter(strain_rate, spall_strength, c=[color], s=100, alpha=0.7)
-                        else:
-                            ax.scatter(strain_rate, spall_strength, c='blue', s=100, alpha=0.7)
-                
-                ax.set_xlabel('Strain Rate (s⁻¹)', fontsize=14)
-                ax.set_ylabel('Spall Strength (GPa)', fontsize=14)
-                ax.set_title('Spall Strength vs Strain Rate', fontsize=16)
-                ax.grid(True, alpha=0.3)
-                
-                if legend_patches:
-                    ax.legend(handles=legend_patches, loc='upper left')
-                
-                plt.tight_layout()
-                plot_path = os.path.join(spade_output_dir, 'spall_strength_vs_strain_rate_enhanced.png')
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-                plt.close()
-                self.progress_signal.emit(f"Generated enhanced spall strength vs strain rate plot")
-            
-            # Plot 2: Spall Strength vs Shock Stress
-            if 'Spall Strength (GPa)' in enhanced_spall_df.columns and 'Peak Shock Stress (GPa)' in enhanced_spall_df.columns:
-                fig, ax = plt.subplots(figsize=(10, 8))
-                
-                for idx, row in enhanced_spall_df.iterrows():
-                    spall_strength = row.get('Spall Strength (GPa)', np.nan)
-                    shock_stress = row.get('Peak Shock Stress (GPa)', np.nan)
-                    
-                    if not pd.isna(spall_strength) and not pd.isna(shock_stress):
-                        if color_col and color_map:
-                            color = color_map.get(row[color_col], 'red')
-                            ax.scatter(shock_stress, spall_strength, c=[color], s=100, alpha=0.7)
-                        else:
-                            ax.scatter(shock_stress, spall_strength, c='red', s=100, alpha=0.7)
-                
-                ax.set_xlabel('Peak Shock Stress (GPa)', fontsize=14)
-                ax.set_ylabel('Spall Strength (GPa)', fontsize=14)
-                ax.set_title('Spall Strength vs Shock Stress', fontsize=16)
-                ax.grid(True, alpha=0.3)
-                
-                if legend_patches:
-                    ax.legend(handles=legend_patches, loc='upper left')
-                
-                plt.tight_layout()
-                plot_path = os.path.join(spade_output_dir, 'spall_strength_vs_shock_stress_enhanced.png')
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-                plt.close()
-                self.progress_signal.emit(f"Generated enhanced spall strength vs shock stress plot")
-            
-            # Plot 3: Material comparison (if material data available)
-            if color_col and len(enhanced_spall_df[color_col].unique()) > 1:
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-                
-                # Box plot of spall strength by material
-                if 'Spall Strength (GPa)' in enhanced_spall_df.columns:
-                    materials = enhanced_spall_df[color_col].unique()
-                    spall_data = [enhanced_spall_df[enhanced_spall_df[color_col] == mat]['Spall Strength (GPa)'].dropna() 
-                                 for mat in materials]
-                    
-                    bp1 = ax1.boxplot(spall_data, labels=materials, patch_artist=True)
-                    for patch, color in zip(bp1['boxes'], [color_map.get(mat, 'gray') for mat in materials]):
-                        patch.set_facecolor(color)
-                        patch.set_alpha(0.7)
-                    
-                    ax1.set_ylabel('Spall Strength (GPa)', fontsize=14)
-                    ax1.set_title('Spall Strength by Material', fontsize=16)
-                    ax1.grid(True, alpha=0.3)
-                
-                # Box plot of strain rate by material
-                if 'Strain Rate (s^-1)' in enhanced_spall_df.columns:
-                    strain_data = [enhanced_spall_df[enhanced_spall_df[color_col] == mat]['Strain Rate (s^-1)'].dropna() 
-                                 for mat in materials]
-                    
-                    bp2 = ax2.boxplot(strain_data, labels=materials, patch_artist=True)
-                    for patch, color in zip(bp2['boxes'], [color_map.get(mat, 'gray') for mat in materials]):
-                        patch.set_facecolor(color)
-                        patch.set_alpha(0.7)
-                    
-                    ax2.set_ylabel('Strain Rate (s⁻¹)', fontsize=14)
-                    ax2.set_title('Strain Rate by Material', fontsize=16)
-                    ax2.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                plot_path = os.path.join(spade_output_dir, 'material_comparison_spall.png')
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-                plt.close()
-                self.progress_signal.emit(f"Generated material comparison plots")
-            
-            self.progress_signal.emit("Completed spall analysis plots generation")
-            
-        except Exception as e:
-            self.progress_signal.emit(f"Error generating spall analysis plots: {str(e)}")
-
-        # 1. Find all ALPSS velocity files (raw, not smooth)
-        velocity_files = glob.glob(os.path.join(self.output_dir, '*--velocity.csv'))
-        if velocity_files:
-            # 2. Read and align all velocity files by time
-            dfs = []
-            for f in velocity_files:
-                try:
-                    # Try reading with headers first
-                    df = pd.read_csv(f)
-                    if 'Time' in df.columns and 'Velocity' in df.columns:
-                        dfs.append(df[['Time', 'Velocity']].rename(
-                            columns={'Velocity': os.path.basename(f)}))
-                    else:
-                        # No headers, assume first column is time, second is velocity
-                        df = pd.read_csv(f, header=None)
-                        if df.shape[1] >= 2:
-                            df.columns = ['Time', 'Velocity']
-                            dfs.append(df[['Time', 'Velocity']].rename(
-                                columns={'Velocity': os.path.basename(f)}))
-                except Exception as e:
-                    print(f"[WARNING] Could not read velocity file {f}: {e}")
-                    continue
-            if dfs:
-                # Merge on Time
-                merged = dfs[0]
-                for d in dfs[1:]:
-                    merged = pd.merge(merged, d, on='Time', how='outer')
-                merged = merged.sort_values('Time').reset_index(drop=True)
-                # Compute mean and std dev
-                velocity_cols = [
-    col for col in merged.columns if col != 'Time']
-                merged['Mean Velocity (m/s)'] = merged[velocity_cols].mean(axis=1)
-                merged['Std Dev Velocity (m/s)'] = merged[velocity_cols].std(axis=1)
-
-                # Create a properly named file that matches SPADE's expected pattern
-                # Use a generic name that will work with the plotting function
-                mean_vel_file = os.path.join(
-    spade_output_dir, 'combined_mean_raw_velocity.csv')
-                merged[['Time',
-    'Mean Velocity (m/s)',
-    'Std Dev Velocity (m/s)']].to_csv(mean_vel_file,
-     index=False)
-
-                # 3. Plot combined mean velocity - create a simple plot since
-                # SPADE's function expects specific naming
-                try:
-                    fig, ax = plt.subplots(figsize=(12, 8))
-                    time_data = merged['Time']
-                    mean_velocity = merged['Mean Velocity (m/s)']
-                    velocity_std = merged['Std Dev Velocity (m/s)']
-
-                    # Plot mean line
-                    ax.plot(
-    time_data,
-    mean_velocity,
-    'b-',
-    linewidth=2,
-     label='Mean Velocity')
-
-                    # Plot shaded uncertainty if available
-                    if not velocity_std.isna().all():
-                        ax.fill_between(time_data, mean_velocity - velocity_std, mean_velocity + velocity_std,
-                                      alpha=0.3, color='blue', label='±1σ')
-
-                    ax.set_xlabel('Time (ns)', fontsize=14)
-                    ax.set_ylabel(
-    'Mean Free Surface Velocity (m/s)', fontsize=14)
-                    ax.set_title('Combined Mean Velocity Traces', fontsize=16)
-                    ax.legend()
-                    ax.grid(True, alpha=0.3)
-                    ax.set_ylim(0, 700)
-
-                    plt.tight_layout()
-                    # Save to both spade_output_dir and main output_dir
-                    spade_plot_path = os.path.join(spade_output_dir, 'combined_mean_velocity.png')
-                    main_plot_path = os.path.join(self.output_dir, 'combined_mean_velocity.png')
-                    
-                    plt.savefig(spade_plot_path, dpi=300)
-                    plt.savefig(main_plot_path, dpi=300)
-                    plt.close(fig)
-                    self.progress_signal.emit(
-                        f"Generated combined_mean_velocity.png in both locations")
-                except Exception as e:
-                    msg = f"[WARNING] Failed to generate combined_mean_velocity.png: {e}"
-                    print(msg)
-                    self.progress_signal.emit(msg)
 
         # --- ENHANCED: Plot all smoothed velocity traces with material and waveplate angle information ---
         smoothed_files = glob.glob(
     os.path.join(
-        self.output_dir,
+        output_dir,
          '*--velocity--smooth.csv'))
 
         # Report combined plotting file availability
@@ -1260,12 +814,12 @@ class AnalysisThread(QThread):
         self.progress_signal.emit(
             f"Found {len(smoothed_files)} velocity files for combined plotting")
 
-        if len(smoothed_files) != len(self.successful_files):
+        if len(smoothed_files) != len(successful_files):
             missing_plot_files = []
-            for input_file in self.successful_files:
+            for input_file in successful_files:
                 base_name = os.path.splitext(os.path.basename(input_file))[0]
                 expected_file = os.path.join(
-                    self.output_dir, f"{base_name}--velocity--smooth.csv")
+    output_dir, f"{base_name}--velocity--smooth.csv")
                 if not os.path.exists(expected_file):
                     missing_plot_files.append(base_name)
 
@@ -1282,147 +836,145 @@ class AnalysisThread(QThread):
         experiment_type = self.spade_params.get('experiment_type', 'velocity_shots')
         
         if experiment_type == "spall_analysis":
-            summary_csv = os.path.join(spade_output_dir, 'spall_summary.csv')
-            if os.path.exists(summary_csv):
-                summary_df = pd.read_csv(summary_csv)
-                # Get density and acoustic velocity from GUI/spade_params
-                density = self.spade_params.get('density', 8960)
-                acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
-                
-                # Enhance SPADE summary with ALPSS results and additional calculations
-                enhanced_summary = []
-                
-                for idx, row in summary_df.iterrows():
-                    enhanced_row = row.copy()
-                    filename = row.get('Filename', '')
+                summary_csv = os.path.join(spade_output_dir, 'spall_summary.csv')
+                if os.path.exists(summary_csv):
+                    summary_df = pd.read_csv(summary_csv)
+                    # Get density and acoustic velocity from GUI/spade_params
+                    density = self.spade_params.get('density', 8960)
+                    acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
                     
-                    # Try to find corresponding ALPSS results file
-                    alpss_results_file = os.path.join(self.output_dir, f"{filename}--results.csv")
-                    if os.path.exists(alpss_results_file):
-                        try:
-                            # Read ALPSS results
-                            alpss_results = pd.read_csv(alpss_results_file, header=None, names=['Name', 'Value'])
-                            alpss_dict = dict(zip(alpss_results['Name'], alpss_results['Value']))
-                            
-                            # Add ALPSS results to enhanced summary
-                            enhanced_row['ALPSS_Spall_Strength_GPa'] = alpss_dict.get('Spall Strength', np.nan)
-                            enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa'] = alpss_dict.get('Spall Strength Uncertainty', np.nan)
-                            enhanced_row['ALPSS_Strain_Rate_s1'] = alpss_dict.get('Strain Rate', np.nan)
-                            enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1'] = alpss_dict.get('Strain Rate Uncertainty', np.nan)
-                            enhanced_row['ALPSS_Peak_Shock_Stress_GPa'] = alpss_dict.get('Peak Shock Stress', np.nan)
-                            enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] = alpss_dict.get('Velocity at Max Compression', np.nan)
-                            enhanced_row['ALPSS_Velocity_at_Max_Tension_ms'] = alpss_dict.get('Velocity at Max Tension', np.nan)
-                            enhanced_row['ALPSS_Velocity_at_Recompression_ms'] = alpss_dict.get('Velocity at Recompression', np.nan)
-                            enhanced_row['ALPSS_Time_at_Max_Compression_ns'] = alpss_dict.get('Time at Max Compression', np.nan)
-                            enhanced_row['ALPSS_Time_at_Max_Tension_ns'] = alpss_dict.get('Time at Max Tension', np.nan)
-                            enhanced_row['ALPSS_Time_at_Recompression_ns'] = alpss_dict.get('Time at Recompression', np.nan)
-                            enhanced_row['ALPSS_Carrier_Frequency_Hz'] = alpss_dict.get('Carrier Frequency', np.nan)
-                            enhanced_row['ALPSS_Signal_Start_Time_s'] = alpss_dict.get('Signal Start Time', np.nan)
-                            enhanced_row['ALPSS_Smoothing_Characteristic_Time_s'] = alpss_dict.get('Smoothing Characteristic Time', np.nan)
-                            
-                        except Exception as e:
-                            print(f"[WARNING] Could not read ALPSS results for {filename}: {e}")
+                    # Enhance SPADE summary with ALPSS results and additional calculations
+                    enhanced_summary = []
                     
-                    # Calculate shock stress uncertainty if we have velocity uncertainty
-                    if 'ALPSS_Velocity_at_Max_Compression_ms' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Velocity_at_Max_Compression_ms']):
-                        # Estimate velocity uncertainty as 1% of velocity (typical for PDV)
-                        vel_uncertainty = enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] * 0.01
-                        enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = 0.5 * density * acoustic_velocity * vel_uncertainty * 1e-9
-                    else:
-                        enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = np.nan
-                    
-                    # Use ALPSS values if available, otherwise use SPADE values
-                    if 'ALPSS_Spall_Strength_GPa' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Spall_Strength_GPa']):
-                        enhanced_row['Spall_Strength_GPa_Final'] = enhanced_row['ALPSS_Spall_Strength_GPa']
-                        enhanced_row['Spall_Strength_Uncertainty_GPa_Final'] = enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa']
-                    else:
-                        enhanced_row['Spall_Strength_GPa_Final'] = row.get('Spall Strength (GPa)', np.nan)
-                        enhanced_row['Spall_Strength_Uncertainty_GPa_Final'] = row.get('Spall Strength Uncertainty (GPa)', np.nan)
-                    
-                    if 'ALPSS_Strain_Rate_s1' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Strain_Rate_s1']):
-                        enhanced_row['Strain_Rate_s1_Final'] = enhanced_row['ALPSS_Strain_Rate_s1']
-                        enhanced_row['Strain_Rate_Uncertainty_s1_Final'] = enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1']
-                    else:
-                        enhanced_row['Strain_Rate_s1_Final'] = row.get('Strain Rate (s^-1)', np.nan)
-                        enhanced_row['Strain_Rate_Uncertainty_s1_Final'] = row.get('Strain Rate Uncertainty (s^-1)', np.nan)
-                    
-                    if 'ALPSS_Peak_Shock_Stress_GPa' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Peak_Shock_Stress_GPa']):
-                        enhanced_row['Peak_Shock_Stress_GPa_Final'] = enhanced_row['ALPSS_Peak_Shock_Stress_GPa']
-                        enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa']
-                    else:
-                        # Calculate from SPADE's Plateau Mean Velocity
-                        if 'Plateau Mean Velocity (m/s)' in row and not pd.isna(row['Plateau Mean Velocity (m/s)']):
-                            enhanced_row['Peak_Shock_Stress_GPa_Final'] = row.get('Peak Shock Stress (GPa)', np.nan)
-                            enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = row.get('Peak Shock Stress Uncertainty (GPa)', np.nan)
+                    for idx, row in summary_df.iterrows():
+                        enhanced_row = row.copy()
+                        filename = row.get('Filename', '')
+                        
+                        # Try to find corresponding ALPSS results file
+                        alpss_results_file = os.path.join(self.output_dir, f"{filename}--results.csv")
+                        if os.path.exists(alpss_results_file):
+                            try:
+                                # Read ALPSS results
+                                alpss_results = pd.read_csv(alpss_results_file, header=None, names=['Name', 'Value'])
+                                alpss_dict = dict(zip(alpss_results['Name'], alpss_results['Value']))
+                                
+                                # Add ALPSS results to enhanced summary
+                                enhanced_row['ALPSS_Spall_Strength_GPa'] = alpss_dict.get('Spall Strength', np.nan)
+                                enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa'] = alpss_dict.get('Spall Strength Uncertainty', np.nan)
+                                enhanced_row['ALPSS_Strain_Rate_s1'] = alpss_dict.get('Strain Rate', np.nan)
+                                enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1'] = alpss_dict.get('Strain Rate Uncertainty', np.nan)
+                                enhanced_row['ALPSS_Peak_Shock_Stress_GPa'] = alpss_dict.get('Peak Shock Stress', np.nan)
+                                enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] = alpss_dict.get('Velocity at Max Compression', np.nan)
+                                enhanced_row['ALPSS_Velocity_at_Max_Tension_ms'] = alpss_dict.get('Velocity at Max Tension', np.nan)
+                                enhanced_row['ALPSS_Velocity_at_Recompression_ms'] = alpss_dict.get('Velocity at Recompression', np.nan)
+                                enhanced_row['ALPSS_Time_at_Max_Compression_ns'] = alpss_dict.get('Time at Max Compression', np.nan)
+                                enhanced_row['ALPSS_Time_at_Max_Tension_ns'] = alpss_dict.get('Time at Max Tension', np.nan)
+                                enhanced_row['ALPSS_Time_at_Recompression_ns'] = alpss_dict.get('Time at Recompression', np.nan)
+                                enhanced_row['ALPSS_Carrier_Frequency_Hz'] = alpss_dict.get('Carrier Frequency', np.nan)
+                                enhanced_row['ALPSS_Signal_Start_Time_s'] = alpss_dict.get('Signal Start Time', np.nan)
+                                enhanced_row['ALPSS_Smoothing_Characteristic_Time_s'] = alpss_dict.get('Smoothing Characteristic Time', np.nan)
+                                
+                            except Exception as e:
+                                print(f"[WARNING] Could not read ALPSS results for {filename}: {e}")
+                        
+                        # Calculate shock stress uncertainty if we have velocity uncertainty
+                        if 'ALPSS_Velocity_at_Max_Compression_ms' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Velocity_at_Max_Compression_ms']):
+                            # Estimate velocity uncertainty as 1% of velocity (typical for PDV)
+                            vel_uncertainty = enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] * 0.01
+                            enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = 0.5 * density * acoustic_velocity * vel_uncertainty * 1e-9
                         else:
-                            enhanced_row['Peak_Shock_Stress_GPa_Final'] = np.nan
-                            enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = np.nan
+                            enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = np.nan
+                        
+                        # Use ALPSS values if available, otherwise use SPADE values
+                        if 'ALPSS_Spall_Strength_GPa' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Spall_Strength_GPa']):
+                            enhanced_row['Spall_Strength_GPa_Final'] = enhanced_row['ALPSS_Spall_Strength_GPa']
+                            enhanced_row['Spall_Strength_Uncertainty_GPa_Final'] = enhanced_row['ALPSS_Spall_Strength_Uncertainty_GPa']
+                        else:
+                            enhanced_row['Spall_Strength_GPa_Final'] = row.get('Spall Strength (GPa)', np.nan)
+                            enhanced_row['Spall_Strength_Uncertainty_GPa_Final'] = row.get('Spall Strength Uncertainty (GPa)', np.nan)
+                        
+                        if 'ALPSS_Strain_Rate_s1' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Strain_Rate_s1']):
+                            enhanced_row['Strain_Rate_s1_Final'] = enhanced_row['ALPSS_Strain_Rate_s1']
+                            enhanced_row['Strain_Rate_Uncertainty_s1_Final'] = enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1']
+                        else:
+                            enhanced_row['Strain_Rate_s1_Final'] = row.get('Strain Rate (s^-1)', np.nan)
+                            enhanced_row['Strain_Rate_Uncertainty_s1_Final'] = row.get('Strain Rate Uncertainty (s^-1)', np.nan)
+                        
+                        if 'ALPSS_Peak_Shock_Stress_GPa' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Peak_Shock_Stress_GPa']):
+                            enhanced_row['Peak_Shock_Stress_GPa_Final'] = enhanced_row['ALPSS_Peak_Shock_Stress_GPa']
+                            enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa']
+                        else:
+                            # Calculate from SPADE's Plateau Mean Velocity
+                            if 'Plateau Mean Velocity (m/s)' in row and not pd.isna(row['Plateau Mean Velocity (m/s)']):
+                                enhanced_row['Peak_Shock_Stress_GPa_Final'] = row.get('Peak Shock Stress (GPa)', np.nan)
+                                enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = row.get('Peak Shock Stress Uncertainty (GPa)', np.nan)
+                            else:
+                                enhanced_row['Peak_Shock_Stress_GPa_Final'] = np.nan
+                                enhanced_row['Peak_Shock_Stress_Uncertainty_GPa_Final'] = np.nan
+                        
+                        enhanced_summary.append(enhanced_row)
                     
-                    enhanced_summary.append(enhanced_row)
-                
-                # Create enhanced summary DataFrame
-                enhanced_summary_df = pd.DataFrame(enhanced_summary)
-                
-                # Save enhanced summary
-                enhanced_summary_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
-                enhanced_summary_df.to_csv(enhanced_summary_path, index=False)
-                
-                # Update the original summary with key columns for plotting
-                summary_df['Peak Shock Stress (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_GPa_Final']
-                summary_df['Peak Shock Stress Uncertainty (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
-                summary_df['Spall Strength (GPa)'] = enhanced_summary_df['Spall_Strength_GPa_Final']
-                summary_df['Spall Strength Uncertainty (GPa)'] = enhanced_summary_df['Spall_Strength_Uncertainty_GPa_Final']
-                summary_df['Strain Rate Uncertainty (s^-1)'] = enhanced_summary_df['Strain_Rate_Uncertainty_s1_Final']
-                summary_df.to_csv(summary_csv, index=False)
-                
-                self.progress_signal.emit("Enhanced SPADE summary with ALPSS results and uncertainty calculations")
-                
+                    # Create enhanced summary DataFrame
+                    enhanced_summary_df = pd.DataFrame(enhanced_summary)
+                    
+                    # Save enhanced summary
+                    enhanced_summary_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
+                    enhanced_summary_df.to_csv(enhanced_summary_path, index=False)
+                    
+                    # Update the original summary with key columns for plotting
+                    summary_df['Peak Shock Stress (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_GPa_Final']
+                    summary_df['Peak Shock Stress Uncertainty (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
+                    summary_df['Spall Strength (GPa)'] = enhanced_summary_df['Spall_Strength_GPa_Final']
+                    summary_df['Spall Strength Uncertainty (GPa)'] = enhanced_summary_df['Spall_Strength_Uncertainty_GPa_Final']
+                    summary_df['Strain Rate Uncertainty (s^-1)'] = enhanced_summary_df['Strain_Rate_Uncertainty_s1_Final']
+                    summary_df.to_csv(summary_csv, index=False)
+                    
+                    self.progress_signal.emit("Enhanced SPADE summary with ALPSS results and uncertainty calculations")
+                    
                 # Log available outputs for spall analysis
                 self.progress_signal.emit("Available outputs (Spall Analysis):")
-                self.progress_signal.emit("  - spall_summary.csv: Basic SPADE results")
-                self.progress_signal.emit("  - enhanced_spall_summary.csv: Complete results with ALPSS data and uncertainties")
-                self.progress_signal.emit("  - spall_vs_strain_rate.png: Spall strength vs strain rate plot")
-                self.progress_signal.emit("  - spall_vs_shock_stress.png: Spall strength vs shock stress plot")
-                self.progress_signal.emit("  - Individual ALPSS files: *--results.csv, *--velocity.csv, etc.")
-                self.progress_signal.emit("  - Individual SPADE analysis plots (if enabled)")
-                self.progress_signal.emit("  - ALPSS velocity files: 4 columns (Time, Velocity, Uncertainty, Velocity+Uncertainty)")
-                self.progress_signal.emit("  - SPADE uses ALPSS uncertainty data for error bars and analysis")
-                
-                # Spall Strength vs. Strain Rate
-                try:
-                    plot_spall_vs_strain_rate(
-                        df=summary_df,
-                        output_filename=os.path.join(spade_output_dir, 'spall_vs_strain_rate.png'),
-                        literature_data_file=None,  # Disable literature data to avoid column mismatch errors
-                        spall_unc_col='Spall Strength Uncertainty (GPa)'
-                    )
+                    self.progress_signal.emit("  - spall_summary.csv: Basic SPADE results")
+                    self.progress_signal.emit("  - enhanced_spall_summary.csv: Complete results with ALPSS data and uncertainties")
+                    self.progress_signal.emit("  - spall_vs_strain_rate.png: Spall strength vs strain rate plot")
+                    self.progress_signal.emit("  - spall_vs_shock_stress.png: Spall strength vs shock stress plot")
+                    self.progress_signal.emit("  - Individual ALPSS files: *--results.csv, *--velocity.csv, etc.")
+                    self.progress_signal.emit("  - Individual SPADE analysis plots (if enabled)")
+                    self.progress_signal.emit("  - ALPSS velocity files: 4 columns (Time, Velocity, Uncertainty, Velocity+Uncertainty)")
+                    self.progress_signal.emit("  - SPADE uses ALPSS uncertainty data for error bars and analysis")
+                    
+                    # Spall Strength vs. Strain Rate
+                    try:
+                        plot_spall_vs_strain_rate(
+                            df=summary_df,
+                            output_filename=os.path.join(spade_output_dir, 'spall_vs_strain_rate.png'),
+                        literature_data_file=None,
+                            spall_unc_col='Spall Strength Uncertainty (GPa)'
+                        )
                     self.progress_signal.emit("✅ Generated spall_vs_strain_rate.png")
-                except Exception as e:
-                    msg = f"[WARNING] Failed to generate spall_vs_strain_rate.png: {e}"
-                    print(msg)
-                    self.progress_signal.emit(msg)
-                try:
-                    plot_spall_vs_shock_stress(
-                        df=summary_df,
-                        output_filename=os.path.join(spade_output_dir, 'spall_vs_shock_stress.png'),
-                        literature_data_file=None,  # Disable literature data to avoid column mismatch errors
-                        spall_unc_col='Spall Strength Uncertainty (GPa)'
-                    )
+                    except Exception as e:
+                        msg = f"[WARNING] Failed to generate spall_vs_strain_rate.png: {e}"
+                        print(msg)
+                        self.progress_signal.emit(msg)
+                    try:
+                        plot_spall_vs_shock_stress(
+                            df=summary_df,
+                            output_filename=os.path.join(spade_output_dir, 'spall_vs_shock_stress.png'),
+                        literature_data_file=None,
+                            spall_unc_col='Spall Strength Uncertainty (GPa)'
+                        )
                     self.progress_signal.emit("✅ Generated spall_vs_shock_stress.png")
-                except Exception as e:
-                    msg = f"[WARNING] Failed to generate spall_vs_shock_stress.png: {e}"
-                    print(msg)
-                    self.progress_signal.emit(msg)
-                
+                    except Exception as e:
+                        msg = f"[WARNING] Failed to generate spall_vs_shock_stress.png: {e}"
+                        print(msg)
+                        self.progress_signal.emit(msg)
+
                 # Generate combined velocity traces plot
                 try:
-                    # Find all velocity files
                     vel_files = []
                     for root, dirs, files in os.walk(self.output_dir):
                         for file in files:
                             if file.endswith("--vel-smooth-with-uncert.csv"):
                                 vel_files.append(os.path.join(root, file))
-                    
                     if vel_files:
                         plot_combined_mean_traces(
                             mean_trace_files=vel_files,
@@ -1444,33 +996,25 @@ class AnalysisThread(QThread):
             self.progress_signal.emit("  - Individual ALPSS files: *--results.csv, *--velocity.csv, etc.")
             self.progress_signal.emit("  - ALPSS velocity files: 4 columns (Time, Velocity, Uncertainty, Velocity+Uncertainty)")
             self.progress_signal.emit("  - Combined velocity plots (if enabled)")
-        
-        # Check for missing plots and warn (only check velocity plots for velocity mode, all plots for spall mode)
-        if experiment_type == "spall_analysis":
-            expected_plots = [
-                'combined_mean_velocity.png',
-                'spall_vs_strain_rate.png',
-                'spall_vs_shock_stress.png',
-                'all_smoothed_velocity_traces.png'
-            ]
-        else:
-            expected_plots = [
-                'combined_mean_velocity.png',
-                'all_smoothed_velocity_traces.png'
-            ]
-        
-        for plot_name in expected_plots:
-            plot_path = os.path.join(spade_output_dir, plot_name)
-            if not os.path.exists(plot_path):
-                msg = f"[WARNING] Expected plot missing: {plot_name}"
-                print(msg)
-                self.progress_signal.emit(msg)
 
-class HELIXAnalysisToolbox(QMainWindow):
+                # Check for missing plots and warn
+        if experiment_type == "spall_analysis":
+            expected_plots = ['combined_mean_velocity.png', 'spall_vs_strain_rate.png', 'spall_vs_shock_stress.png', 'all_smoothed_velocity_traces.png']
+        else:
+            expected_plots = ['combined_mean_velocity.png', 'all_smoothed_velocity_traces.png']
+
+        for plot_name in expected_plots:
+                    plot_path = os.path.join(spade_output_dir, plot_name)
+                    if not os.path.exists(plot_path):
+                        msg = f"[WARNING] Expected plot missing: {plot_name}"
+                        print(msg)
+                        self.progress_signal.emit(msg)
+
+class ALPSSSPADEGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_theme = 'light'
-        self.config_file = os.path.join(os.path.expanduser('~'), '.helix_analysis_toolbox_config.json')
+        self.config_file = os.path.join(os.path.expanduser('~'), '.alpss_spade_config.json')
         self.init_ui()
         self.load_settings()
         
@@ -1523,6 +1067,17 @@ class HELIXAnalysisToolbox(QMainWindow):
     def save_settings(self):
         """Save current settings to configuration file"""
         try:
+            # Persist analysis mode as an explicit string for reliability
+            if hasattr(self, 'mode_alpss_only') and hasattr(self, 'mode_spade_only') and hasattr(self, 'mode_both'):
+                if self.mode_alpss_only.isChecked():
+                    analysis_mode_str = 'alpss_only'
+                elif self.mode_spade_only.isChecked():
+                    analysis_mode_str = 'spade_only'
+                else:
+                    analysis_mode_str = 'both'
+            else:
+                analysis_mode_str = 'both'
+
             settings = {
                 'file_paths': {
                     'input_files': self.get_input_files(),
@@ -1535,7 +1090,7 @@ class HELIXAnalysisToolbox(QMainWindow):
                 'ui_settings': {
                     'theme': self.current_theme,
                     'file_mode': self.file_mode_combo.currentText() if hasattr(self, 'file_mode_combo') else 'Single File',
-                    'analysis_mode': self.mode_alpss_only.isChecked() if hasattr(self, 'mode_alpss_only') else True,
+                    'analysis_mode': analysis_mode_str,
                     'spade_input_mode': self.spade_auto_mode.isChecked() if hasattr(self, 'spade_auto_mode') else True
                 }
             }
@@ -1578,10 +1133,15 @@ class HELIXAnalysisToolbox(QMainWindow):
                             self.file_mode_combo.setCurrentIndex(index)
                     
                     if hasattr(self, 'mode_alpss_only') and 'analysis_mode' in ui_settings:
-                        if ui_settings['analysis_mode']:
+                        mode_val = ui_settings['analysis_mode']
+                        if mode_val == 'alpss_only':
                             self.mode_alpss_only.setChecked(True)
+                        elif mode_val == 'spade_only':
+                            self.mode_spade_only.setChecked(True)
                         else:
                             self.mode_both.setChecked(True)
+                        # Apply UI updates for selected mode
+                        self.update_ui_for_analysis_mode()
                     
                     if hasattr(self, 'spade_auto_mode') and 'spade_input_mode' in ui_settings:
                         if ui_settings['spade_input_mode']:
@@ -1627,21 +1187,6 @@ class HELIXAnalysisToolbox(QMainWindow):
             if hasattr(self, 'spall_calculation') and 'spall_calculation' in params:
                 if hasattr(self.spall_calculation, 'setChecked'):
                     self.spall_calculation.setChecked(params['spall_calculation'] == 'yes')
-            # Apply output file selection parameters
-            if hasattr(self, 'save_velocity_csv') and 'save_velocity_csv' in params:
-                self.save_velocity_csv.setChecked(params['save_velocity_csv'])
-            if hasattr(self, 'save_velocity_smooth_csv') and 'save_velocity_smooth_csv' in params:
-                self.save_velocity_smooth_csv.setChecked(params['save_velocity_smooth_csv'])
-            if hasattr(self, 'save_velocity_uncert_csv') and 'save_velocity_uncert_csv' in params:
-                self.save_velocity_uncert_csv.setChecked(params['save_velocity_uncert_csv'])
-            if hasattr(self, 'save_velocity_smooth_uncert_csv') and 'save_velocity_smooth_uncert_csv' in params:
-                self.save_velocity_smooth_uncert_csv.setChecked(params['save_velocity_smooth_uncert_csv'])
-            if hasattr(self, 'save_results_csv') and 'save_results_csv' in params:
-                self.save_results_csv.setChecked(params['save_results_csv'])
-            if hasattr(self, 'save_noise_csv') and 'save_noise_csv' in params:
-                self.save_noise_csv.setChecked(params['save_noise_csv'])
-            if hasattr(self, 'smart_selection_checkbox') and 'smart_selection_enabled' in params:
-                self.smart_selection_checkbox.setChecked(params['smart_selection_enabled'])
         except Exception as e:
             print(f"Error applying ALPSS parameters: {e}")
     
@@ -2041,18 +1586,24 @@ class HELIXAnalysisToolbox(QMainWindow):
         mode_group = QGroupBox("Analysis Mode")
         mode_layout = QVBoxLayout(mode_group)
         
-        # Radio buttons for different modes
-        self.mode_alpss_only = QCheckBox("ALPSS Only")
+        # Radio buttons for different modes (mutually exclusive)
+        self.mode_group_btns = QButtonGroup(mode_group)
+        self.mode_group_btns.setExclusive(True)
+        
+        self.mode_alpss_only = QRadioButton("ALPSS Only")
+        self.mode_group_btns.addButton(self.mode_alpss_only)
         self.mode_alpss_only.setChecked(False)
         self.mode_alpss_only.toggled.connect(self.on_analysis_mode_changed)
         mode_layout.addWidget(self.mode_alpss_only)
         
-        self.mode_spade_only = QCheckBox("SPADE Only")
+        self.mode_spade_only = QRadioButton("SPADE Only")
+        self.mode_group_btns.addButton(self.mode_spade_only)
         self.mode_spade_only.setChecked(False)
         self.mode_spade_only.toggled.connect(self.on_analysis_mode_changed)
         mode_layout.addWidget(self.mode_spade_only)
         
-        self.mode_both = QCheckBox("ALPSS + SPADE (Combined)")
+        self.mode_both = QRadioButton("ALPSS + SPADE (Combined)")
+        self.mode_group_btns.addButton(self.mode_both)
         self.mode_both.setChecked(True)
         self.mode_both.toggled.connect(self.on_analysis_mode_changed)
         mode_layout.addWidget(self.mode_both)
@@ -2105,7 +1656,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.save_all_plots = QComboBox()
         self.save_all_plots.addItems(["no", "subfolder", "main_dir"])
         self.save_all_plots.setCurrentText("no")
-        self.save_all_plots.setToolTip("'no': Only save CSV data files (unless individual plots are selected below). 'subfolder': Save plots in individual subfolders. 'main_dir': Save plots in main output directory.")
+        self.save_all_plots.setToolTip("'no': Only save CSV data files. 'subfolder': Save plots in individual subfolders. 'main_dir': Save plots in main output directory.")
         basic_layout.addWidget(self.save_all_plots, 1, 1)
         
         # Row 2
@@ -2512,10 +2063,31 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.save_velocity_plot.setToolTip("Generate velocity vs time plot with uncertainty bands")
         image_layout.addWidget(self.save_velocity_plot)
         
-        self.save_stft_plot = QCheckBox("STFT Spectrogram")
+        self.save_stft_plot = QCheckBox("STFT Spectrogram (imported)")
         self.save_stft_plot.setChecked(True)
-        self.save_stft_plot.setToolTip("Generate Short-Time Fourier Transform spectrogram")
+        self.save_stft_plot.setToolTip("Generate basic Short-Time Fourier Transform spectrogram of the original signal")
         image_layout.addWidget(self.save_stft_plot)
+
+        # Fine-grained STFT options (default off)
+        self.save_stft_roi_plot = QCheckBox("STFT ROI window")
+        self.save_stft_roi_plot.setChecked(False)
+        self.save_stft_roi_plot.setToolTip("Save ROI-only spectrogram view")
+        image_layout.addWidget(self.save_stft_roi_plot)
+
+        self.save_stft_filtered_roi_plot = QCheckBox("STFT Filtered ROI")
+        self.save_stft_filtered_roi_plot.setChecked(False)
+        self.save_stft_filtered_roi_plot.setToolTip("Save filtered ROI spectrogram")
+        image_layout.addWidget(self.save_stft_filtered_roi_plot)
+
+        self.save_stft_thresholded_plot = QCheckBox("STFT Thresholded")
+        self.save_stft_thresholded_plot.setChecked(False)
+        self.save_stft_thresholded_plot.setToolTip("Save thresholded spectrogram image")
+        image_layout.addWidget(self.save_stft_thresholded_plot)
+
+        self.save_stft_velocity_overlay_plot = QCheckBox("STFT Velocity overlay")
+        self.save_stft_velocity_overlay_plot.setChecked(False)
+        self.save_stft_velocity_overlay_plot.setToolTip("Save spectrogram with velocity overlay")
+        image_layout.addWidget(self.save_stft_velocity_overlay_plot)
         
         self.save_filtered_plot = QCheckBox("Filtered Signal Plot")
         self.save_filtered_plot.setChecked(True)
@@ -2527,16 +2099,22 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.save_phase_plot.setToolTip("Generate phase vs time plot")
         image_layout.addWidget(self.save_phase_plot)
         
-        self.save_amplitude_plot = QCheckBox("Amplitude Plot")
+        self.save_amplitude_plot = QCheckBox("IQ Amplitude Plot")
         self.save_amplitude_plot.setChecked(True)
         self.save_amplitude_plot.setToolTip("Generate amplitude vs time plot")
         image_layout.addWidget(self.save_amplitude_plot)
-        
-        self.save_iq_start_time_plot = QCheckBox("IQ Start Time Detection Plot")
-        # Default off so selecting IQ Analysis does not implicitly save this diagnostic plot
-        self.save_iq_start_time_plot.setChecked(False)
-        self.save_iq_start_time_plot.setToolTip("Generate IQ analysis start time detection plot with red line marking detected start time")
-        image_layout.addWidget(self.save_iq_start_time_plot)
+
+        # IQ threshold factor
+        iq_layout = QHBoxLayout()
+        iq_layout.addWidget(QLabel("IQ Threshold Factor:"))
+        self.iq_threshold_factor = QDoubleSpinBox()
+        self.iq_threshold_factor.setRange(0.0, 1.0)
+        self.iq_threshold_factor.setSingleStep(0.05)
+        self.iq_threshold_factor.setDecimals(3)
+        self.iq_threshold_factor.setValue(0.4)  # default matches backend
+        self.iq_threshold_factor.setToolTip("Fraction of initial amplitude used to detect start time in IQ analysis. Leave as 0.4 if unsure.")
+        iq_layout.addWidget(self.iq_threshold_factor)
+        image_layout.addLayout(iq_layout)
         
         self.save_peak_detection_plot = QCheckBox("Peak Detection Plot")
         self.save_peak_detection_plot.setChecked(True)
@@ -2562,72 +2140,6 @@ class HELIXAnalysisToolbox(QMainWindow):
         
         layout.addWidget(image_group)
         
-        # Output file selection group
-        output_files_group = QGroupBox("ALPSS Output Files")
-        output_files_layout = QVBoxLayout(output_files_group)
-        output_files_layout.setSpacing(10)
-        
-        # Description
-        output_desc_label = QLabel("Select which ALPSS output files to save:")
-        output_desc_label.setWordWrap(True)
-        output_files_layout.addWidget(output_desc_label)
-        
-        # Output file checkboxes
-        self.save_velocity_csv = QCheckBox("Velocity CSV (*--velocity.csv)")
-        self.save_velocity_csv.setChecked(True)
-        self.save_velocity_csv.setToolTip("Save raw velocity data")
-        output_files_layout.addWidget(self.save_velocity_csv)
-        
-        self.save_velocity_smooth_csv = QCheckBox("Smoothed Velocity CSV (*--velocity--smooth.csv)")
-        self.save_velocity_smooth_csv.setChecked(True)
-        self.save_velocity_smooth_csv.setToolTip("Save smoothed velocity data")
-        output_files_layout.addWidget(self.save_velocity_smooth_csv)
-        
-        self.save_velocity_uncert_csv = QCheckBox("Velocity with Uncertainty (*--vel--uncert.csv)")
-        self.save_velocity_uncert_csv.setChecked(True)
-        self.save_velocity_uncert_csv.setToolTip("Save velocity data with uncertainty")
-        output_files_layout.addWidget(self.save_velocity_uncert_csv)
-        
-        self.save_velocity_smooth_uncert_csv = QCheckBox("Smoothed Velocity with Uncertainty (*--vel-smooth-with-uncert.csv)")
-        self.save_velocity_smooth_uncert_csv.setChecked(True)
-        self.save_velocity_smooth_uncert_csv.setToolTip("Save smoothed velocity with uncertainty (required for SPADE)")
-        output_files_layout.addWidget(self.save_velocity_smooth_uncert_csv)
-        
-        self.save_results_csv = QCheckBox("Results CSV (*--results.csv)")
-        self.save_results_csv.setChecked(True)
-        self.save_results_csv.setToolTip("Save analysis results with uncertainties")
-        output_files_layout.addWidget(self.save_results_csv)
-        
-        self.save_noise_csv = QCheckBox("Noise Fraction CSV (*--noise--frac.csv)")
-        self.save_noise_csv.setChecked(True)
-        self.save_noise_csv.setToolTip("Save noise fraction data")
-        output_files_layout.addWidget(self.save_noise_csv)
-        
-        # Smart selection for combined mode
-        self.smart_selection_checkbox = QCheckBox("Smart Selection for Combined Mode")
-        self.smart_selection_checkbox.setChecked(True)
-        self.smart_selection_checkbox.setToolTip("When ALPSS+SPADE mode is selected, automatically save files needed for SPADE analysis + enhanced filtering")
-        output_files_layout.addWidget(self.smart_selection_checkbox)
-        
-        # Select all/none buttons for output files
-        output_select_buttons_layout = QHBoxLayout()
-        self.select_all_output_files = QPushButton("Select All")
-        self.select_all_output_files.clicked.connect(self.select_all_output_files_func)
-        output_select_buttons_layout.addWidget(self.select_all_output_files)
-        
-        self.deselect_all_output_files = QPushButton("Deselect All")
-        self.deselect_all_output_files.clicked.connect(self.deselect_all_output_files_func)
-        output_select_buttons_layout.addWidget(self.deselect_all_output_files)
-        
-        self.smart_select_output_files = QPushButton("Smart Select")
-        self.smart_select_output_files.clicked.connect(self.smart_select_output_files_func)
-        self.smart_select_output_files.setToolTip("Select files needed for SPADE analysis + enhanced filtering")
-        output_select_buttons_layout.addWidget(self.smart_select_output_files)
-        
-        output_files_layout.addLayout(output_select_buttons_layout)
-        
-        layout.addWidget(output_files_group)
-        
         scroll.setWidget(scroll_widget)
         layout = QVBoxLayout(tab)
         layout.addWidget(scroll)
@@ -2652,34 +2164,6 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.save_amplitude_plot.setChecked(False)
         self.save_peak_detection_plot.setChecked(False)
         self.save_uncertainty_plot.setChecked(False)
-        
-    def select_all_output_files_func(self):
-        """Select all ALPSS output files"""
-        self.save_velocity_csv.setChecked(True)
-        self.save_velocity_smooth_csv.setChecked(True)
-        self.save_velocity_uncert_csv.setChecked(True)
-        self.save_velocity_smooth_uncert_csv.setChecked(True)
-        self.save_results_csv.setChecked(True)
-        self.save_noise_csv.setChecked(True)
-        
-    def deselect_all_output_files_func(self):
-        """Deselect all ALPSS output files"""
-        self.save_velocity_csv.setChecked(False)
-        self.save_velocity_smooth_csv.setChecked(False)
-        self.save_velocity_uncert_csv.setChecked(False)
-        self.save_velocity_smooth_uncert_csv.setChecked(False)
-        self.save_results_csv.setChecked(False)
-        self.save_noise_csv.setChecked(False)
-        
-    def smart_select_output_files_func(self):
-        """Smart select files needed for SPADE analysis + enhanced filtering"""
-        # For SPADE analysis, we need the smoothed velocity with uncertainty file + noise file
-        self.save_velocity_csv.setChecked(False)
-        self.save_velocity_smooth_csv.setChecked(False)
-        self.save_velocity_uncert_csv.setChecked(False)
-        self.save_velocity_smooth_uncert_csv.setChecked(True)  # Main file SPADE needs
-        self.save_results_csv.setChecked(False)
-        self.save_noise_csv.setChecked(True)  # Also save noise file for enhanced filtering
         
     def create_spade_params_tab(self):
         """Create SPADE parameters tab"""
@@ -3233,21 +2717,9 @@ Output Files:
         
     def on_analysis_mode_changed(self):
         """Handle analysis mode radio button changes"""
-        # Ensure only one mode is selected
-        if self.mode_alpss_only.isChecked():
-            self.mode_spade_only.setChecked(False)
-            self.mode_both.setChecked(False)
-        elif self.mode_spade_only.isChecked():
-            self.mode_alpss_only.setChecked(False)
-            self.mode_both.setChecked(False)
-        elif self.mode_both.isChecked():
-            self.mode_alpss_only.setChecked(False)
-            self.mode_spade_only.setChecked(False)
-        else:
-            # If none are checked, default to both
+        # With QButtonGroup exclusive selection, just update UI
+        if not (self.mode_alpss_only.isChecked() or self.mode_spade_only.isChecked() or self.mode_both.isChecked()):
             self.mode_both.setChecked(True)
-            
-        # Update UI based on selected mode
         self.update_ui_for_analysis_mode()
         
     def update_ui_for_analysis_mode(self):
@@ -3256,31 +2728,40 @@ Output Files:
             # ALPSS only: Enable ALPSS tab, disable SPADE tab
             self.tab_widget.setTabEnabled(2, True)  # ALPSS params tab
             self.tab_widget.setTabEnabled(3, False)  # SPADE params tab
-            # Force SPADE input mode to manual for SPADE-only mode
+            # In ALPSS-only mode, disable SPADE input widgets
+            if hasattr(self, 'spade_auto_radio'):
             self.spade_auto_radio.setChecked(False)
+            if hasattr(self, 'spade_manual_radio'):
             self.spade_manual_radio.setChecked(True)
-            self.spade_input_path.setEnabled(True)
-            self.spade_input_btn.setEnabled(True)
-            self.spade_file_pattern.setEnabled(True)
+            for w in [getattr(self, n, None) for n in ['spade_input_path','spade_input_btn','spade_file_pattern']]:
+                if w is not None:
+                    w.setEnabled(False)
             
         elif self.mode_spade_only.isChecked():
             # SPADE only: Disable ALPSS tab, enable SPADE tab
             self.tab_widget.setTabEnabled(2, False)  # ALPSS params tab
             self.tab_widget.setTabEnabled(3, True)   # SPADE params tab
-            # Force SPADE input mode to manual
+            # Force SPADE input mode to manual and enable its widgets
+            if hasattr(self, 'spade_auto_radio'):
             self.spade_auto_radio.setChecked(False)
+            if hasattr(self, 'spade_manual_radio'):
             self.spade_manual_radio.setChecked(True)
-            self.spade_input_path.setEnabled(True)
-            self.spade_input_btn.setEnabled(True)
-            self.spade_file_pattern.setEnabled(True)
+            for w in [getattr(self, n, None) for n in ['spade_input_path','spade_input_btn','spade_file_pattern']]:
+                if w is not None:
+                    w.setEnabled(True)
             
         else:  # Both modes
             # Both: Enable both tabs
             self.tab_widget.setTabEnabled(2, True)   # ALPSS params tab
             self.tab_widget.setTabEnabled(3, True)   # SPADE params tab
-            # Allow SPADE input mode selection
-            self.spade_auto_radio.setEnabled(True)
-            self.spade_manual_radio.setEnabled(True)
+            # Default to automatic SPADE mode and disable manual inputs unless user selects manual
+            if hasattr(self, 'spade_auto_radio'):
+                self.spade_auto_radio.setChecked(True)
+            if hasattr(self, 'spade_manual_radio'):
+                self.spade_manual_radio.setChecked(False)
+            for w in [getattr(self, n, None) for n in ['spade_input_path','spade_input_btn','spade_file_pattern']]:
+                if w is not None:
+                    w.setEnabled(False)
             
     def on_spade_input_mode_changed(self):
         """Handle SPADE input mode radio button changes"""
@@ -3334,10 +2815,10 @@ Output Files:
                 )
             
             print(f"Directory dialog result: {dir_path}")
-            if dir_path:
-                self.multi_file_path.setText(dir_path)
+        if dir_path:
+            self.multi_file_path.setText(dir_path)
                 print(f"Set directory path: {dir_path}")
-                self.update_file_list()
+            self.update_file_list()
             else:
                 print("No directory selected")
         except Exception as e:
@@ -3485,28 +2966,28 @@ Output Files:
         """Update the file list display"""
         try:
             print("Updating file list...")
-            self.file_list.clear()
-            
-            if self.single_file_radio.isChecked():
-                file_path = self.single_file_path.text()
-                if file_path and os.path.exists(file_path):
-                    self.file_list.append(f"Single file: {os.path.basename(file_path)}")
-            else:
-                dir_path = self.multi_file_path.text()
-                pattern = self.file_pattern.text()
+        self.file_list.clear()
+        
+        if self.single_file_radio.isChecked():
+            file_path = self.single_file_path.text()
+            if file_path and os.path.exists(file_path):
+                self.file_list.append(f"Single file: {os.path.basename(file_path)}")
+        else:
+            dir_path = self.multi_file_path.text()
+            pattern = self.file_pattern.text()
                 print(f"Multi-file mode - Directory: {dir_path}, Pattern: {pattern}")
-                
-                if dir_path and os.path.exists(dir_path):
+            
+            if dir_path and os.path.exists(dir_path):
                     try:
                         print(f"Scanning directory: {dir_path}")
-                        files = glob.glob(os.path.join(dir_path, pattern))
+                files = glob.glob(os.path.join(dir_path, pattern))
                         print(f"Found {len(files)} files matching pattern")
-                        if files:
-                            self.file_list.append(f"Found {len(files)} files in {dir_path}:")
-                            for file_path in sorted(files):
-                                self.file_list.append(f"  • {os.path.basename(file_path)}")
-                        else:
-                            self.file_list.append(f"No files found matching pattern '{pattern}' in {dir_path}")
+                if files:
+                    self.file_list.append(f"Found {len(files)} files in {dir_path}:")
+                    for file_path in sorted(files):
+                        self.file_list.append(f"  • {os.path.basename(file_path)}")
+                else:
+                    self.file_list.append(f"No files found matching pattern '{pattern}' in {dir_path}")
                     except Exception as e:
                         print(f"Error scanning directory: {e}")
                         self.file_list.append(f"Error scanning directory: {e}")
@@ -3545,7 +3026,7 @@ Output Files:
         # Find all Excel files in the folder
         excel_files = []
         for file in os.listdir(folder_path):
-            if file.lower().endswith(('.xlsx', '.xls', '.csv')):
+            if file.lower().endswith(('.xlsx', '.xls')):
                 excel_files.append(os.path.join(folder_path, file))
                 
         if not excel_files:
@@ -3559,19 +3040,16 @@ Output Files:
                 continue
                 
             try:
-                # Try to read the file (Excel or CSV)
+                # Try to read the Excel file
                 try:
-                    if param_file_path.lower().endswith('.csv'):
-                        df = pd.read_csv(param_file_path)
-                    else:
-                        try:
-                            import openpyxl
-                        except ImportError:
-                            print(f"Error: openpyxl not installed for {param_file_path}")
-                            continue
-                        df = pd.read_excel(param_file_path)
+                    import openpyxl
+                except ImportError:
+                    print(f"Error: openpyxl not installed for {param_file_path}")
+                    continue
+                try:
+                    df = pd.read_excel(param_file_path)
                 except Exception as e:
-                    print(f"Error reading file {param_file_path}: {str(e)}")
+                    print(f"Error reading Excel file {param_file_path}: {str(e)}")
                     continue
                     
                 # Create a mapping from PDV_FileName to experiment data
@@ -3596,15 +3074,8 @@ Output Files:
                         continue
                         
                     # Convert PDV file name to string to ensure consistency
-                    pdv_file_str = str(pdv_file).strip()
-                    
-                    # Clean the filename for better matching
-                    # Remove common extensions and clean up the name
-                    clean_pdv_file = pdv_file_str
-                    for ext in ['.csv', '.txt', '.dat', '.xlsx', '.xls']:
-                        if clean_pdv_file.lower().endswith(ext):
-                            clean_pdv_file = clean_pdv_file[:-len(ext)]
-                    
+                    pdv_file_str = str(pdv_file)
+                        
                     # Extract ALL columns from the row (except the PDV filename column itself)
                     exp_info = {}
                     for col in df.columns:
@@ -3613,17 +3084,8 @@ Output Files:
                             if not pd.isna(value):  # Only include non-NaN values
                                 exp_info[col] = value
                     
-                    # Store both original and cleaned versions for better matching
+                    # Add to combined data (later files override earlier ones if same PDV file)
                     combined_param_data[pdv_file_str] = exp_info
-                    if clean_pdv_file != pdv_file_str:
-                        combined_param_data[clean_pdv_file] = exp_info
-                    
-                    # Also store with common variations for better matching
-                    # Remove date patterns if present
-                    import re
-                    date_cleaned = re.sub(r'\d{4}[-_]\d{2}[-_]\d{2}', '', clean_pdv_file)
-                    if date_cleaned != clean_pdv_file:
-                        combined_param_data[date_cleaned] = exp_info
                     
             except Exception as e:
                 print(f"Error loading parameter file {param_file_path}: {e}")
@@ -3633,29 +3095,10 @@ Output Files:
         
     def get_alpss_params(self):
         """Get ALPSS parameters from GUI"""
-        # Check if any individual plots are selected
-        any_plots_selected = (self.save_velocity_plot.isChecked() or 
-                             self.save_stft_plot.isChecked() or 
-                             self.save_filtered_plot.isChecked() or 
-                             self.save_phase_plot.isChecked() or 
-                             self.save_amplitude_plot.isChecked() or 
-                             self.save_iq_start_time_plot.isChecked() or 
-                             self.save_peak_detection_plot.isChecked() or 
-                             self.save_uncertainty_plot.isChecked())
-        
-        # Determine save_all_plots value: if any individual plots are selected, save plots
-        # regardless of the dropdown setting, unless dropdown is explicitly "no"
-        save_plots_value = 'no'
-        if self.save_all_plots.currentText() in ['subfolder', 'main_dir']:
-            save_plots_value = 'yes'
-        elif any_plots_selected and self.save_all_plots.currentText() == 'no':
-            # If individual plots are selected but dropdown is "no", still save plots
-            save_plots_value = 'yes'
-        
         return {
             'filename': 'example_file.csv',  # Will be updated per file in thread
             'save_data': self.save_data.currentText(),
-            'save_all_plots': save_plots_value,
+            'save_all_plots': 'yes' if self.save_all_plots.currentText() in ['subfolder', 'main_dir'] else 'no',
             'save_plots_in_subfolder': self.save_all_plots.currentText() == 'subfolder',
             'start_time_user': self.start_time_user.text(),
             'header_lines': self.header_lines.value(),
@@ -3706,20 +3149,16 @@ Output Files:
             # Image selection parameters
             'save_velocity_plot': self.save_velocity_plot.isChecked(),
             'save_stft_plot': self.save_stft_plot.isChecked(),
+            'save_stft_roi_plot': self.save_stft_roi_plot.isChecked(),
+            'save_stft_filtered_roi_plot': self.save_stft_filtered_roi_plot.isChecked(),
+            'save_stft_thresholded_plot': self.save_stft_thresholded_plot.isChecked(),
+            'save_stft_velocity_overlay_plot': self.save_stft_velocity_overlay_plot.isChecked(),
             'save_filtered_plot': self.save_filtered_plot.isChecked(),
             'save_phase_plot': self.save_phase_plot.isChecked(),
             'save_amplitude_plot': self.save_amplitude_plot.isChecked(),
-            'save_iq_start_time_plot': self.save_iq_start_time_plot.isChecked(),
+            'iq_threshold_factor': float(self.iq_threshold_factor.value()) if hasattr(self, 'iq_threshold_factor') else 0.4,
             'save_peak_detection_plot': self.save_peak_detection_plot.isChecked(),
             'save_uncertainty_plot': self.save_uncertainty_plot.isChecked(),
-            # Output file selection parameters
-            'save_velocity_csv': self.save_velocity_csv.isChecked(),
-            'save_velocity_smooth_csv': self.save_velocity_smooth_csv.isChecked(),
-            'save_velocity_uncert_csv': self.save_velocity_uncert_csv.isChecked(),
-            'save_velocity_smooth_uncert_csv': self.save_velocity_smooth_uncert_csv.isChecked(),
-            'save_results_csv': self.save_results_csv.isChecked(),
-            'save_noise_csv': self.save_noise_csv.isChecked(),
-            'smart_selection_enabled': self.smart_selection_checkbox.isChecked(),
         }
         
     def get_spade_params(self):
@@ -4102,7 +3541,7 @@ def main():
         }
     """)
     
-    window = HELIXAnalysisToolbox()
+    window = ALPSSSPADEGUI()
     window.show()
     
     sys.exit(app.exec_())
