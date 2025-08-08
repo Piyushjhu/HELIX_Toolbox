@@ -155,4 +155,4 @@ Thumbs.db
 ALPSS/output_data/
 SPADE/spall_analysis_release/executables/
 *.exe
-*.app 
+*.app !test_basic.py
