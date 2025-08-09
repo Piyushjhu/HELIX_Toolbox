@@ -48,7 +48,7 @@ jobs:
         DISPLAY: :99
         QT_QPA_PLATFORM: offscreen
       run: |
-        python -c "import helix_analysis_toolbox; print('HELIX Toolbox GUI module imported successfully!')"
+        python -c "import helix_analysis_toolbox; print('HELIX Toolbox GUI module imported successfully')"
     
     - name: Test GUI creation (headless)
       env:
@@ -66,7 +66,7 @@ jobs:
             
             app = QApplication([])
             gui = HELIXAnalysisToolbox()
-            print('GUI created successfully!')
+            print('GUI created successfully')
             app.quit()
         except Exception as e:
             print(f'GUI creation test failed: {e}')
@@ -101,7 +101,7 @@ jobs:
             # Test specific parameters
             assert 'use_notch_filter' in alpss_params
             assert 'density' in spade_params
-            print('Parameter collection tests passed!')
+            print('Parameter collection tests passed')
             
             app.quit()
         except Exception as e:
@@ -121,8 +121,8 @@ jobs:
         echo "Testing package structure..."
         ls -la
         echo "Checking for required files..."
-        test -f helix_analysis_toolbox.py && echo "✅ Main GUI file exists"
-        test -f requirements.txt && echo "✅ Requirements file exists"
-        test -f README.md && echo "✅ README exists"
-        test -f setup.py && echo "✅ Setup file exists"
-        test -f supplementary/README.md && echo "✅ Supplementary README exists" 
+        test -f helix_analysis_toolbox.py && echo "OK Main GUI file exists"
+        test -f requirements.txt && echo "OK Requirements file exists"
+        test -f README.md && echo "OK README exists"
+        test -f setup.py && echo "OK Setup file exists"
+        test -f supplementary/README.md && echo "OK Supplementary README exists" 
