@@ -986,13 +986,28 @@ class AnalysisThread(QThread):
             # Create enhanced row with all original SPADE data
             enhanced_row = row.copy()
 
-            # Add ALL parameter file data as extra columns (without 'param_' prefix)
+            # Add parameter file data as extra columns (preserve original names and add normalized aliases)
+            # This helps downstream queries that expect consistent keys
             for key, value in param_info.items():
                 enhanced_row[key] = value
+                # Also add a normalized snake_case alias if different
+                try:
+                    import re
+                    norm_key = re.sub(r"[^a-zA-Z0-9]+", "_", str(key)).strip("_")
+                    if norm_key and norm_key != key:
+                        enhanced_row[norm_key] = value
+                except Exception:
+                    pass
 
             # Try to find corresponding ALPSS results file for additional data
-            alpss_results_file = os.path.join(self.output_dir, f"{base_name}--results.csv")
-            if os.path.exists(alpss_results_file):
+            # Search both current output_dir and standard ALPSS output location
+            candidate_results = [
+                os.path.join(self.output_dir, f"{base_name}--results.csv"),
+                os.path.join("ALPSS", "output_data", f"{base_name}--results.csv"),
+                os.path.join("output", f"{base_name}--results.csv"),
+            ]
+            alpss_results_file = next((p for p in candidate_results if os.path.exists(p)), None)
+            if alpss_results_file and os.path.exists(alpss_results_file):
                 try:
                     # Read ALPSS results
                     alpss_results = pd.read_csv(alpss_results_file, header=None, names=['Name', 'Value'])
@@ -3577,14 +3592,33 @@ Output Files:
                 # Create a mapping from PDV_FileName to experiment data
                 param_data = {}
                 
-                # Handle different possible column names for PDV_FileName
+                # Handle different possible column names for PDV file name
                 pdv_col = None
-                for col in df.columns:
-                    # Check for various possible column names (case insensitive)
-                    col_lower = col.lower()
-                    if any(name in col_lower for name in ['pdv_filename', 'pdvfilename', 'dv_filename', 'dvfilename', 'pdv_file', 'pdvfile']):
+                # First pass: exact-ish known variants, ignoring spaces/underscores/dashes
+                import re
+                normalized_columns = {col: re.sub(r"[^a-z0-9]", "", col.lower()) for col in df.columns}
+                known_variants = [
+                    'pdvfilename', 'pdvfile', 'pdv_file', 'pdv_file_name', 'pdv file name',
+                    'dvfilename', 'dv_file', 'dvfile', 'filename', 'file_name', 'file name'
+                ]
+                normalized_variants = {re.sub(r"[^a-z0-9]", "", v): v for v in known_variants}
+                for col, norm in normalized_columns.items():
+                    if norm in normalized_variants:
                         pdv_col = col
                         break
+                # Second pass: heuristic containing tokens 'pdv' and ('file' or 'name')
+                if pdv_col is None:
+                    for col in df.columns:
+                        col_lower = col.lower()
+                        if ('pdv' in col_lower or 'dv' in col_lower) and ('file' in col_lower or 'name' in col_lower):
+                            pdv_col = col
+                            break
+                # Final fallback: a standalone 'filename' or 'file name' column
+                if pdv_col is None:
+                    for col in df.columns:
+                        if col.strip().lower() in ['filename', 'file name', 'file_name']:
+                            pdv_col = col
+                            break
                         
                 if pdv_col is None:
                     continue
@@ -3620,7 +3654,6 @@ Output Files:
                     
                     # Also store with common variations for better matching
                     # Remove date patterns if present
-                    import re
                     date_cleaned = re.sub(r'\d{4}[-_]\d{2}[-_]\d{2}', '', clean_pdv_file)
                     if date_cleaned != clean_pdv_file:
                         combined_param_data[date_cleaned] = exp_info
