@@ -81,9 +81,52 @@ python helix_analysis_toolbox.py
 
 ### Platform-Specific Installation
 
-- **[Windows Installation Guide](docs/WINDOWS_INSTALLATION.md)** - Detailed Windows setup and troubleshooting
+- **[Windows Installation Guide](supplementary/docs_archive/docs/WINDOWS_INSTALLATION.md)** - Detailed Windows setup and troubleshooting
 - **macOS**: Install Xcode Command Line Tools if needed
 - **Linux**: Install system dependencies: `sudo apt-get install python3-dev python3-pip`
+
+## Environment Setup (recommended)
+
+Create an isolated Python environment to avoid dependency conflicts.
+
+### Option A: Python venv (recommended)
+
+#### Windows (PowerShell or CMD)
+```cmd
+py -3 -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### macOS/Linux (bash/zsh)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Deactivate with:
+```bash
+deactivate
+```
+
+### Option B: Conda
+```bash
+conda create -n helix_toolbox python=3.10 -y
+conda activate helix_toolbox
+pip install -r requirements.txt
+```
+
+### System packages (if needed)
+- macOS: `brew install qt5`
+- Ubuntu/Debian: `sudo apt-get install -y libgl1 libglib2.0-0 libx11-6 libxext6 libxrender1 libxtst6 libxi6`
+
+Headless environments may require:
+```bash
+export QT_QPA_PLATFORM=offscreen
+```
 
 ## Usage
 
