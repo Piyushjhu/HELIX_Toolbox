@@ -1264,10 +1264,10 @@ class AnalysisThread(QThread):
                     self.progress_signal.emit(msg)
 
         # --- ENHANCED: Plot all smoothed velocity traces with material and waveplate angle information ---
-        smoothed_files = glob.glob(
-    os.path.join(
-        self.output_dir,
-         '*--velocity--smooth.csv'))
+        # Accept either classic smoothed file or the smoothed-with-uncertainty file (used in smart selection)
+        smoothed_files_velocity = glob.glob(os.path.join(self.output_dir, '*--velocity--smooth.csv'))
+        smoothed_files_uncert = glob.glob(os.path.join(self.output_dir, '*--vel-smooth-with-uncert.csv'))
+        smoothed_files = list(set(smoothed_files_velocity + smoothed_files_uncert))
 
         # Report combined plotting file availability
         self.progress_signal.emit(
@@ -1279,17 +1279,18 @@ class AnalysisThread(QThread):
             missing_plot_files = []
             for input_file in self.successful_files:
                 base_name = os.path.splitext(os.path.basename(input_file))[0]
-                expected_file = os.path.join(
-                    self.output_dir, f"{base_name}--velocity--smooth.csv")
-                if not os.path.exists(expected_file):
+                # Check primary and fallback patterns
+                expected_primary = os.path.join(self.output_dir, f"{base_name}--velocity--smooth.csv")
+                expected_fallback = os.path.join(self.output_dir, f"{base_name}--vel-smooth-with-uncert.csv")
+                if not (os.path.exists(expected_primary) or os.path.exists(expected_fallback)):
                     missing_plot_files.append(base_name)
 
             if missing_plot_files:
                 self.progress_signal.emit(
                     f"Missing velocity files for plotting: {len(missing_plot_files)}")
-                for missing_file in missing_plot_files:
-                    self.progress_signal.emit(
-                        f"❌ Missing: {missing_file}--velocity--smooth.csv")
+                    for missing_file in missing_plot_files:
+                        self.progress_signal.emit(
+                            f"❌ Missing: {missing_file} (no smoothed CSV found: --velocity--smooth.csv or --vel-smooth-with-uncert.csv)")
 
         
 
