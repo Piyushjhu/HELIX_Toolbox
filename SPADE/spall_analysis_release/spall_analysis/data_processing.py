@@ -14,7 +14,21 @@ import warnings
 import traceback
 import logging
 import glob
-from . import utils
+# Support both package and script execution
+try:
+    from . import utils  # type: ignore
+except Exception:
+    try:
+        # If run as a script, add this file's directory to sys.path and import utils
+        import sys
+        from pathlib import Path
+        sys.path.append(str(Path(__file__).resolve().parent))
+        import utils  # type: ignore
+    except Exception as _e:
+        raise ImportError(
+            "Could not import 'utils'. Run via package (python -m SPADE.spall_analysis_release.spall_analysis.data_processing) "
+            "or ensure the module directory is on PYTHONPATH."
+        ) from _e
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
