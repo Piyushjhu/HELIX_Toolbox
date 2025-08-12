@@ -14,13 +14,7 @@ This directory contains various supplementary tools, utilities, and debugging sc
   - Provides safe array trimming functions
 - **Usage**: Run to apply fixes to ALPSS code
 
-#### `array_length_fix.py`
-- **Purpose**: Checks for and fixes array length mismatches in ALPSS outputs
-- **Features**:
-  - Detects array length inconsistencies between time, velocity, and uncertainty data
-  - Automatically trims arrays to minimum length to prevent errors
-  - Provides detailed diagnostics of array lengths
-- **Usage**: Import and use functions to fix array length issues
+ 
 
 #### `diagnose_velocity_summary.py`
 - **Purpose**: Diagnoses issues with velocity summary data processing
@@ -99,35 +93,14 @@ This directory contains various supplementary tools, utilities, and debugging sc
   - Exports summary data for further analysis
 - **Usage**: Run to create velocity summaries from processed data
 
-### 🔄 **File Management & Utilities**
+### 🖥️ **GUI Integration Note**
 
-#### `copy_missing_traces.py`
-- **Purpose**: Copies files with specific base names (missing traces)
-- **Features**:
-  - Finds and copies files with matching base names
-  - Handles multiple file formats and extensions
-  - Provides comprehensive search patterns
-  - Creates organized output directories
-- **Usage**: Run to copy missing trace files to a specified location
+- The standalone legacy GUI `alpss_spade_gui.py` and helper scripts for copying or fixing arrays have been removed. The GUI functionality is now integrated into `helix_analysis_toolbox.py` with:
+  - Combined aligned velocity plot (t=0 at threshold) with noise and uncertainty filtering
+  - User-configurable alignment threshold, uncertainty threshold, uncertainty bands, and zoom window
+  - Inclusion of all parameter-file columns in both velocity and spall summaries
 
-#### `copy_related_files.py`
-- **Purpose**: Copies related files based on naming patterns
-- **Features**:
-  - Identifies and copies related data files
-  - Maintains file relationships and structure
-  - Handles various file formats
-- **Usage**: Run to copy related files for analysis
-
-### 🖥️ **Legacy GUI**
-
-#### `alpss_spade_gui.py`
-- **Purpose**: Legacy GUI interface for ALPSS-SPADE analysis
-- **Features**:
-  - Original GUI implementation
-  - Parameter configuration interface
-  - Analysis control and monitoring
-  - Results visualization
-- **Note**: This is the older version of the GUI, moved here for reference
+ 
 
 ### 📚 **Documentation Archive**
 
@@ -163,7 +136,6 @@ python plot_all_velocity_data.py
 ### For Debugging:
 ```bash
 python alpss_fix_script.py         # Apply fixes
-python array_length_fix.py         # Fix array issues
 python diagnose_velocity_summary.py # Test velocity processing
 ```
 
@@ -172,7 +144,7 @@ python diagnose_velocity_summary.py # Test velocity processing
 - These tools are supplementary and not required for basic ALPSS-SPADE operation
 - Some tools may require specific data formats or directory structures
 - Always backup your data before running diagnostic or fix tools
-- The legacy GUI (`alpss_spade_gui.py`) is kept for reference but may not be compatible with current versions
+- The primary GUI is `helix_analysis_toolbox.py`.
 
 ## 🔧 **Dependencies**
 
