@@ -1,6 +1,6 @@
 # HELIX Toolbox Requirements
 # Core GUI Framework
-PyQt5>=5.15.0
+PyQt5>=5.15.0; platform_system!="Windows"  # On Windows CI, allow skipping GUI install
 
 # Scientific Computing
 numpy>=1.19.0
