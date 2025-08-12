@@ -514,7 +514,7 @@ def calculate_spall_parameters(
 
 def process_velocity_files(
     input_folder, file_pattern, output_folder,
-    save_summary_table=True, summary_table_name="spall_summary.csv", **kwargs
+    save_summary_table=True, summary_table_name="enhanced_spall_summary.csv", **kwargs
 ):
     """
     Processes all matching velocity files in a folder.

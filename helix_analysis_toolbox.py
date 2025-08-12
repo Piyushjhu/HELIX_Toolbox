@@ -1140,18 +1140,9 @@ class AnalysisThread(QThread):
             # Create enhanced row with all original SPADE data
             enhanced_row = row.copy()
 
-            # Add parameter file data as extra columns (preserve original names and add normalized aliases)
-            # This helps downstream queries that expect consistent keys
+            # Add parameter file data as extra columns (preserve original names only)
             for key, value in param_info.items():
                 enhanced_row[key] = value
-                # Also add a normalized snake_case alias if different
-                try:
-                    import re
-                    norm_key = re.sub(r"[^a-zA-Z0-9]+", "_", str(key)).strip("_")
-                    if norm_key and norm_key != key:
-                        enhanced_row[norm_key] = value
-                except Exception:
-                    pass
 
             # Try to find corresponding ALPSS results file for additional data
             # Search both current output_dir and standard ALPSS output location
@@ -1191,7 +1182,7 @@ class AnalysisThread(QThread):
 
             enhanced_spall_data.append(enhanced_row)
 
-        # Save enhanced spall summary (include all parameter file columns)
+        # Save enhanced spall summary (include all parameter file columns, drop redundant columns)
         if enhanced_spall_data:
             enhanced_spall_df = pd.DataFrame(enhanced_spall_data)
 
@@ -1210,10 +1201,42 @@ class AnalysisThread(QThread):
                 if col not in enhanced_spall_df.columns:
                     enhanced_spall_df[col] = np.nan
 
+            # Remove redundant columns
+            try:
+                import re
+                # 1) Drop columns that normalize to the same token (keep first occurrence)
+                seen_norm = set()
+                cols_to_drop = []
+                for col in enhanced_spall_df.columns:
+                    norm = re.sub(r"[^a-zA-Z0-9]+", "_", str(col)).strip("_").lower()
+                    if norm in seen_norm:
+                        cols_to_drop.append(col)
+                    else:
+                        seen_norm.add(norm)
+                if cols_to_drop:
+                    enhanced_spall_df = enhanced_spall_df.drop(columns=cols_to_drop, errors='ignore')
+
+                # 2) Drop exact-duplicate columns (identical values across all rows)
+                enhanced_spall_df = enhanced_spall_df.T.drop_duplicates().T
+
+                # 3) Optionally drop columns that are entirely NaN
+                enhanced_spall_df = enhanced_spall_df.dropna(axis=1, how='all')
+            except Exception:
+                pass
+
             enhanced_spall_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
             enhanced_spall_df.to_csv(enhanced_spall_path, index=False)
             self.progress_signal.emit(f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
             self.progress_signal.emit(f"Saved to: {enhanced_spall_path}")
+
+            # Remove the basic spall summary file as it's redundant
+            try:
+                spall_summary_path = os.path.join(spade_output_dir, 'spall_summary.csv')
+                if os.path.exists(spall_summary_path):
+                    os.remove(spall_summary_path)
+                    self.progress_signal.emit("Removed redundant spall_summary.csv (superseded by enhanced_spall_summary.csv)")
+            except Exception:
+                pass
             
             # Generate additional analysis plots if parameter data is available
             self.generate_spall_analysis_plots(enhanced_spall_df, spade_output_dir)

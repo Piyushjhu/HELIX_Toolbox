@@ -205,7 +205,8 @@ def main():
         file_pattern='*.csv',
         output_folder=spade_output_dir,
         save_summary_table=True,
-        summary_table_name=os.path.join(spade_output_dir, "spall_summary.csv"),
+        # Use enhanced summary exclusively; keep a consistent name expected downstream
+        summary_table_name=os.path.join(spade_output_dir, "enhanced_spall_summary.csv"),
         density=args.spade_density,
         acoustic_velocity=args.spade_acoustic_velocity,
         analysis_model=args.spade_analysis_model,

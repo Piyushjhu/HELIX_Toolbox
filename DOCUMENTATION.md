@@ -1701,8 +1701,7 @@ Choose your analysis approach:
 
 ### SPADE Outputs
 
-- `spall_summary.csv`: Basic spall analysis results
-- `enhanced_spall_summary.csv`: Complete results with ALPSS data
+- `enhanced_spall_summary.csv`: Complete results with ALPSS data (supersedes the older `spall_summary.csv`)
 - `spall_vs_strain_rate.png`: Spall strength vs strain rate plot
 - `spall_vs_shock_stress.png`: Spall strength vs shock stress plot
 - `all_smoothed_velocity_traces.png`: Combined velocity traces
