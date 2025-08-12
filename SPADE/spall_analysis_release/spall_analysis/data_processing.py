@@ -317,7 +317,13 @@ def _calculate_hybrid_5_segment_features(time_shifted, velocity_smoothed, densit
     
     valleys, _ = find_peaks(-velocity_smoothed, prominence=prominence, distance=distance_samples)
     
-    idx_peak1 = peaks[0]
+    # Choose the global maximum peak to anchor P1/P2 near the true maxima
+    try:
+        peak_vals = velocity_smoothed.iloc[peaks]
+        idx_peak1 = int(peaks[int(np.argmax(peak_vals.values))])
+    except Exception:
+        # Fallback to first detected peak
+        idx_peak1 = int(peaks[0])
     valleys_after_peak1 = valleys[valleys > idx_peak1]
     if not valleys_after_peak1.any():
         raise ValueError("No pullback minimum found after initial peak.")
@@ -328,12 +334,12 @@ def _calculate_hybrid_5_segment_features(time_shifted, velocity_smoothed, densit
         raise ValueError("No recompaction peak found after pullback.")
     idx_peak2 = peaks_after_pullback[0]
 
-    # --- Improved Initial Rise Detection ---
+    # --- Improved Initial Rise Detection anchored to global maximum ---
     N_baseline = min(10, len(velocity_smoothed)//5)
     baseline = np.median(velocity_smoothed[:N_baseline])
-    peak_val = velocity_smoothed[idx_peak1]
+    peak_val = float(velocity_smoothed.iloc[idx_peak1])
     threshold = baseline + max(0.05 * (peak_val - baseline), 10.0)  # 5% of peak or 10 m/s above baseline
-    initial_rise_indices = np.where(velocity_smoothed > threshold)[0]
+    initial_rise_indices = np.where(velocity_smoothed.values > threshold)[0]
     if len(initial_rise_indices) > 0:
         idx_rise = initial_rise_indices[0]
     else:
@@ -391,6 +397,26 @@ def _calculate_hybrid_5_segment_features(time_shifted, velocity_smoothed, densit
     
     if any(p is None or pd.isna(p[0]) for p in intersections):
         raise ValueError("Failed to find all four critical intersection points.")
+
+    # Ensure P1/P2 are temporally near the global maximum region (within 10% of t_rise->t_peak1 span)
+    try:
+        span = float(t_peak1 - t_rise) if (t_peak1 - t_rise) != 0 else 1.0
+        t_lo = float(t_peak1 - 0.1 * span)
+        t_hi = float(t_peak1 + 0.1 * span)
+        def _clamp_to_time_window(P, t_lo, t_hi):
+            if P is None or pd.isna(P[0]):
+                return P
+            tP = float(P[0])
+            if tP < t_lo or tP > t_hi:
+                # Snap to nearest valid time within window using the curve
+                target_t = max(min(tP, t_hi), t_lo)
+                idx_near = int(np.argmin(np.abs(time_shifted.values - target_t)))
+                return (float(time_shifted.iloc[idx_near]), float(velocity_smoothed.iloc[idx_near]))
+            return P
+        P1 = _clamp_to_time_window(P1, t_lo, t_hi)
+        P2 = _clamp_to_time_window(P2, t_lo, t_hi)
+    except Exception:
+        pass
 
     results = {}
     delta_u_fs = abs(P2[1] - P3[1])
