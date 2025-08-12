@@ -776,28 +776,37 @@ class AnalysisThread(QThread):
 
         # Save velocity shots summary
         if velocity_shots_data:
-            # Ensure all parameter columns are included consistently
+            # Ensure all parameter columns from the parameter input file are included in the summary
             all_param_columns = set()
+            # 1) Collect from parameter file(s) if available
+            if self.param_data:
+                try:
+                    for _key, param_dict in self.param_data.items():
+                        if isinstance(param_dict, dict):
+                            all_param_columns.update(param_dict.keys())
+                except Exception:
+                    pass
+            # 2) Also include any parameter keys already merged into rows
             for shot_data in velocity_shots_data:
                 for key in shot_data.keys():
-                    if key not in ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 
-                                 'uncertainty_avg_ms', 't0_ns', 'velocity_threshold_ms']:
+                    if key not in ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 'uncertainty_avg_ms', 't0_ns', 'velocity_threshold_ms']:
                         all_param_columns.add(key)
-            
-            # Add missing parameter columns with NaN values
+
+            # Add missing parameter columns with NaN values to each row
             for shot_data in velocity_shots_data:
                 for param_col in all_param_columns:
                     if param_col not in shot_data:
                         shot_data[param_col] = np.nan
-            
+
             velocity_shots_df = pd.DataFrame(velocity_shots_data)
-            
-            # Reorder columns to put standard columns first, then parameter columns
-            standard_cols = ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 
-                           'uncertainty_avg_ms', 't0_ns', 'velocity_threshold_ms']
-            param_cols = sorted([col for col in velocity_shots_df.columns if col not in standard_cols])
+
+            # Reorder columns: standard columns first, then all parameter columns (sorted)
+            standard_cols = ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 'uncertainty_avg_ms', 't0_ns', 'velocity_threshold_ms']
+            param_cols = sorted([c for c in all_param_columns if c not in standard_cols])
             final_cols = standard_cols + param_cols
-            velocity_shots_df = velocity_shots_df[final_cols]
+            # Include any unexpected columns at the end to avoid dropping
+            remaining_cols = [c for c in velocity_shots_df.columns if c not in final_cols]
+            velocity_shots_df = velocity_shots_df[final_cols + remaining_cols]
             
             velocity_shots_path = os.path.join(
     spade_output_dir, 'velocity_shots_summary.csv')
@@ -1182,9 +1191,25 @@ class AnalysisThread(QThread):
 
             enhanced_spall_data.append(enhanced_row)
 
-        # Save enhanced spall summary
+        # Save enhanced spall summary (include all parameter file columns)
         if enhanced_spall_data:
             enhanced_spall_df = pd.DataFrame(enhanced_spall_data)
+
+            # Ensure all parameter file columns are present in the output
+            all_param_columns = set()
+            if self.param_data:
+                try:
+                    for _key, param_dict in self.param_data.items():
+                        if isinstance(param_dict, dict):
+                            all_param_columns.update(param_dict.keys())
+                except Exception:
+                    pass
+
+            # Add any missing param columns with NaN
+            for col in sorted(all_param_columns):
+                if col not in enhanced_spall_df.columns:
+                    enhanced_spall_df[col] = np.nan
+
             enhanced_spall_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
             enhanced_spall_df.to_csv(enhanced_spall_path, index=False)
             self.progress_signal.emit(f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
