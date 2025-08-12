@@ -1016,10 +1016,11 @@ class AnalysisThread(QThread):
                     if len(time_clean) == 0:
                         continue
 
-                    # Align at first >= 30 m/s
+                    # Align at first >= threshold
+                    align_threshold = self.spade_params.get('align_velocity_threshold_ms', 30.0)
                     t0_idx = None
                     for j, v in enumerate(velocity_clean):
-                        if not np.isnan(v) and v >= 30.0:
+                        if not np.isnan(v) and v >= align_threshold:
                             t0_idx = j
                             break
                     if t0_idx is not None:
@@ -1028,25 +1029,41 @@ class AnalysisThread(QThread):
 
                     color = colors[i % len(colors)]
                     ax1.plot(time_clean, velocity_clean, color=color, alpha=0.7, linewidth=1)
+                    # Optional uncertainty bands
+                    if self.spade_params.get('include_uncert_bands', True) and uncert_clean is not None and len(uncert_clean) == len(velocity_clean):
+                        alpha = float(self.spade_params.get('uncert_alpha', 0.2))
+                        ax1.fill_between(time_clean,
+                                         velocity_clean - uncert_clean,
+                                         velocity_clean + uncert_clean,
+                                         color=color, alpha=alpha)
 
-                    mask_1000 = time_clean <= 1000
+                    # Bottom zoom window
+                    zoom_ns = int(self.spade_params.get('zoom_window_ns', 1000))
+                    mask_1000 = time_clean <= zoom_ns
                     if np.any(mask_1000):
                         ax2.plot(time_clean[mask_1000], velocity_clean[mask_1000], color=color, alpha=0.7, linewidth=1)
+                        if self.spade_params.get('include_uncert_bands', True) and uncert_clean is not None and len(uncert_clean) == len(velocity_clean):
+                            alpha = float(self.spade_params.get('uncert_alpha', 0.2))
+                            ax2.fill_between(time_clean[mask_1000],
+                                             (velocity_clean - uncert_clean)[mask_1000],
+                                             (velocity_clean + uncert_clean)[mask_1000],
+                                             color=color, alpha=alpha)
 
                     traces_plotted += 1
                 except Exception:
                     continue
 
-            ax1.set_xlabel('Time (ns) - aligned to t=0 at 30 m/s', fontsize=12)
+            align_threshold = self.spade_params.get('align_velocity_threshold_ms', 30.0)
+            ax1.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax1.set_ylabel('Velocity (m/s)', fontsize=12)
             ax1.set_title(f'All Velocity Traces (Aligned) - {traces_plotted} traces', fontsize=14)
             ax1.grid(True, alpha=0.3)
 
-            ax2.set_xlabel('Time (ns) - aligned to t=0 at 30 m/s', fontsize=12)
+            ax2.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax2.set_ylabel('Velocity (m/s)', fontsize=12)
             ax2.set_title('First 1000ns Velocity Traces', fontsize=14)
             ax2.grid(True, alpha=0.3)
-            ax2.set_xlim(0, 1000)
+            ax2.set_xlim(0, int(self.spade_params.get('zoom_window_ns', 1000)))
 
             plt.tight_layout()
 
@@ -3066,17 +3083,51 @@ class HELIXAnalysisToolbox(QMainWindow):
 
         self.generate_all_velocity_plot = QCheckBox("Generate combined aligned velocity plot")
         self.generate_all_velocity_plot.setChecked(True)
-        self.generate_all_velocity_plot.setToolTip("Generate combined plot of all velocity traces aligned at t=0 (30 m/s), with noise fraction > 1 filtered, and uncertainty threshold applied.")
+        self.generate_all_velocity_plot.setToolTip("Generate combined plot of all velocity traces aligned at t=0 (threshold), with noise fraction > 1 filtered, and uncertainty threshold applied.")
         combined_layout.addWidget(self.generate_all_velocity_plot, 0, 0, 1, 2)
 
-        combined_layout.addWidget(QLabel("Uncertainty threshold:"), 1, 0)
+        # Alignment threshold
+        combined_layout.addWidget(QLabel("Alignment threshold:"), 1, 0)
+        self.align_velocity_threshold = QDoubleSpinBox()
+        self.align_velocity_threshold.setRange(0.0, 1000.0)
+        self.align_velocity_threshold.setDecimals(2)
+        self.align_velocity_threshold.setValue(30.0)
+        self.align_velocity_threshold.setSuffix(" m/s")
+        self.align_velocity_threshold.setToolTip("Set the velocity threshold for alignment (t=0 at first time ≥ threshold).")
+        combined_layout.addWidget(self.align_velocity_threshold, 1, 1)
+
+        # Uncertainty threshold
+        combined_layout.addWidget(QLabel("Uncertainty threshold:"), 2, 0)
         self.uncertainty_threshold = QDoubleSpinBox()
         self.uncertainty_threshold.setRange(0.0, 5000.0)
         self.uncertainty_threshold.setDecimals(2)
         self.uncertainty_threshold.setValue(50.0)
         self.uncertainty_threshold.setSuffix(" m/s")
         self.uncertainty_threshold.setToolTip("Remove points with uncertainty > this threshold from the combined plot.")
-        combined_layout.addWidget(self.uncertainty_threshold, 1, 1)
+        combined_layout.addWidget(self.uncertainty_threshold, 2, 1)
+
+        # Include uncertainty bands
+        self.include_uncert_bands = QCheckBox("Include uncertainty bands (±)")
+        self.include_uncert_bands.setChecked(True)
+        self.include_uncert_bands.setToolTip("Shade ± uncertainty around each trace after filtering and alignment.")
+        combined_layout.addWidget(self.include_uncert_bands, 3, 0, 1, 2)
+
+        # Uncertainty band alpha
+        combined_layout.addWidget(QLabel("Uncertainty band alpha:"), 4, 0)
+        self.uncert_alpha = QDoubleSpinBox()
+        self.uncert_alpha.setRange(0.0, 1.0)
+        self.uncert_alpha.setDecimals(2)
+        self.uncert_alpha.setSingleStep(0.05)
+        self.uncert_alpha.setValue(0.2)
+        combined_layout.addWidget(self.uncert_alpha, 4, 1)
+
+        # Zoom window (ns)
+        combined_layout.addWidget(QLabel("Zoom window (ns):"), 5, 0)
+        self.zoom_window_ns = QSpinBox()
+        self.zoom_window_ns.setRange(0, 100000)
+        self.zoom_window_ns.setValue(1000)
+        self.zoom_window_ns.setToolTip("Length of time window shown in the bottom (zoom) plot, starting at t=0.")
+        combined_layout.addWidget(self.zoom_window_ns, 5, 1)
 
         layout.addWidget(combined_group)
         
@@ -3949,6 +4000,10 @@ Output Files:
             # Combined velocity plot options
             'generate_all_velocity_plot': self.generate_all_velocity_plot.isChecked(),
             'uncertainty_threshold_ms': self.uncertainty_threshold.value(),
+            'align_velocity_threshold_ms': self.align_velocity_threshold.value(),
+            'include_uncert_bands': self.include_uncert_bands.isChecked(),
+            'uncert_alpha': self.uncert_alpha.value(),
+            'zoom_window_ns': self.zoom_window_ns.value(),
         }
         
     def run_analysis(self):
