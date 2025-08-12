@@ -8,7 +8,6 @@ import glob
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 def get_input_path():
     """Get the input path from user or use default"""
@@ -206,7 +205,8 @@ def plot_all_velocity_data(data_list):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
     
     # Color palette for different files
-    colors = plt.cm.tab10(np.linspace(0, 1, len(data_list)))
+    cmap = plt.get_cmap('tab10')
+    colors = cmap(np.linspace(0, 1, len(data_list)))
     
     # Track legend entries
     legend_entries = []
@@ -263,12 +263,37 @@ def plot_all_velocity_data(data_list):
             print(f"  ⏱️  {filename}: Converting time to nanoseconds")
             print(f"  ⏱️  {filename}: Converted time range: {np.min(time_data):.2f} to {np.max(time_data):.2f} ns")
         
-        # Remove NaN values for plotting
+        # Load optional noise fraction file and build filtering mask (noise > 1 removed)
+        noise_fraction = None
+        high_noise_mask = None
+        try:
+            # Expect matching naming: *--vel-smooth-with-uncert.csv -> *--noise--frac.csv
+            noise_file = data['filepath'].replace('--vel-smooth-with-uncert.csv', '--noise--frac.csv')
+            if os.path.exists(noise_file):
+                df_noise = pd.read_csv(noise_file)
+                if df_noise.shape[1] >= 1:
+                    noise_fraction = df_noise.iloc[:, -1].values
+                    if len(noise_fraction) == len(velocity_data):
+                        high_noise_mask = noise_fraction > 1.0
+                        print(f"  🔇 {filename}: Removing {np.sum(high_noise_mask)} points with noise fraction > 1.0")
+                    else:
+                        print(f"  ⚠️  {filename}: Noise fraction length mismatch (noise={len(noise_fraction)}, vel={len(velocity_data)})")
+                else:
+                    print(f"  ⚠️  {filename}: Noise fraction file has insufficient columns: {os.path.basename(noise_file)}")
+            else:
+                print(f"  ℹ️  {filename}: No noise fraction file found, skipping noise-based filtering")
+        except Exception as e:
+            print(f"  ⚠️  {filename}: Could not read noise fraction file: {e}")
+
+        # Remove NaNs and apply noise-based filtering
         valid_mask = ~np.isnan(velocity_data)
+        if high_noise_mask is not None:
+            valid_mask = valid_mask & (~high_noise_mask)
+
         time_clean = time_data[valid_mask]
         velocity_clean = velocity_data[valid_mask]
         uncertainty_clean = None
-        
+
         if uncertainty_data is not None:
             uncertainty_clean = uncertainty_data[valid_mask]
         
@@ -302,6 +327,20 @@ def plot_all_velocity_data(data_list):
         if len(time_clean) == 0:
             print(f"  ⚠️  No valid data for {filename} after filtering")
             continue
+
+        # Align traces: set t=0 at first time velocity reaches 30 m/s
+        velocity_threshold = 30.0
+        t0_idx = None
+        for j, vel in enumerate(velocity_clean):
+            if not np.isnan(vel) and vel >= velocity_threshold:
+                t0_idx = j
+                break
+        if t0_idx is not None:
+            t0 = time_clean[t0_idx]
+            time_clean = time_clean - t0
+            print(f"  Ⓜ️  {filename}: Aligned t=0 at {t0:.2f} ns (first ≥ {velocity_threshold} m/s)")
+        else:
+            print(f"  ⚠️  {filename}: Could not find velocity ≥ {velocity_threshold} m/s for alignment; using raw time")
         
         # Plot velocity trace
         color = colors[i]
@@ -354,14 +393,14 @@ def plot_all_velocity_data(data_list):
             print(f"\n✅ All {trace_counter} traces have data in the first 1000ns")
     
     # Customize velocity vs time plot
-    ax1.set_xlabel(f'Time ({time_unit})', fontsize=12)
+    ax1.set_xlabel(f'Time ({time_unit}) - aligned to t=0 at 30 m/s', fontsize=12)
     ax1.set_ylabel('Velocity (m/s)', fontsize=12)
     ax1.set_title(f'All Velocity Traces (Zoomable) - {trace_counter} traces', fontsize=14)
     ax1.grid(True, alpha=0.3)
     ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     
     # Customize first 1000ns plot
-    ax2.set_xlabel(f'Time ({time_unit})', fontsize=12)
+    ax2.set_xlabel(f'Time ({time_unit}) - aligned to t=0 at 30 m/s', fontsize=12)
     ax2.set_ylabel('Velocity (m/s)', fontsize=12)
     ax2.set_title(f'First 1000ns Velocity Traces - {trace_counter_1000ns} traces', fontsize=14)
     ax2.grid(True, alpha=0.3)

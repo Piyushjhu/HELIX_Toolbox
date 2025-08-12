@@ -810,6 +810,20 @@ class AnalysisThread(QThread):
             # Generate combined velocity plot
             if velocity_plot_data:
                 self.generate_combined_velocity_plot(velocity_plot_data, spade_output_dir)
+
+                # Optionally, generate the comprehensive aligned plot using ALPSS outputs and GUI threshold
+                try:
+                    if hasattr(self, 'spade_params'):
+                        # Use ALPSS output directory as input; same folder SPADE takes input from
+                        input_path = self.output_dir
+                        uncertainty_threshold = self.spade_params.get('uncertainty_threshold_ms', 50.0)
+                        generate_all = self.spade_params.get('generate_all_velocity_plot', True)
+                        if generate_all and os.path.exists(input_path):
+                            self.progress_signal.emit(
+                                f"Generating 'All Velocity Traces' aligned plot (threshold={uncertainty_threshold} m/s) from {input_path}")
+                            self.generate_all_velocity_traces_plot(input_path, spade_output_dir, uncertainty_threshold)
+                except Exception as e:
+                    self.progress_signal.emit(f"Warning: Failed to create comprehensive aligned velocity plot: {e}")
             
             # Create parameter mapping report for debugging
             self.create_parameter_mapping_report(velocity_shots_data, spade_output_dir)
@@ -939,6 +953,120 @@ class AnalysisThread(QThread):
         except Exception as e:
             self.progress_signal.emit(f"Error generating combined velocity plot: {e}")
 
+    def generate_all_velocity_traces_plot(self, input_path, spade_output_dir, uncertainty_threshold):
+        """Generate an all-traces plot aligned at 30 m/s using ALPSS output files in input_path.
+        Applies noise fraction filtering (>1) and removes points with uncertainty > threshold.
+        Saves PNG to both main output_dir and SPADE output dir."""
+        try:
+            import glob
+            import pandas as pd
+            import numpy as np
+            import matplotlib.pyplot as plt
+
+            pattern = os.path.join(input_path, '**/*--vel-smooth-with-uncert.csv')
+            files = glob.glob(pattern, recursive=True)
+            files = [f for f in files if os.path.getsize(f) > 0]
+            if not files:
+                self.progress_signal.emit("No '*--vel-smooth-with-uncert.csv' files found for all-traces plot")
+                return
+
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
+            cmap = plt.get_cmap('tab10')
+            colors = cmap(np.linspace(0, 1, max(1, len(files))))
+
+            traces_plotted = 0
+            for i, file_path in enumerate(sorted(files)):
+                try:
+                    df = pd.read_csv(file_path)
+                    if df.shape[1] < 3:
+                        continue
+                    time_data = df.iloc[:, 0].values
+                    velocity_data = df.iloc[:, 1].values
+                    uncertainty_data = df.iloc[:, 2].values
+
+                    # Convert time to ns if likely in s/us
+                    if np.nanmax(time_data) < 1e-3:
+                        time_data = time_data * 1e9
+                    elif np.nanmax(time_data) < 1.0:
+                        time_data = time_data * 1e3
+
+                    # Noise fraction filtering
+                    noise_file = file_path.replace('--vel-smooth-with-uncert.csv', '--noise--frac.csv')
+                    high_noise_mask = None
+                    if os.path.exists(noise_file):
+                        try:
+                            df_noise = pd.read_csv(noise_file)
+                            if df_noise.shape[1] >= 1:
+                                noise_fraction = df_noise.iloc[:, -1].values
+                                if len(noise_fraction) == len(velocity_data):
+                                    high_noise_mask = noise_fraction > 1.0
+                        except Exception:
+                            pass
+
+                    valid_mask = ~np.isnan(velocity_data)
+                    if high_noise_mask is not None:
+                        valid_mask &= (~high_noise_mask)
+                    # Uncertainty threshold filtering
+                    if uncertainty_data is not None:
+                        valid_mask &= (uncertainty_data <= uncertainty_threshold)
+
+                    time_clean = time_data[valid_mask]
+                    velocity_clean = velocity_data[valid_mask]
+                    uncert_clean = uncertainty_data[valid_mask] if uncertainty_data is not None else None
+                    if len(time_clean) == 0:
+                        continue
+
+                    # Align at first >= 30 m/s
+                    t0_idx = None
+                    for j, v in enumerate(velocity_clean):
+                        if not np.isnan(v) and v >= 30.0:
+                            t0_idx = j
+                            break
+                    if t0_idx is not None:
+                        t0 = time_clean[t0_idx]
+                        time_clean = time_clean - t0
+
+                    color = colors[i % len(colors)]
+                    ax1.plot(time_clean, velocity_clean, color=color, alpha=0.7, linewidth=1)
+
+                    mask_1000 = time_clean <= 1000
+                    if np.any(mask_1000):
+                        ax2.plot(time_clean[mask_1000], velocity_clean[mask_1000], color=color, alpha=0.7, linewidth=1)
+
+                    traces_plotted += 1
+                except Exception:
+                    continue
+
+            ax1.set_xlabel('Time (ns) - aligned to t=0 at 30 m/s', fontsize=12)
+            ax1.set_ylabel('Velocity (m/s)', fontsize=12)
+            ax1.set_title(f'All Velocity Traces (Aligned) - {traces_plotted} traces', fontsize=14)
+            ax1.grid(True, alpha=0.3)
+
+            ax2.set_xlabel('Time (ns) - aligned to t=0 at 30 m/s', fontsize=12)
+            ax2.set_ylabel('Velocity (m/s)', fontsize=12)
+            ax2.set_title('First 1000ns Velocity Traces', fontsize=14)
+            ax2.grid(True, alpha=0.3)
+            ax2.set_xlim(0, 1000)
+
+            plt.tight_layout()
+
+            # Save to main output_dir and SPADE output dir
+            out_main = os.path.join(self.output_dir, 'all_velocity_traces.png')
+            out_spade = os.path.join(spade_output_dir, 'all_velocity_traces.png')
+            try:
+                fig.savefig(out_main, dpi=300, bbox_inches='tight')
+            except Exception:
+                pass
+            try:
+                fig.savefig(out_spade, dpi=300, bbox_inches='tight')
+            except Exception:
+                pass
+            plt.close(fig)
+
+            self.progress_signal.emit(f"Saved aligned all-traces velocity plot to: {out_spade}")
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating all-traces velocity plot: {e}")
+
     def generate_spall_analysis_summary(self, spade_output_dir):
         """Generate enhanced spall analysis summary with comprehensive parameter file data"""
         self.progress_signal.emit("Generating enhanced spall analysis summary...")
@@ -1065,7 +1193,7 @@ class AnalysisThread(QThread):
             # Create color mapping for materials if available
             if color_col and len(enhanced_spall_df[color_col].unique()) > 1:
                 materials = enhanced_spall_df[color_col].unique()
-                colors = plt.cm.Set3(np.linspace(0, 1, len(materials)))
+                colors = plt.get_cmap('Set3')(np.linspace(0, 1, len(materials)))
                 color_map = dict(zip(materials, colors))
                 
                 # Create legend patches
@@ -1288,9 +1416,9 @@ class AnalysisThread(QThread):
             if missing_plot_files:
                 self.progress_signal.emit(
                     f"Missing velocity files for plotting: {len(missing_plot_files)}")
-                    for missing_file in missing_plot_files:
-                        self.progress_signal.emit(
-                            f"❌ Missing: {missing_file} (no smoothed CSV found: --velocity--smooth.csv or --vel-smooth-with-uncert.csv)")
+                for missing_file in missing_plot_files:
+                    self.progress_signal.emit(
+                        f"❌ Missing: {missing_file} (no smoothed CSV found: --velocity--smooth.csv or --vel-smooth-with-uncert.csv)")
 
         
 
@@ -2930,6 +3058,27 @@ class HELIXAnalysisToolbox(QMainWindow):
         axis_layout.addWidget(self.auto_calculate_limits, 4, 0, 1, 2)
         
         layout.addWidget(axis_group)
+
+        # Combined Velocity Plot controls
+        combined_group = QGroupBox("Combined Velocity Plot (Aligned)")
+        combined_layout = QGridLayout(combined_group)
+        combined_layout.setSpacing(10)
+
+        self.generate_all_velocity_plot = QCheckBox("Generate combined aligned velocity plot")
+        self.generate_all_velocity_plot.setChecked(True)
+        self.generate_all_velocity_plot.setToolTip("Generate combined plot of all velocity traces aligned at t=0 (30 m/s), with noise fraction > 1 filtered, and uncertainty threshold applied.")
+        combined_layout.addWidget(self.generate_all_velocity_plot, 0, 0, 1, 2)
+
+        combined_layout.addWidget(QLabel("Uncertainty threshold:"), 1, 0)
+        self.uncertainty_threshold = QDoubleSpinBox()
+        self.uncertainty_threshold.setRange(0.0, 5000.0)
+        self.uncertainty_threshold.setDecimals(2)
+        self.uncertainty_threshold.setValue(50.0)
+        self.uncertainty_threshold.setSuffix(" m/s")
+        self.uncertainty_threshold.setToolTip("Remove points with uncertainty > this threshold from the combined plot.")
+        combined_layout.addWidget(self.uncertainty_threshold, 1, 1)
+
+        layout.addWidget(combined_group)
         
         # SPADE input mode
         spade_input_group = QGroupBox("SPADE Input Mode")
@@ -3797,9 +3946,9 @@ Output Files:
             'x_max_zoom': self.x_max_zoom.value(),
             'y_min_zoom': self.y_min_zoom.value(),
             'y_max_zoom': self.y_max_zoom.value(),
-
-            # Speed optimization options
-            # Speed optimization options removed
+            # Combined velocity plot options
+            'generate_all_velocity_plot': self.generate_all_velocity_plot.isChecked(),
+            'uncertainty_threshold_ms': self.uncertainty_threshold.value(),
         }
         
     def run_analysis(self):
