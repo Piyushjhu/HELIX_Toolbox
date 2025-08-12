@@ -347,6 +347,32 @@ def _calculate_hybrid_5_segment_features(time_shifted, velocity_smoothed, densit
     P2 = _find_intersection(m2, c2, m3, c3)
     P3 = _find_intersection(m3, c3, m4, c4)
     P4 = _find_intersection(m4, c4, m5, c5)
+
+    # Safety: force P3 to lie on the actual curve near the pullback
+    # If the fitted-line intersection overshoots (time out of range or far from data),
+    # snap P3 to the observed pullback minimum point or nearest data point.
+    try:
+        v_range = float(np.ptp(velocity_smoothed)) if len(velocity_smoothed) > 0 else 0.0
+        t_window = float(t_peak2 - pullback_fit_start_t)
+        t_ok = (P3 is not None and not pd.isna(P3[0]) and pullback_fit_start_t <= P3[0] <= t_peak2)
+        if not t_ok:
+            # Out of time range: snap to the pullback minima on the curve
+            P3 = (float(t_pullback), float(velocity_smoothed.loc[idx_pullback]))
+            logging.info("Adjusted P3 to pullback minima to avoid overshoot (out of range)")
+        else:
+            # Compare to nearest point on the curve; if far, snap to curve
+            idx_near = int(np.argmin(np.abs(time_shifted.values - P3[0])))
+            v_curve = float(velocity_smoothed.iloc[idx_near])
+            # Threshold: 20% of total velocity range or 10 m/s, whichever is larger
+            y_tol = max(0.2 * v_range, 10.0)
+            if abs(P3[1] - v_curve) > y_tol:
+                P3 = (float(time_shifted.iloc[idx_near]), v_curve)
+                logging.info("Adjusted P3 to nearest curve point to avoid overshoot")
+    except Exception:
+        # On any failure, fall back to the pullback minima
+        P3 = (float(t_pullback), float(velocity_smoothed.loc[idx_pullback]))
+        logging.info("Adjusted P3 to pullback minima due to exception during overshoot check")
+
     intersections = [P1, P2, P3, P4]
     
     if any(p is None or pd.isna(p[0]) for p in intersections):
