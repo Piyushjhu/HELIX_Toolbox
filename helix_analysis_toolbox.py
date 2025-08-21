@@ -43,6 +43,24 @@ class ScientificSpinBox(QDoubleSpinBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDecimals(15)  # Allow high precision
+        # Ensure value only updates when editing is finished (Enter/blur)
+        self.setKeyboardTracking(False)
+
+    def _strip_prefix_suffix(self, text: str) -> str:
+        """Remove any prefix/suffix and normalize scientific notation markers."""
+        if text is None:
+            return ""
+        cleaned = text.strip()
+        # Remove suffix/prefix if present
+        suf = self.suffix()
+        pre = self.prefix()
+        if suf:
+            cleaned = cleaned.replace(suf, "")
+        if pre:
+            cleaned = cleaned.replace(pre, "")
+        # Normalize scientific notation
+        cleaned = cleaned.replace('E+', 'e+').replace('E-', 'e-').replace('E', 'e')
+        return cleaned.strip()
 
     def textFromValue(self, value):
         """Convert value to scientific notation string with high precision"""
@@ -56,27 +74,28 @@ class ScientificSpinBox(QDoubleSpinBox):
     def valueFromText(self, text):
         """Convert scientific notation string to value"""
         try:
-            # Handle scientific notation (e.g., 1e9, 1.5e-6)
-            # Also handle common variations like 1E9, 1.5E-6
-            text = text.strip().replace('E', 'e').replace('E+', 'e+').replace('E-', 'e-')
-            return float(text)
+            cleaned = self._strip_prefix_suffix(text)
+            # Empty field should not force-reset; keep current value
+            if cleaned == "":
+                return self.value()
+            return float(cleaned)
         except ValueError:
-            return 0.0
+            # Keep current value on parse error instead of resetting
+            return self.value()
 
     def validate(self, text, pos):
         """Validate scientific notation input"""
         try:
-            if text.strip() == "":
+            cleaned = self._strip_prefix_suffix(text)
+            if cleaned == "":
                 return (QValidator.Acceptable, text, pos)
             # Allow partial input during typing
-            if text.endswith('e') or text.endswith('E'):
+            if cleaned.endswith('e'):
                 return (QValidator.Intermediate, text, pos)
-            if text.endswith(
-                'e+') or text.endswith('E+') or text.endswith('e-') or text.endswith('E-'):
+            if cleaned.endswith('e+') or cleaned.endswith('e-'):
                 return (QValidator.Intermediate, text, pos)
             # Try to parse the value
-            text_clean = text.strip().replace('E', 'e').replace('E+', 'e+').replace('E-', 'e-')
-            float(text_clean)
+            float(cleaned)
             return (QValidator.Acceptable, text, pos)
         except ValueError:
             return (QValidator.Invalid, text, pos)
@@ -1851,6 +1870,23 @@ class HELIXAnalysisToolbox(QMainWindow):
                 self.save_noise_csv.setChecked(params['save_noise_csv'])
             if hasattr(self, 'smart_selection_checkbox') and 'smart_selection_enabled' in params:
                 self.smart_selection_checkbox.setChecked(params['smart_selection_enabled'])
+            # Common PDV/material parameters
+            if hasattr(self, 'lam') and 'lam' in params:
+                self.lam.setValue(params['lam'])
+            if hasattr(self, 'C0') and 'C0' in params:
+                self.C0.setValue(params['C0'])
+            if hasattr(self, 'density') and 'density' in params:
+                self.density.setValue(params['density'])
+            if hasattr(self, 'delta_rho') and 'delta_rho' in params:
+                self.delta_rho.setValue(params['delta_rho'])
+            if hasattr(self, 'delta_C0') and 'delta_C0' in params:
+                self.delta_C0.setValue(params['delta_C0'])
+            if hasattr(self, 'delta_lam') and 'delta_lam' in params:
+                self.delta_lam.setValue(params['delta_lam'])
+            if hasattr(self, 'theta') and 'theta' in params:
+                self.theta.setValue(params['theta'])
+            if hasattr(self, 'delta_theta') and 'delta_theta' in params:
+                self.delta_theta.setValue(params['delta_theta'])
         except Exception as e:
             print(f"Error applying ALPSS parameters: {e}")
     
