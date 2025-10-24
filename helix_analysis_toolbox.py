@@ -18,7 +18,7 @@ from pathlib import Path
 # Excel support will be checked dynamically when needed
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
     QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QProgressBar,
+    QLineEdit, QPushButton, QTextEdit, QPlainTextEdit, QProgressBar,
     QFileDialog, QCheckBox, QComboBox, QSpinBox,
     QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
     QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
@@ -29,6 +29,7 @@ from SPADE.spall_analysis_release.spall_analysis import plot_combined_mean_trace
 # Configure matplotlib for non-interactive backend
 import matplotlib
 matplotlib.use('Agg')  # Set non-interactive backend
+from datetime import datetime
 
 def cleanup_matplotlib():
     """Clean up matplotlib figures to prevent memory leaks"""
@@ -2273,9 +2274,10 @@ class HELIXAnalysisToolbox(QMainWindow):
         layout.addWidget(param_group)
         
         # File list display
-        self.file_list = QTextEdit()
+        self.file_list = QPlainTextEdit()
         self.file_list.setMaximumHeight(200)
         self.file_list.setPlaceholderText("Selected files will appear here...")
+        self.file_list.setReadOnly(True)
         layout.addWidget(QLabel("Selected Files:"))
         layout.addWidget(self.file_list)
         
@@ -2309,7 +2311,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         mode_layout.addWidget(self.mode_both)
         
         # Description text
-        desc_text = QTextEdit()
+        desc_text = QPlainTextEdit()
         desc_text.setMaximumHeight(150)
         desc_text.setReadOnly(True)
         desc_text.setPlainText(
@@ -2967,7 +2969,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         experiment_layout.addWidget(self.experiment_spall_analysis)
         
         # Description text for experiment types
-        experiment_desc = QTextEdit()
+        experiment_desc = QPlainTextEdit()
         experiment_desc.setMaximumHeight(120)
         experiment_desc.setReadOnly(True)
         experiment_desc.setPlainText(
@@ -3291,7 +3293,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         alpss_doc_group = QGroupBox("ALPSS Parameter Key")
         alpss_doc_layout = QVBoxLayout(alpss_doc_group)
         
-        alpss_doc_text = QTextEdit()
+        alpss_doc_text = QPlainTextEdit()
         alpss_doc_text.setReadOnly(True)
         alpss_doc_text.setMaximumHeight(400)
         alpss_doc_text.setPlainText("""
@@ -3366,7 +3368,7 @@ plot_dpi:                   float; dpi for the final plots
         spade_doc_group = QGroupBox("SPADE Analysis Information")
         spade_doc_layout = QVBoxLayout(spade_doc_group)
         
-        spade_doc_text = QTextEdit()
+        spade_doc_text = QPlainTextEdit()
         spade_doc_text.setReadOnly(True)
         spade_doc_text.setMaximumHeight(300)
         spade_doc_text.setPlainText("""
@@ -3406,7 +3408,7 @@ Input Requirements:
         usage_group = QGroupBox("Usage Instructions")
         usage_layout = QVBoxLayout(usage_group)
         
-        usage_text = QTextEdit()
+        usage_text = QPlainTextEdit()
         usage_text.setReadOnly(True)
         usage_text.setMaximumHeight(200)
         usage_text.setPlainText("""
@@ -3520,10 +3522,11 @@ Output Files:
         
         layout.addWidget(progress_group)
         
-        # Progress text
-        self.progress_text = QTextEdit()
+        # Progress text (QPlainTextEdit scales better for large logs)
+        self.progress_text = QPlainTextEdit()
         self.progress_text.setMaximumHeight(300)
         self.progress_text.setPlaceholderText("Analysis progress will appear here...")
+        self.progress_text.setReadOnly(True)
         layout.addWidget(QLabel("Progress:"))
         layout.addWidget(self.progress_text)
         
@@ -4280,12 +4283,27 @@ Output Files:
         self.spade_progress_bar.setVisible(False)
         
     def update_progress(self, message):
-        """Update progress display"""
-        self.progress_text.append(message)
-        self.progress_text.ensureCursorVisible()
+        """Update progress display without overloading the GUI"""
+        # Append to UI with newline
+        self.progress_text.appendPlainText(message)
+        # Truncate to last N lines to avoid massive widget growth
+        max_lines = 2000
+        current_text = self.progress_text.toPlainText()
+        if current_text.count("\n") > max_lines + 100:
+            lines = current_text.splitlines()
+            trimmed = "\n".join(lines[-max_lines:])
+            self.progress_text.setPlainText(trimmed)
+            self.progress_text.moveCursor(self.progress_text.textCursor().End)
         
-        # Force GUI update
-        QApplication.processEvents()
+        # Also write to a rolling log file
+        try:
+            log_dir = os.path.join(self.output_path.text() or os.getcwd(), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, f"helix_analysis_{datetime.now().strftime('%Y%m%d')}.log")
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
+        except Exception:
+            pass
         
         # Update the correct progress bar
         if "ALPSS" in message and "Processing file" in message:
