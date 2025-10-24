@@ -1885,6 +1885,12 @@ class PostProcessingWorker(QObject):
                         material = param_data[base_name].get('Sample material', 'Unknown')
                         if isinstance(material, str):
                             material = material.strip()
+                    else:
+                        # Debug: show first few mismatches
+                        if i < 5:
+                            self.progress.emit(f"  No match for: {base_name}")
+                        elif i == 5:
+                            self.progress.emit(f"  ... (more non-matching files)")
                     
                     # Assign color based on material
                     if material not in material_colors:
@@ -2770,7 +2776,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         axis_layout = QGridLayout(axis_group)
         axis_layout.setSpacing(10)
         self.pp_auto_limits = QCheckBox("Auto")
-        self.pp_auto_limits.setChecked(True)
+        self.pp_auto_limits.setChecked(False)  # Default to custom limits
         axis_layout.addWidget(self.pp_auto_limits, 0, 0)
 
         axis_layout.addWidget(QLabel("X min (ns):"), 1, 0)
