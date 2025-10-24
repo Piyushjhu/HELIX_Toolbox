@@ -3819,7 +3819,7 @@ Output Files:
             if self.single_file_radio.isChecked():
                 file_path = self.single_file_path.text()
                 if file_path and os.path.exists(file_path):
-                    self.file_list.append(f"Single file: {os.path.basename(file_path)}")
+                    self.file_list.appendPlainText(f"Single file: {os.path.basename(file_path)}")
             else:
                 dir_path = self.multi_file_path.text()
                 pattern = self.file_pattern.text()
@@ -3831,23 +3831,23 @@ Output Files:
                         files = glob.glob(os.path.join(dir_path, pattern))
                         print(f"Found {len(files)} files matching pattern")
                         if files:
-                            self.file_list.append(f"Found {len(files)} files in {dir_path}:")
+                            self.file_list.appendPlainText(f"Found {len(files)} files in {dir_path}:")
                             for file_path in sorted(files):
-                                self.file_list.append(f"  • {os.path.basename(file_path)}")
+                                self.file_list.appendPlainText(f"  • {os.path.basename(file_path)}")
                         else:
-                            self.file_list.append(f"No files found matching pattern '{pattern}' in {dir_path}")
+                            self.file_list.appendPlainText(f"No files found matching pattern '{pattern}' in {dir_path}")
                     except Exception as e:
                         print(f"Error scanning directory: {e}")
-                        self.file_list.append(f"Error scanning directory: {e}")
+                        self.file_list.appendPlainText(f"Error scanning directory: {e}")
                 else:
                     print(f"Invalid directory: {dir_path}")
-                    self.file_list.append("No valid directory selected")
+                    self.file_list.appendPlainText("No valid directory selected")
             print("File list update complete")
         except Exception as e:
             print(f"Error in update_file_list: {e}")
             import traceback
             traceback.print_exc()
-            self.file_list.append(f"Error updating file list: {e}")
+            self.file_list.appendPlainText(f"Error updating file list: {e}")
                     
     def get_input_files(self):
         """Get list of input files based on current selection"""
@@ -4148,9 +4148,9 @@ Output Files:
                             num_csv += 1
                         else:
                             num_xlsx += 1
-            self.progress_text.append(f"Loaded {total_count} parameter files (Excel: {num_xlsx}, CSV: {num_csv}) with {len(param_data)} total experiments")
+            self.progress_text.appendPlainText(f"Loaded {total_count} parameter files (Excel: {num_xlsx}, CSV: {num_csv}) with {len(param_data)} total experiments")
         else:
-            self.progress_text.append("No parameter files provided - using default file names")
+            self.progress_text.appendPlainText("No parameter files provided - using default file names")
         
         # Determine analysis mode
         if self.mode_alpss_only.isChecked():
@@ -4276,7 +4276,7 @@ Output Files:
         if self.analysis_thread and self.analysis_thread.isRunning():
             self.analysis_thread.terminate()
             self.analysis_thread.wait()
-            self.progress_text.append("Analysis stopped by user.")
+            self.progress_text.appendPlainText("Analysis stopped by user.")
             
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -4338,10 +4338,10 @@ Output Files:
         self.spade_progress_bar.setVisible(False)
         
         if success:
-            self.progress_text.append("Analysis completed successfully!")
+            self.progress_text.appendPlainText("Analysis completed successfully!")
             QMessageBox.information(self, "Success", "Analysis completed successfully!")
         else:
-            self.progress_text.append(f"Analysis failed: {message}")
+            self.progress_text.appendPlainText(f"Analysis failed: {message}")
             QMessageBox.critical(self, "Error", f"Analysis failed: {message}")
             
     def open_output_directory(self):
