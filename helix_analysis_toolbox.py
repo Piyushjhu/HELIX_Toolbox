@@ -1990,7 +1990,7 @@ class PostProcessingWorker(QObject):
             
             # Apply axis limits from post-processing settings - BEFORE tight_layout
             try:
-                if use_custom_limits:
+                if not current_params.get('auto_calculate_limits', True):
                     x_min_main = float(current_params.get('x_min_main', 0))
                     x_max_main = float(current_params.get('x_max_main', 100))
                     y_min_main = float(current_params.get('y_min_main', 0))
