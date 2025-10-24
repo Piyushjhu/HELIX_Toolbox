@@ -1870,6 +1870,12 @@ class HELIXAnalysisToolbox(QMainWindow):
                 self.save_noise_csv.setChecked(params['save_noise_csv'])
             if hasattr(self, 'smart_selection_checkbox') and 'smart_selection_enabled' in params:
                 self.smart_selection_checkbox.setChecked(params['smart_selection_enabled'])
+            # IQ threshold factor
+            if hasattr(self, 'iq_threshold_factor') and 'iq_threshold_factor' in params:
+                try:
+                    self.iq_threshold_factor.setValue(float(params['iq_threshold_factor']))
+                except Exception:
+                    pass
             # Common PDV/material parameters
             if hasattr(self, 'lam') and 'lam' in params:
                 self.lam.setValue(params['lam'])
@@ -2409,6 +2415,16 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.t_after.setRange(1e-12, 1e-6)
         self.t_after.setValue(60e-9)
         time_layout.addWidget(self.t_after, 1, 3)
+
+        # Row 2
+        time_layout.addWidget(QLabel("IQ Threshold Factor:"), 2, 0)
+        self.iq_threshold_factor = QDoubleSpinBox()
+        self.iq_threshold_factor.setRange(0.0, 2.0)
+        self.iq_threshold_factor.setDecimals(3)
+        self.iq_threshold_factor.setSingleStep(0.05)
+        self.iq_threshold_factor.setValue(0.4)
+        self.iq_threshold_factor.setToolTip("Fraction of initial IQ amplitude used to detect start time (default 0.4)")
+        time_layout.addWidget(self.iq_threshold_factor, 2, 1)
         
         layout.addWidget(time_group)
         
@@ -3992,6 +4008,7 @@ Output Files:
             't_before': self.t_before.value(),
             't_after': self.t_after.value(),
             'start_time_correction': self.start_time_correction.value(),
+            'iq_threshold_factor': self.iq_threshold_factor.value(),
             'freq_min': self.freq_min.value(),
             'freq_max': self.freq_max.value(),
             'smoothing_window': self.smoothing_window.value(),
