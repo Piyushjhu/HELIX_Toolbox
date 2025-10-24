@@ -621,12 +621,17 @@ def calculate_spall_parameters(
 
 def process_velocity_files(
     input_folder, file_pattern, output_folder,
-    save_summary_table=True, summary_table_name="enhanced_spall_summary.csv", **kwargs
+    save_summary_table=True, summary_table_name="enhanced_spall_summary.csv", files_list=None, **kwargs
 ):
     """
     Processes all matching velocity files in a folder.
     """
-    files_to_process = sorted(glob.glob(os.path.join(input_folder, file_pattern)))
+    # Either use explicit provided list or collect by pattern (supports recursive "**")
+    if files_list:
+        files_to_process = [f for f in files_list if os.path.isfile(f)]
+    else:
+        recursive = '**' in file_pattern
+        files_to_process = sorted(glob.glob(os.path.join(input_folder, file_pattern), recursive=recursive))
     if not files_to_process:
         logger.warning(f"No files found for pattern '{file_pattern}' in '{input_folder}'.")
         return pd.DataFrame()

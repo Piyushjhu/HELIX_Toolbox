@@ -517,6 +517,7 @@ class AnalysisThread(QThread):
                             summary_table_name=os.path.join(
                                 spade_output_dir, "spall_summary.csv"),
                             plot_individual=False,
+                            files_list=self.spade_input_files,
                             **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                         )
 
