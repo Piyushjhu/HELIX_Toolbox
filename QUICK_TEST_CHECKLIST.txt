@@ -1,0 +1,137 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║            POST-PROCESSING AXIS LIMITS - QUICK TEST CHECKLIST               ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+TEST PROCEDURE:
+═════════════════════════════════════════════════════════════════════════════
+
+[ ] 1. Pull latest code
+    Command: git pull origin main
+
+[ ] 2. Start GUI
+    Command: python3 helix_analysis_toolbox.py
+
+[ ] 3. Run analysis (ALPSS or ALPSS+SPADE)
+    - Select input files
+    - Select parameter folder (if available)
+    - Click "Run Analysis"
+    - Wait for completion (check progress text)
+
+[ ] 4. Go to Post-Processing Tab
+    - Click "Post-Processing" tab
+
+[ ] 5. Select Output Directory
+    - Click "Browse" button
+    - Select the output folder from your analysis in step 3
+
+[ ] 6. Verify Auto-Limits Setting
+    - [ ] "Auto Calculate Limits" checkbox is UNCHECKED
+        (This should be default, but double-check!)
+
+[ ] 7. Set Custom Axis Limits
+    
+    Main Plot (Top Subplot):
+    [ ] X min: 0
+    [ ] X max: 100
+    [ ] Y min: 0
+    [ ] Y max: 600
+    
+    Zoom Plot (Bottom Subplot):
+    [ ] X min: 0
+    [ ] X max: 50
+    [ ] Y min: 0
+    [ ] Y max: 300
+
+[ ] 8. Click "Preview" Button
+    - Watch the log output in the "Preview" text area
+    - This will generate plots and show debug information
+
+
+WHAT TO LOOK FOR IN DEBUG OUTPUT:
+═════════════════════════════════════════════════════════════════════════════
+
+Look for these THREE sections in the preview output:
+
+[ ] Section 1: "[POST-PROCESSING] Parameters applied:"
+    - Should show: auto_calc_limits: False
+    - Should show: x_min/max_main: 0.0/100.0
+    - Should show: y_min/max_main: 0.0/600.0
+
+[ ] Section 2: "[WORKER] Received parameters in regenerate_plots:"
+    - Should show: auto_calc_limits: False
+    - Should show: x_min/max_main: 0.0/100.0
+    - Should show: y_min/max_main: 0.0/600.0
+
+[ ] Section 3: "Applied top limits:"
+    - Should show: X(0.0-100.0), Y(0.0-600.0)
+    - Should show: X(0.0-50.0), Y(0.0-300.0) for zoom
+
+
+VERIFY GENERATED PLOTS:
+═════════════════════════════════════════════════════════════════════════════
+
+[ ] 1. Navigate to output folder → SPADE_analysis/
+[ ] 2. Open "all_velocity_traces.png"
+[ ] 3. Top subplot:
+    [ ] X-axis ranges from 0 to 100 ns (NOT 0-500 or 0-1000)
+    [ ] Y-axis ranges from 0 to 600 m/s
+[ ] 4. Bottom subplot:
+    [ ] X-axis ranges from 0 to 50 ns
+    [ ] Y-axis ranges from 0 to 300 m/s
+
+[ ] 5. Check "velocity_traces_by_material.png" (if created)
+    [ ] Each material subplot uses the same limits
+
+
+RESULTS ANALYSIS:
+═════════════════════════════════════════════════════════════════════════════
+
+Choose the scenario that matches your results:
+
+SCENARIO A: ✅ All three log sections with correct values
+           + ✅ Plots respect the custom limits
+           ─────────────────────────────────────
+           STATUS: BUG IS FIXED! ✅
+           
+SCENARIO B: ✅ All three log sections with correct values
+           + ❌ Plots don't respect the custom limits
+           ─────────────────────────────────────
+           STATUS: Parameters OK, plot generation is the issue
+           Next: Need to debug matplotlib axis application
+
+SCENARIO C: ✅ Section 1 shows correct values
+           + ❌ Section 2 shows None or missing values
+           ─────────────────────────────────────
+           STATUS: Parameters lost during threading
+           Next: Need to fix parameter passing with deepcopy
+
+SCENARIO D: ❌ All sections missing or show error messages
+           ─────────────────────────────────────
+           STATUS: Code not running properly
+           Next: Check git status, verify syntax, review errors
+
+SCENARIO E: ❌ Section 1 shows wrong values (e.g., True, None)
+           ─────────────────────────────────────
+           STATUS: UI not initialized correctly
+           Next: Check UI widget creation and defaults
+
+
+REPORTING RESULTS:
+═════════════════════════════════════════════════════════════════════════════
+
+When sharing results with developers, provide:
+
+[ ] The scenario you matched (A, B, C, D, or E)
+[ ] Screenshot of the debug output from Preview tab
+[ ] Screenshot or description of the generated plots
+[ ] Exact parameter values shown in the logs
+[ ] Any error messages (copy & paste full text)
+[ ] Output directory path (for verification)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Start the test procedure above and watch the debug output!
+
+For detailed info, see: POST_PROCESSING_TEST_GUIDE.md
+
