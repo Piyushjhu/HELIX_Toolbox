@@ -2240,7 +2240,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         param_layout = QVBoxLayout(param_group)
         
         # Description
-        desc_label = QLabel("Select a folder containing parameter files (.xlsx) to link experiment data with processing results.")
+        desc_label = QLabel("Select a folder containing parameter files (.xlsx/.xls/.csv) to link experiment data with processing results.")
         desc_label.setWordWrap(True)
         param_layout.addWidget(desc_label)
         
@@ -3664,20 +3664,20 @@ Output Files:
             self.load_param_folder_info()
             
     def load_param_folder_info(self):
-        """Load and display information from all Excel files in the parameter folder"""
+        """Load and display information from all Excel/CSV files in the parameter folder"""
         folder_path = self.param_folder_path.text()
         if not folder_path or not os.path.exists(folder_path):
             self.param_file_info.setText("No parameter folder selected")
             return
             
-        # Find all Excel files in the folder
+        # Find all Excel/CSV files in the folder
         excel_files = []
         for file in os.listdir(folder_path):
-            if file.lower().endswith(('.xlsx', '.xls')):
+            if file.lower().endswith(('.xlsx', '.xls', '.csv')):
                 excel_files.append(os.path.join(folder_path, file))
                 
         if not excel_files:
-            self.param_file_info.setText(f"No Excel files found in {os.path.basename(folder_path)}")
+            self.param_file_info.setText(f"No parameter files (.xlsx/.xls/.csv) found in {os.path.basename(folder_path)}")
             return
             
         total_experiments = 0
@@ -3686,21 +3686,31 @@ Output Files:
         all_pdv_files = []
         
         info_text = f"Parameter Folder: {os.path.basename(folder_path)}\n"
-        info_text += f"Excel Files Found: {len(excel_files)}\n"
+        # Summarize by type
+        num_xlsx = sum(1 for f in excel_files if f.lower().endswith(('.xlsx', '.xls')))
+        num_csv = sum(1 for f in excel_files if f.lower().endswith('.csv'))
+        info_text += f"Parameter Files Found: {len(excel_files)} (Excel: {num_xlsx}, CSV: {num_csv})\n"
         
         for file_path in excel_files:
             try:
-                # Try to read the Excel file
-                try:
-                    import openpyxl
-                except ImportError:
-                    self.param_file_info.setText(f"Error: openpyxl not installed. Please install with: pip install openpyxl")
-                    return
-                try:
-                    df = pd.read_excel(file_path)
-                except Exception as e:
-                    info_text += f"\n{os.path.basename(file_path)}: Error reading file - {str(e)}"
-                    continue
+                # Try to read the file depending on extension
+                if file_path.lower().endswith('.csv'):
+                    try:
+                        df = pd.read_csv(file_path)
+                    except Exception as e:
+                        info_text += f"\n{os.path.basename(file_path)}: Error reading CSV - {str(e)}"
+                        continue
+                else:
+                    try:
+                        import openpyxl
+                    except ImportError:
+                        self.param_file_info.setText("Error: openpyxl not installed. Please install with: pip install openpyxl")
+                        return
+                    try:
+                        df = pd.read_excel(file_path)
+                    except Exception as e:
+                        info_text += f"\n{os.path.basename(file_path)}: Error reading Excel - {str(e)}"
+                        continue
                     
                 # Display basic information for this file
                 file_experiments = len(df)
@@ -4105,14 +4115,20 @@ Output Files:
         # Get parameter file data if available
         param_data = self.get_param_file_data()
         if param_data:
-            # Count Excel files in the parameter folder
+            # Count parameter files (Excel/CSV) in the parameter folder
             folder_path = self.param_folder_path.text()
-            excel_count = 0
+            total_count = 0
+            num_xlsx = 0
+            num_csv = 0
             if folder_path and os.path.exists(folder_path):
                 for file in os.listdir(folder_path):
-                    if file.lower().endswith(('.xlsx', '.xls')):
-                        excel_count += 1
-            self.progress_text.append(f"Loaded {excel_count} parameter files with {len(param_data)} total experiments")
+                    if file.lower().endswith(('.xlsx', '.xls', '.csv')):
+                        total_count += 1
+                        if file.lower().endswith('.csv'):
+                            num_csv += 1
+                        else:
+                            num_xlsx += 1
+            self.progress_text.append(f"Loaded {total_count} parameter files (Excel: {num_xlsx}, CSV: {num_csv}) with {len(param_data)} total experiments")
         else:
             self.progress_text.append("No parameter files provided - using default file names")
         
