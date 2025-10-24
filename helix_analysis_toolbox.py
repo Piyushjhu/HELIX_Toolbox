@@ -1790,6 +1790,21 @@ class PostProcessingWorker(QObject):
                 for i, (key, val) in enumerate(list(param_data.items())[:3]):
                     material = val.get('Sample material', 'Unknown') if isinstance(val, dict) else 'Unknown'
                     self.progress.emit(f"  - {key}: {material}")
+                # Show first velocity filename for comparison
+                if files:
+                    first_vel_file = os.path.basename(files[0])
+                    first_vel_base = os.path.splitext(first_vel_file)[0]
+                    self.progress.emit(f"First velocity file: {first_vel_file}")
+                    self.progress.emit(f"First velocity basename: {first_vel_base}")
+                    # Check if it exists in param_data
+                    if first_vel_base in param_data:
+                        self.progress.emit(f"✓ MATCH found in param_data")
+                    else:
+                        self.progress.emit(f"✗ NO MATCH in param_data")
+                        # Try to find similar keys
+                        similar = [k for k in param_data.keys() if first_vel_base[:10] in k or k[:10] in first_vel_base]
+                        if similar:
+                            self.progress.emit(f"Similar keys in param_data: {similar[:3]}")
             else:
                 self.progress.emit("⚠ No parameter data loaded - material will be 'Unknown'")
             
