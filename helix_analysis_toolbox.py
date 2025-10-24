@@ -1827,16 +1827,37 @@ class PostProcessingWorker(QObject):
             material_colors = {}
             file_material_map = {}
             
-            # Get axis limits first
-            use_custom_limits = not current_params.get('auto_calculate_limits', True)
-            if use_custom_limits:
-                x_min_main = float(current_params.get('x_min_main', 0))
-                x_max_main = float(current_params.get('x_max_main', 100))
-                y_min_main = float(current_params.get('y_min_main', 0))
-                y_max_main = float(current_params.get('y_max_main', 600))
-                self.progress.emit(f"Using custom limits: X({x_min_main}-{x_max_main}), Y({y_min_main}-{y_max_main})")
-            else:
-                self.progress.emit("Using auto axis limits")
+            # First pass: collect all unique materials to assign colors consistently
+            self.progress.emit("Scanning materials...")
+            unique_materials = set()
+            for i, file_path in enumerate(sorted(files)):
+                try:
+                    filename = os.path.basename(file_path)
+                    base_name = os.path.splitext(filename)[0]
+                    
+                    # Strip velocity-specific suffixes
+                    for suffix in ['--vel-smooth-with-uncert', '--vel-smooth', '--velocity', '--vel']:
+                        if base_name.endswith(suffix):
+                            base_name = base_name[:-len(suffix)]
+                            break
+                    
+                    material = "Unknown"
+                    if param_data and base_name in param_data:
+                        material = param_data[base_name].get('Sample material', 'Unknown')
+                        if isinstance(material, str):
+                            material = material.strip()
+                    
+                    unique_materials.add(material)
+                except Exception:
+                    pass
+            
+            # Assign distinct colors to each material
+            unique_materials_sorted = sorted(list(unique_materials))
+            cmap = plt.get_cmap('tab20')
+            for i, material in enumerate(unique_materials_sorted):
+                material_colors[material] = cmap(i / max(len(unique_materials_sorted), 1))
+            
+            self.progress.emit(f"Found {len(unique_materials_sorted)} unique materials")
             
             for i, file_path in enumerate(sorted(files)):
                 try:
@@ -1965,18 +1986,19 @@ class PostProcessingWorker(QObject):
                     x_max_main = float(current_params.get('x_max_main', 100))
                     y_min_main = float(current_params.get('y_min_main', 0))
                     y_max_main = float(current_params.get('y_max_main', 600))
-                    # Apply to BOTH top and zoom subplots
+                    # Apply to top subplot
                     ax1.set_xlim(x_min_main, x_max_main)
                     ax1.set_ylim(y_min_main, y_max_main)
                     self.progress.emit(f"Applied top limits: X({x_min_main}-{x_max_main}), Y({y_min_main}-{y_max_main})")
                     
                     x_min_zoom = float(current_params.get('x_min_zoom', 0))
-                    x_max_zoom = float(current_params.get('x_max_zoom', zoom_ns))
-                    y_min_zoom = float(current_params.get('y_min_zoom', y_min_main))
-                    y_max_zoom = float(current_params.get('y_max_zoom', y_max_main))
+                    x_max_zoom = float(current_params.get('x_max_zoom', 50))
+                    y_min_zoom = float(current_params.get('y_min_zoom', 0))
+                    y_max_zoom = float(current_params.get('y_max_zoom', 300))
                     ax2.set_xlim(x_min_zoom, x_max_zoom)
                     ax2.set_ylim(y_min_zoom, y_max_zoom)
-                    ax2.set_title(f'Zoomed Velocity Traces ({int(x_min_zoom)} to {int(x_max_zoom)} ns)', fontsize=14)
+                    ax2.set_title(f'Zoomed Velocity Traces ({int(x_min_zoom)}-{int(x_max_zoom)} ns)', fontsize=14)
+                    self.progress.emit(f"Applied zoom limits: X({x_min_zoom}-{x_max_zoom}), Y({y_min_zoom}-{y_max_zoom})")
                 else:
                     ax2.set_xlim(0, zoom_ns)
                     ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
@@ -2850,6 +2872,8 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.pp_auto_limits.setChecked(False)  # Default to custom limits
         axis_layout.addWidget(self.pp_auto_limits, 0, 0)
 
+        # Main (top) subplot limits
+        axis_layout.addWidget(QLabel("Main Subplot:"), 0, 1)
         axis_layout.addWidget(QLabel("X min (ns):"), 1, 0)
         self.pp_xmin = QDoubleSpinBox()
         self.pp_xmin.setRange(-1e6, 1e6)
@@ -2877,6 +2901,36 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.pp_ymax.setDecimals(2)
         self.pp_ymax.setValue(600.0)
         axis_layout.addWidget(self.pp_ymax, 2, 3)
+
+        # Zoom (bottom) subplot limits
+        axis_layout.addWidget(QLabel("Zoom Subplot:"), 3, 1)
+        axis_layout.addWidget(QLabel("X min (ns):"), 4, 0)
+        self.pp_zoom_xmin = QDoubleSpinBox()
+        self.pp_zoom_xmin.setRange(-1e6, 1e6)
+        self.pp_zoom_xmin.setDecimals(2)
+        self.pp_zoom_xmin.setValue(0.0)
+        axis_layout.addWidget(self.pp_zoom_xmin, 4, 1)
+
+        axis_layout.addWidget(QLabel("X max (ns):"), 4, 2)
+        self.pp_zoom_xmax = QDoubleSpinBox()
+        self.pp_zoom_xmax.setRange(-1e6, 1e6)
+        self.pp_zoom_xmax.setDecimals(2)
+        self.pp_zoom_xmax.setValue(50.0)
+        axis_layout.addWidget(self.pp_zoom_xmax, 4, 3)
+
+        axis_layout.addWidget(QLabel("Y min (m/s):"), 5, 0)
+        self.pp_zoom_ymin = QDoubleSpinBox()
+        self.pp_zoom_ymin.setRange(-1e6, 1e6)
+        self.pp_zoom_ymin.setDecimals(2)
+        self.pp_zoom_ymin.setValue(0.0)
+        axis_layout.addWidget(self.pp_zoom_ymin, 5, 1)
+
+        axis_layout.addWidget(QLabel("Y max (m/s):"), 5, 2)
+        self.pp_zoom_ymax = QDoubleSpinBox()
+        self.pp_zoom_ymax.setRange(-1e6, 1e6)
+        self.pp_zoom_ymax.setDecimals(2)
+        self.pp_zoom_ymax.setValue(300.0)
+        axis_layout.addWidget(self.pp_zoom_ymax, 5, 3)
 
         # Actions
         action_layout = QHBoxLayout()
@@ -2922,15 +2976,18 @@ class HELIXAnalysisToolbox(QMainWindow):
         # Temporarily override SPADE params for plotting routines
         self.spade_params['auto_calculate_limits'] = self.pp_auto_limits.isChecked()
         if not self.pp_auto_limits.isChecked():
+            # Main (top) subplot limits
             self.spade_params['x_min_main'] = self.pp_xmin.value()
             self.spade_params['x_max_main'] = self.pp_xmax.value()
             self.spade_params['y_min_main'] = self.pp_ymin.value()
             self.spade_params['y_max_main'] = self.pp_ymax.value()
-            # Keep zoom consistent with main if not otherwise desired
-            self.spade_params['x_min_zoom'] = self.pp_xmin.value()
-            self.spade_params['x_max_zoom'] = self.pp_xmax.value()
-            self.spade_params['y_min_zoom'] = self.pp_ymin.value()
-            self.spade_params['y_max_zoom'] = self.pp_ymax.value()
+            
+            # Zoom (bottom) subplot limits
+            self.spade_params['x_min_zoom'] = self.pp_zoom_xmin.value()
+            self.spade_params['x_max_zoom'] = self.pp_zoom_xmax.value()
+            self.spade_params['y_min_zoom'] = self.pp_zoom_ymin.value()
+            self.spade_params['y_max_zoom'] = self.pp_zoom_ymax.value()
+        
         self.spade_params['zoom_window_ns'] = self.pp_zoom_ns.value()
 
     def pp_preview_plots(self):
