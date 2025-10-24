@@ -3019,6 +3019,7 @@ class HELIXAnalysisToolbox(QMainWindow):
 
         self.experiment_hel_detection = QCheckBox("HEL Detection")
         self.experiment_hel_detection.setChecked(False)
+        self.experiment_hel_detection.toggled.connect(self.on_hel_detection_toggled)
         experiment_layout.addWidget(self.experiment_hel_detection)
         
         # Description text for experiment types
@@ -3071,8 +3072,8 @@ class HELIXAnalysisToolbox(QMainWindow):
         layout.addWidget(model_group)
 
         # HEL Detection parameters
-        hel_group = QGroupBox("HEL Detection Parameters")
-        hel_layout = QGridLayout(hel_group)
+        self.hel_group = QGroupBox("HEL Detection Parameters")
+        hel_layout = QGridLayout(self.hel_group)
         hel_layout.setSpacing(10)
 
         hel_layout.addWidget(QLabel("HEL Start Time (ns):"), 0, 0)
@@ -3096,7 +3097,9 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.hel_angle_threshold_deg.setValue(45.0)
         hel_layout.addWidget(self.hel_angle_threshold_deg, 1, 1)
 
-        layout.addWidget(hel_group)
+        # Initially hidden unless HEL Detection is enabled
+        self.hel_group.setVisible(self.experiment_hel_detection.isChecked())
+        layout.addWidget(self.hel_group)
         
         # Signal length
         signal_group = QGroupBox("Signal Length")
@@ -3678,6 +3681,13 @@ Output Files:
             self.spade_input_path.setEnabled(True)
             self.spade_input_btn.setEnabled(True)
             self.spade_file_pattern.setEnabled(True)
+    
+    def on_hel_detection_toggled(self, checked):
+        """Show/Hide HEL parameters group based on checkbox."""
+        try:
+            self.hel_group.setVisible(bool(checked))
+        except Exception:
+            pass
             
     def toggle_signal_length_spin(self):
         """Toggle signal length spin box based on combo selection"""
