@@ -4091,6 +4091,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.hel_start_time_ns.setRange(-1000.0, 1000.0)
         self.hel_start_time_ns.setDecimals(2)
         self.hel_start_time_ns.setValue(0.0)
+        self.hel_start_time_ns.setToolTip("Relative to t=0 (after alignment). Start HEL analysis window.")
         hel_layout.addWidget(self.hel_start_time_ns, 0, 1)
 
         hel_layout.addWidget(QLabel("HEL End Time (ns):"), 0, 2)
@@ -4098,6 +4099,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.hel_end_time_ns.setRange(-1000.0, 5000.0)
         self.hel_end_time_ns.setDecimals(2)
         self.hel_end_time_ns.setValue(12.0)
+        self.hel_end_time_ns.setToolTip("Relative to t=0 (after alignment). End HEL analysis window.")
         hel_layout.addWidget(self.hel_end_time_ns, 0, 3)
 
         hel_layout.addWidget(QLabel("Angle Threshold (deg):"), 1, 0)
