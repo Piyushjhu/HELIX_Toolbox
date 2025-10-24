@@ -433,8 +433,7 @@ class AnalysisThread(QThread):
                                 output_folder=spade_output_dir,
                                 summary_table_name=os.path.join(
                                     spade_output_dir, "spall_summary.csv"),
-                                plot_individual=self.spade_params.get(
-                                    'plot_individual', True),
+                                plot_individual=False,
                                 **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                             )
 
@@ -513,8 +512,7 @@ class AnalysisThread(QThread):
                             output_folder=spade_output_dir,
                             summary_table_name=os.path.join(
                                 spade_output_dir, "spall_summary.csv"),
-                            plot_individual=self.spade_params.get(
-                                'plot_individual', True),
+                            plot_individual=False,
                             **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                         )
 
