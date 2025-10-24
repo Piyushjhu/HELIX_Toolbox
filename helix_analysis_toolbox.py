@@ -2173,6 +2173,15 @@ class PostProcessingWorker(QObject):
                 ax.set_ylabel('Velocity (m/s)', fontsize=10)
                 ax.set_title(f'{material} ({traces_in_material} traces)', fontsize=12, color=color, fontweight='bold')
                 ax.grid(True, alpha=0.3)
+
+                # Apply axis limits from current_params
+                if not current_params.get("auto_calculate_limits", True):
+                    x_min = current_params.get("x_min_main", 0.0)
+                    x_max = current_params.get("x_max_main", 100.0)
+                    y_min = current_params.get("y_min_main", 0.0)
+                    y_max = current_params.get("y_max_main", 600.0)
+                    ax.set_xlim(x_min, x_max)
+                    ax.set_ylim(y_min, y_max)
             
             # Hide unused subplots
             for idx in range(num_materials, len(axes)):
@@ -3022,6 +3031,15 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.pp_zoom_ns.setValue(1000)
         opt_layout.addWidget(self.pp_zoom_ns, 2, 1)
 
+        opt_layout.addWidget(QLabel("Alignment Threshold (m/s):"), 3, 0)
+        self.pp_align_threshold = QDoubleSpinBox()
+        self.pp_align_threshold.setRange(0.0, 1000.0)
+        self.pp_align_threshold.setDecimals(2)
+        self.pp_align_threshold.setValue(30.0)
+        self.pp_align_threshold.setSuffix(" m/s")
+        self.pp_align_threshold.setToolTip("Align traces to first velocity ≥ threshold (t=0)")
+        opt_layout.addWidget(self.pp_align_threshold, 3, 1)
+
         # Axis limits
         axis_group = QGroupBox("Axis Limits")
         axis_layout = QGridLayout(axis_group)
@@ -3147,6 +3165,7 @@ class HELIXAnalysisToolbox(QMainWindow):
             self.spade_params['y_max_zoom'] = self.pp_zoom_ymax.value()
         
         self.spade_params['zoom_window_ns'] = self.pp_zoom_ns.value()
+        self.spade_params['align_velocity_threshold_ms'] = self.pp_align_threshold.value()
 
     def pp_preview_plots(self):
         try:
