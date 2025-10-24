@@ -2181,15 +2181,15 @@ class HELIXAnalysisToolbox(QMainWindow):
         file_group = QGroupBox("File Selection")
         file_layout = QVBoxLayout(file_group)
         
-        # Single file selection
+        # Manual file selection (pick multiple files individually)
         single_file_layout = QHBoxLayout()
-        self.single_file_radio = QCheckBox("Single File")
+        self.single_file_radio = QCheckBox("Manual Select")
         self.single_file_radio.setChecked(True)
         self.single_file_radio.toggled.connect(self.on_file_mode_changed)
         single_file_layout.addWidget(self.single_file_radio)
         
         self.single_file_path = QLineEdit()
-        self.single_file_path.setPlaceholderText("Select input file...")
+        self.single_file_path.setPlaceholderText("Select input file(s)...")
         single_file_layout.addWidget(self.single_file_path)
         
         self.single_file_btn = QPushButton("Browse")
@@ -3415,7 +3415,7 @@ Input Requirements:
 How to Use This GUI:
 
 1. File Selection Tab:
-   - Choose single file or multiple files mode
+   - Choose Manual Select (pick files individually) or Multiple Files (directory)
    - Select input files or directory
    - Set output directory
 
@@ -3622,13 +3622,13 @@ Output Files:
     # Experiment type change handler removed - now allows both options to be selected
             
     def select_single_file(self):
-        """Select single input file"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Input File", "", 
-            "CSV Files (*.csv);;Text Files (*.txt);;All Files (*)"
+        """Select one or more input files (manual selection)"""
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Input File(s)", "", 
+            "Data Files (*.csv *.txt);;CSV Files (*.csv);;Text Files (*.txt);;All Files (*)"
         )
-        if file_path:
-            self.single_file_path.setText(file_path)
+        if file_paths:
+            self.single_file_path.setText(";".join(file_paths))
             self.update_file_list()
             
     def select_multi_file_dir(self):
@@ -3817,9 +3817,14 @@ Output Files:
             self.file_list.clear()
             
             if self.single_file_radio.isChecked():
-                file_path = self.single_file_path.text()
-                if file_path and os.path.exists(file_path):
-                    self.file_list.appendPlainText(f"Single file: {os.path.basename(file_path)}")
+                file_text = self.single_file_path.text()
+                if file_text:
+                    paths = [p for p in file_text.split(";") if p]
+                    valid_paths = [p for p in paths if os.path.exists(p)]
+                    if valid_paths:
+                        self.file_list.appendPlainText(f"Manual Select: {len(valid_paths)} file(s)")
+                        for p in valid_paths:
+                            self.file_list.appendPlainText(f"  • {os.path.basename(p)}")
             else:
                 dir_path = self.multi_file_path.text()
                 pattern = self.file_pattern.text()
@@ -3852,9 +3857,10 @@ Output Files:
     def get_input_files(self):
         """Get list of input files based on current selection"""
         if self.single_file_radio.isChecked():
-            file_path = self.single_file_path.text()
-            if file_path and os.path.exists(file_path):
-                return [file_path]
+            file_text = self.single_file_path.text()
+            if file_text:
+                paths = [p for p in file_text.split(";") if p]
+                return [p for p in paths if os.path.exists(p)]
         else:
             dir_path = self.multi_file_path.text()
             pattern = self.file_pattern.text()
