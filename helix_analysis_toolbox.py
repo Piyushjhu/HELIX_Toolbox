@@ -3823,24 +3823,26 @@ Output Files:
             
     def select_spade_input(self):
         """Select SPADE input files or directory"""
-        # Ask user if they want to select files or directory
-        reply = QMessageBox.question(
-            self, "SPADE Input Selection",
-            "Do you want to select individual files or a directory?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-        
-        if reply == QMessageBox.Yes:
-            # Select individual files
+        # Provide clear options: Individual Files or Directory
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("SPADE Input Selection")
+        dialog.setText("Choose how to select SPADE input:")
+        btn_files = dialog.addButton("Individual Files", QMessageBox.AcceptRole)
+        btn_dir = dialog.addButton("Directory", QMessageBox.AcceptRole)
+        dialog.addButton(QMessageBox.Cancel)
+        dialog.exec_()
+
+        clicked = dialog.clickedButton()
+        if clicked == btn_files:
+            # Select one or multiple individual files
             file_paths, _ = QFileDialog.getOpenFileNames(
-                self, "Select Velocity Files", "",
+                self, "Select Velocity File(s)", "",
                 "CSV Files (*.csv);;All Files (*)"
             )
             if file_paths:
                 self.spade_input_path.setText(";".join(file_paths))
-        else:
-            # Select directory
+        elif clicked == btn_dir:
+            # Select a directory
             dir_path = QFileDialog.getExistingDirectory(self, "Select Velocity Files Directory")
             if dir_path:
                 self.spade_input_path.setText(dir_path)
