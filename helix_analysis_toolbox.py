@@ -2563,8 +2563,8 @@ class HELIXAnalysisToolbox(QMainWindow):
             spade_out = os.path.join(out_dir, "SPADE_analysis")
             os.makedirs(spade_out, exist_ok=True)
             # Re-generate 'all velocity traces' plot only for preview
-            self.generate_all_velocity_traces_plot(out_dir, spade_out, self.spade_params.get('uncertainty_threshold_ms', 50.0))
-            self.pp_preview.appendPlainText("Preview generated: all_velocity_traces.png")
+            self.pp_regenerate_velocity_plot(out_dir, spade_out)
+            self.pp_preview.appendPlainText("✓ Preview generated: all_velocity_traces.png")
         except Exception as e:
             self.pp_preview.appendPlainText(f"Error generating preview: {e}")
 
@@ -2577,13 +2577,156 @@ class HELIXAnalysisToolbox(QMainWindow):
             self.pp_apply_limits_to_spade_params()
             spade_out = os.path.join(out_dir, "SPADE_analysis")
             os.makedirs(spade_out, exist_ok=True)
-            # Regenerate combined plot (requires in-memory velocity plot data only available post-run)
-            # Fallback: run the comprehensive all-traces generator
-            self.generate_all_velocity_traces_plot(out_dir, spade_out, self.spade_params.get('uncertainty_threshold_ms', 50.0))
-            self.pp_preview.appendPlainText("Saved updated plots to SPADE_analysis/")
+            # Regenerate plots
+            self.pp_regenerate_velocity_plot(out_dir, spade_out)
+            self.pp_preview.appendPlainText("✓ Saved updated plots to SPADE_analysis/")
         except Exception as e:
             self.pp_preview.appendPlainText(f"Error saving plots: {e}")
+
+    def pp_regenerate_velocity_plot(self, input_path, spade_output_dir):
+        """Regenerate all velocity traces plot with current axis settings for post-processing."""
+        import glob
+        import pandas as pd
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        pattern = os.path.join(input_path, '**/*--vel-smooth-with-uncert.csv')
+        files = glob.glob(pattern, recursive=True)
+        files = [f for f in files if os.path.getsize(f) > 0]
+        if not files:
+            self.pp_preview.appendPlainText("No velocity files found for regeneration")
+            return
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
+        cmap = plt.get_cmap('tab10')
+        colors = cmap(np.linspace(0, 1, max(1, len(files))))
+
+        traces_plotted = 0
+        align_threshold = self.spade_params.get('align_velocity_threshold_ms', 30.0)
+        zoom_ns = int(self.spade_params.get('zoom_window_ns', 1000))
+
+        for i, file_path in enumerate(sorted(files)):
+            try:
+                df = pd.read_csv(file_path)
+                if df.shape[1] < 3:
+                    continue
+                time_data = df.iloc[:, 0].values
+                velocity_data = df.iloc[:, 1].values
+                uncertainty_data = df.iloc[:, 2].values
+
+                # Convert time to ns if needed
+                if np.nanmax(time_data) < 1e-3:
+                    time_data = time_data * 1e9
+                elif np.nanmax(time_data) < 1.0:
+                    time_data = time_data * 1e3
+
+                # Noise fraction filtering
+                noise_file = file_path.replace('--vel-smooth-with-uncert.csv', '--noise--frac.csv')
+                high_noise_mask = None
+                if os.path.exists(noise_file):
+                    try:
+                        df_noise = pd.read_csv(noise_file)
+                        if df_noise.shape[1] >= 1:
+                            noise_fraction = df_noise.iloc[:, -1].values
+                            if len(noise_fraction) == len(velocity_data):
+                                high_noise_mask = noise_fraction > 1.0
+                    except Exception:
+                        pass
+
+                valid_mask = ~np.isnan(velocity_data)
+                if high_noise_mask is not None:
+                    valid_mask &= (~high_noise_mask)
+                # Uncertainty threshold filtering
+                uncertainty_threshold = self.spade_params.get('uncertainty_threshold_ms', 50.0)
+                if uncertainty_data is not None:
+                    valid_mask &= (uncertainty_data <= uncertainty_threshold)
+
+                time_clean = time_data[valid_mask]
+                velocity_clean = velocity_data[valid_mask]
+                uncert_clean = uncertainty_data[valid_mask] if uncertainty_data is not None else None
+                if len(time_clean) == 0:
+                    continue
+
+                # Align at first >= threshold
+                t0_idx = None
+                for j, v in enumerate(velocity_clean):
+                    if not np.isnan(v) and v >= align_threshold:
+                        t0_idx = j
+                        break
+                if t0_idx is not None:
+                    t0 = time_clean[t0_idx]
+                    time_clean = time_clean - t0
+
+                color = colors[i % len(colors)]
+                ax1.plot(time_clean, velocity_clean, color=color, alpha=0.7, linewidth=1)
+                # Optional uncertainty bands
+                if self.spade_params.get('include_uncert_bands', True) and uncert_clean is not None:
+                    alpha = float(self.spade_params.get('uncert_alpha', 0.2))
+                    ax1.fill_between(time_clean,
+                                     velocity_clean - uncert_clean,
+                                     velocity_clean + uncert_clean,
+                                     color=color, alpha=alpha)
+
+                # Bottom zoom window
+                mask_zoom = time_clean <= zoom_ns
+                if np.any(mask_zoom):
+                    ax2.plot(time_clean[mask_zoom], velocity_clean[mask_zoom], color=color, alpha=0.7, linewidth=1)
+                    if self.spade_params.get('include_uncert_bands', True) and uncert_clean is not None:
+                        alpha = float(self.spade_params.get('uncert_alpha', 0.2))
+                        ax2.fill_between(time_clean[mask_zoom],
+                                         (velocity_clean - uncert_clean)[mask_zoom],
+                                         (velocity_clean + uncert_clean)[mask_zoom],
+                                         color=color, alpha=alpha)
+
+                traces_plotted += 1
+            except Exception as e:
+                self.pp_preview.appendPlainText(f"Warning: Could not process {os.path.basename(file_path)}: {str(e)[:50]}")
+                continue
+
+        # Labels and axis limits
+        ax1.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
+        ax1.set_ylabel('Velocity (m/s)', fontsize=12)
+        ax1.set_title(f'All Velocity Traces (Aligned) - {traces_plotted} traces', fontsize=14)
+        ax1.grid(True, alpha=0.3)
+
+        ax2.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
+        ax2.set_ylabel('Velocity (m/s)', fontsize=12)
+        ax2.grid(True, alpha=0.3)
+
+        # Apply axis limits from post-processing settings
+        try:
+            if not self.spade_params.get('auto_calculate_limits', True):
+                x_min_main = float(self.spade_params.get('x_min_main', 0))
+                x_max_main = float(self.spade_params.get('x_max_main', 100))
+                y_min_main = float(self.spade_params.get('y_min_main', 0))
+                y_max_main = float(self.spade_params.get('y_max_main', 600))
+                ax1.set_xlim(x_min_main, x_max_main)
+                ax1.set_ylim(y_min_main, y_max_main)
+
+                x_min_zoom = float(self.spade_params.get('x_min_zoom', 0))
+                x_max_zoom = float(self.spade_params.get('x_max_zoom', zoom_ns))
+                y_min_zoom = float(self.spade_params.get('y_min_zoom', y_min_main))
+                y_max_zoom = float(self.spade_params.get('y_max_zoom', y_max_main))
+                ax2.set_xlim(x_min_zoom, x_max_zoom)
+                ax2.set_ylim(y_min_zoom, y_max_zoom)
+                ax2.set_title(f'Zoomed Velocity Traces ({int(x_min_zoom)} to {int(x_max_zoom)} ns)', fontsize=14)
+            else:
+                ax2.set_xlim(0, zoom_ns)
+                ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
+        except Exception as e:
+            self.pp_preview.appendPlainText(f"Warning: Could not apply axis limits: {str(e)[:50]}")
+            ax2.set_xlim(0, zoom_ns)
+            ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
+
+        plt.tight_layout()
+
+        # Save plot
+        plot_path = os.path.join(spade_output_dir, 'all_velocity_traces.png')
+        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
         
+        self.pp_preview.appendPlainText(f"Saved to: {plot_path}")
+
     def create_alpss_params_tab(self):
         """Create ALPSS parameters tab"""
         tab = QWidget()
