@@ -15,6 +15,8 @@ from sklearn.linear_model import ElasticNetCV, LassoCV # Added LassoCV
 from sklearn.preprocessing import MinMaxScaler, StandardScaler # Import both scalers
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import GroupKFold, cross_val_score
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import warnings
 import math # Needed for Wilkerson helpers

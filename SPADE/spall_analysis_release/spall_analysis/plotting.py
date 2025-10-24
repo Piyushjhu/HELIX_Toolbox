@@ -11,6 +11,9 @@ Plotting functions for visualizing analysis results and comparisons.
 """
 # --- Consolidated Imports ---
 import pandas as pd
+import matplotlib
+# Enforce non-interactive backend in any environment (GUI must not be required)
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import os

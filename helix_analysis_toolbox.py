@@ -12,6 +12,9 @@ import time
 import json
 import pandas as pd
 import numpy as np
+import matplotlib
+# Set non-interactive backend BEFORE importing pyplot or SPADE to avoid macOS aborts
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pathlib import Path
 
@@ -25,10 +28,6 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QObject
 from PyQt5.QtGui import QFont, QValidator
 from SPADE.spall_analysis_release.spall_analysis import plot_combined_mean_traces, plot_spall_vs_strain_rate, plot_spall_vs_shock_stress
-
-# Configure matplotlib for non-interactive backend
-import matplotlib
-matplotlib.use('Agg')  # Set non-interactive backend
 from datetime import datetime
 
 def cleanup_matplotlib():

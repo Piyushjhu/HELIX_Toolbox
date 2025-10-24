@@ -6,6 +6,9 @@ Supports multiple analysis models and user-defined material properties.
 
 import pandas as pd
 import numpy as np
+import matplotlib
+# Force non-interactive backend to avoid GUI usage in threads/background
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from scipy.signal import savgol_filter, find_peaks
@@ -140,13 +143,19 @@ def _find_intersection(m1, c1, m2, c2):
     return x_intersect, y_intersect
 
 # --- Plotting Function ---
-def _plot_analysis_results(data_dict, lines_info, intersections, output_path):
-    """ Plots trace, smoothed data, fitted lines, and intersections. """
+def _plot_analysis_results(data_dict, lines_info, intersections, output_path, axis_limits=None):
+    """ Plots trace, smoothed data, fitted lines, and intersections.
+
+    axis_limits: Optional dict with keys:
+        - auto_calculate_limits: bool
+        - x_min_main, x_max_main, y_min_main, y_max_main: floats
+    """
     if not output_path:
         return
     import matplotlib.pyplot as plt
-    x_trace = data_dict.get('x_shifted', pd.Series(dtype=float))
-    y_trace = data_dict.get('y_original', pd.Series(dtype=float))
+    # Prefer full-length aligned trace if provided; fall back to cropped
+    x_trace = data_dict.get('x_shifted_full', data_dict.get('x_shifted', pd.Series(dtype=float)))
+    y_trace = data_dict.get('y_original_full', data_dict.get('y_original', pd.Series(dtype=float)))
     y_smooth = data_dict.get('y_smooth', pd.Series(dtype=float))
     uncertainty = data_dict.get('uncertainty', pd.Series(dtype=float))
     filename = data_dict.get('filename', 'Unknown Filename')
@@ -199,6 +208,21 @@ def _plot_analysis_results(data_dict, lines_info, intersections, output_path):
             min_y, max_y = np.nanmin(all_y), np.nanmax(all_y)
             ax.set_ylim(min_y - 50, max_y + 100)
         
+        # Apply axis limits if provided
+        try:
+            if isinstance(axis_limits, dict) and not axis_limits.get('auto_calculate_limits', True):
+                x_min = float(axis_limits.get('x_min_main', np.nan))
+                x_max = float(axis_limits.get('x_max_main', np.nan))
+                y_min = float(axis_limits.get('y_min_main', np.nan))
+                y_max = float(axis_limits.get('y_max_main', np.nan))
+                if np.isfinite(x_min) and np.isfinite(x_max):
+                    ax.set_xlim(x_min, x_max)
+                if np.isfinite(y_min) and np.isfinite(y_max):
+                    ax.set_ylim(y_min, y_max)
+        except Exception:
+            # Safe to ignore axis limit issues; fall back to autoscale
+            pass
+
         fig.tight_layout()
         plt.savefig(output_path, dpi=150)
         logger.debug(f"    Successfully saved plot: {os.path.basename(output_path)}")
@@ -531,6 +555,15 @@ def calculate_spall_parameters(
         t_shift = df['time'][initial_rise_idx]
         df['time_shifted'] = df['time'] - t_shift
 
+        # Preserve full-length shifted series for plotting (to show pre-t0 data)
+        df_full = df.copy()
+        # Keep full aligned series for potential plotting
+        current_data_dict.update({
+            'x_shifted_full': df_full['time_shifted'],
+            'y_original_full': df_full['velocity'],
+        })
+
+        # Analysis uses post-t0 data only
         df_final = df[df['time_shifted'] >= 0].reset_index(drop=True)
         
         # Apply smoothing only if not skipped (for ALPSS pre-smoothed data)
@@ -574,7 +607,15 @@ def calculate_spall_parameters(
     results['Error Message'] = error_message
     
     if status == 'Success' and plot_path:
-        _plot_analysis_results(current_data_dict, lines_info, intersections, plot_path)
+        # Pass through axis limits if provided in kwargs
+        axis_limits = {
+            'auto_calculate_limits': kwargs.get('auto_calculate_limits', True),
+            'x_min_main': kwargs.get('x_min_main'),
+            'x_max_main': kwargs.get('x_max_main'),
+            'y_min_main': kwargs.get('y_min_main'),
+            'y_max_main': kwargs.get('y_max_main'),
+        }
+        _plot_analysis_results(current_data_dict, lines_info, intersections, plot_path, axis_limits=axis_limits)
             
     return results, lines_info, intersections
 
