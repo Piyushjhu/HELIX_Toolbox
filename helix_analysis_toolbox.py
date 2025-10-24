@@ -3016,6 +3016,10 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.experiment_spall_analysis = QCheckBox("Spall Analysis")
         self.experiment_spall_analysis.setChecked(False)
         experiment_layout.addWidget(self.experiment_spall_analysis)
+
+        self.experiment_hel_detection = QCheckBox("HEL Detection")
+        self.experiment_hel_detection.setChecked(False)
+        experiment_layout.addWidget(self.experiment_hel_detection)
         
         # Description text for experiment types
         experiment_desc = QPlainTextEdit()
@@ -3065,6 +3069,34 @@ class HELIXAnalysisToolbox(QMainWindow):
         model_layout.addWidget(self.analysis_model, 0, 1)
         
         layout.addWidget(model_group)
+
+        # HEL Detection parameters
+        hel_group = QGroupBox("HEL Detection Parameters")
+        hel_layout = QGridLayout(hel_group)
+        hel_layout.setSpacing(10)
+
+        hel_layout.addWidget(QLabel("HEL Start Time (ns):"), 0, 0)
+        self.hel_start_time_ns = QDoubleSpinBox()
+        self.hel_start_time_ns.setRange(-1000.0, 1000.0)
+        self.hel_start_time_ns.setDecimals(2)
+        self.hel_start_time_ns.setValue(0.0)
+        hel_layout.addWidget(self.hel_start_time_ns, 0, 1)
+
+        hel_layout.addWidget(QLabel("HEL End Time (ns):"), 0, 2)
+        self.hel_end_time_ns = QDoubleSpinBox()
+        self.hel_end_time_ns.setRange(-1000.0, 5000.0)
+        self.hel_end_time_ns.setDecimals(2)
+        self.hel_end_time_ns.setValue(12.0)
+        hel_layout.addWidget(self.hel_end_time_ns, 0, 3)
+
+        hel_layout.addWidget(QLabel("Angle Threshold (deg):"), 1, 0)
+        self.hel_angle_threshold_deg = QDoubleSpinBox()
+        self.hel_angle_threshold_deg.setRange(1.0, 89.0)
+        self.hel_angle_threshold_deg.setDecimals(1)
+        self.hel_angle_threshold_deg.setValue(45.0)
+        hel_layout.addWidget(self.hel_angle_threshold_deg, 1, 1)
+
+        layout.addWidget(hel_group)
         
         # Signal length
         signal_group = QGroupBox("Signal Length")
@@ -4130,6 +4162,11 @@ Output Files:
             # Experiment types
             'velocity_shots_enabled': velocity_shots_enabled,
             'spall_analysis_enabled': spall_analysis_enabled,
+            'hel_detection_enabled': self.experiment_hel_detection.isChecked(),
+            # HEL parameters
+            'hel_start_time_ns': self.hel_start_time_ns.value(),
+            'hel_end_time_ns': self.hel_end_time_ns.value(),
+            'hel_angle_threshold_deg': self.hel_angle_threshold_deg.value(),
             # Axis limits for combined plots
             'auto_calculate_limits': self.auto_calculate_limits.isChecked(),
             'x_min_main': self.x_min_main.value(),
