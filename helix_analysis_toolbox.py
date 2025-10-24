@@ -909,54 +909,67 @@ class AnalysisThread(QThread):
         try:
             import matplotlib.pyplot as plt
             import matplotlib.patches as mpatches
+            import numpy as np
             
             # Create figure
             fig, ax = plt.subplots(figsize=(12, 8))
             
-            # Color mapping for materials
-            material_colors = {
-                'Al': 'blue',
-                'Cu': 'red', 
-                'Ti': 'green',
-                'Steel': 'orange',
-                'Other': 'purple'
-            }
-            
-            # Track used materials for legend
-            used_materials = set()
-            
+            # Helper to extract material from parameter info using explicit 'Sample material' column
+            def extract_material(param_info_dict):
+                if not param_info_dict or not isinstance(param_info_dict, dict):
+                    return 'Unknown'
+                # Normalize keys once
+                normalized = {}
+                for k, v in param_info_dict.items():
+                    key_norm = ''.join(ch for ch in k.lower() if ch.isalnum())
+                    normalized[key_norm] = v
+                # Preferred explicit columns
+                preferred_keys = [
+                    'samplematerial', 'samplemat', 'sample', 'material', 'flyermaterial'
+                ]
+                for pk in preferred_keys:
+                    if pk in normalized and str(normalized[pk]).strip() != '':
+                        return str(normalized[pk]).strip()
+                # Fallback: scan values for common material tokens
+                for v in param_info_dict.values():
+                    val = str(v).strip()
+                    if not val:
+                        continue
+                    low = val.lower()
+                    if any(tok in low for tok in ['al', 'aluminum', 'aluminium']):
+                        return val
+                    if any(tok in low for tok in ['cu', 'copper']):
+                        return val
+                    if any(tok in low for tok in ['ti', 'titanium']):
+                        return val
+                    if 'steel' in low:
+                        return val
+                return 'Unknown'
+
+            # Build list of (time, velocity, material)
+            plotted = []
             for plot_data in velocity_plot_data:
                 time_data = plot_data['time_ns']
                 velocity_data = plot_data['velocity_ms']
-                file_name = plot_data['file_name']
-                param_info = plot_data['param_info']
-                
-                # Determine material and color
-                material = 'Other'
-                if param_info:
-                    # Look for material information in parameter data
-                    for key, value in param_info.items():
-                        if 'material' in key.lower() or 'mat' in key.lower():
-                            material = str(value)
-                            break
-                        elif 'al' in str(value).lower():
-                            material = 'Al'
-                            break
-                        elif 'cu' in str(value).lower():
-                            material = 'Cu'
-                            break
-                        elif 'ti' in str(value).lower():
-                            material = 'Ti'
-                            break
-                        elif 'steel' in str(value).lower():
-                            material = 'Steel'
-                            break
-                
-                color = material_colors.get(material, material_colors['Other'])
-                used_materials.add(material)
-                
-                # Plot velocity trace
-                ax.plot(time_data, velocity_data, color=color, alpha=0.7, linewidth=1, label=f"{file_name} ({material})")
+                param_info = plot_data.get('param_info')
+                material = extract_material(param_info)
+                plotted.append((time_data, velocity_data, material))
+
+            # Assign colors per unique material using a colormap
+            unique_materials = []
+            seen = set()
+            for _t, _v, m in plotted:
+                if m not in seen:
+                    seen.add(m)
+                    unique_materials.append(m)
+            cmap = plt.get_cmap('Set3') if len(unique_materials) <= 12 else plt.get_cmap('tab20')
+            colors = cmap(np.linspace(0, 1, max(1, len(unique_materials))))
+            material_to_color = {m: colors[i] for i, m in enumerate(unique_materials)}
+
+            # Plot traces grouped by material color
+            for time_data, velocity_data, material in plotted:
+                color = material_to_color.get(material, 'gray')
+                ax.plot(time_data, velocity_data, color=color, alpha=0.7, linewidth=1)
             
             # Customize plot
             ax.set_xlabel('Time (ns) - Aligned to t=0 at 30 m/s', fontsize=12)
@@ -965,10 +978,7 @@ class AnalysisThread(QThread):
             ax.grid(True, alpha=0.3)
             
             # Create legend with material colors
-            legend_elements = []
-            for material in sorted(used_materials):
-                color = material_colors.get(material, material_colors['Other'])
-                legend_elements.append(mpatches.Patch(color=color, label=material))
+            legend_elements = [mpatches.Patch(color=material_to_color[m], label=m) for m in unique_materials]
             
             ax.legend(handles=legend_elements, title='Material', loc='upper right')
             
