@@ -774,13 +774,80 @@ class AnalysisThread(QThread):
                         f"No parameter data found for {base_name}")
 
                 # Create data row for velocity shots summary
+                # HEL DETECTION
+                hel_strength = np.nan
+                hel_uncertainty = np.nan
+                free_surface_velocity = np.nan
+                hel_ok = False
+                
+                if self.spade_params.get('hel_detection_enabled', False):
+                    try:
+                        hel_start = self.spade_params.get('hel_start_time_ns', 0.0)
+                        hel_end = self.spade_params.get('hel_end_time_ns', 12.0)
+                        
+                        # Crop to HEL analysis window (relative to aligned time)
+                        hel_mask = (time_aligned >= hel_start) & (time_aligned <= hel_end)
+                        if np.sum(hel_mask) > 10:  # Need at least 10 points
+                            hel_time = time_aligned[hel_mask]
+                            hel_velocity = velocity_filtered[hel_mask]
+                            hel_uncertainty_data = uncertainty_data[hel_mask]
+                            
+                            # Remove NaN values
+                            valid_hel = ~np.isnan(hel_velocity)
+                            if np.sum(valid_hel) > 5:
+                                hel_time_clean = hel_time[valid_hel]
+                                hel_velocity_clean = hel_velocity[valid_hel]
+                                hel_unc_clean = hel_uncertainty_data[valid_hel]
+                                
+                                # Find peaks and valleys in HEL window
+                                from scipy.signal import find_peaks
+                                peaks, _ = find_peaks(hel_velocity_clean, prominence=np.std(hel_velocity_clean)*0.1)
+                                valleys, _ = find_peaks(-hel_velocity_clean, prominence=np.std(hel_velocity_clean)*0.1)
+                                
+                                if len(peaks) > 0 and len(valleys) > 0:
+                                    # Calculate elastic response (difference between peaks and valleys)
+                                    first_peak_vel = hel_velocity_clean[peaks[0]] if peaks[0] < len(hel_velocity_clean) else np.nan
+                                    first_valley_vel = hel_velocity_clean[valleys[0]] if valleys[0] < len(hel_velocity_clean) else np.nan
+                                    
+                                    if np.isfinite(first_peak_vel) and np.isfinite(first_valley_vel):
+                                        free_surface_velocity = first_peak_vel
+                                        
+                                        # HEL strength = 0.5 * density * c * (v_peak - v_valley)
+                                        density = param_info.get('Density_kg_m3', 8960)  # Default to copper
+                                        acoustic_velocity = param_info.get('Bulk_Wave_Speed_m_s', 3950)  # Default to copper
+                                        
+                                        pullback_velocity = abs(first_peak_vel - first_valley_vel)
+                                        if pullback_velocity > 0:
+                                            hel_strength = 0.5 * density * acoustic_velocity * pullback_velocity / 1e9  # Convert Pa to GPa
+                                            hel_ok = True
+                                            
+                                            # Estimate uncertainty
+                                            u_max = np.abs(hel_unc_clean[peaks[0]]) if peaks[0] < len(hel_unc_clean) else 0
+                                            u_min = np.abs(hel_unc_clean[valleys[0]]) if valleys[0] < len(hel_unc_clean) else 0
+                                            pullback_unc = np.sqrt(u_max**2 + u_min**2)
+                                            hel_uncertainty = 0.5 * density * acoustic_velocity * pullback_unc / 1e9  # GPa
+                                            
+                                            self.progress_signal.emit(f"HEL detected: {hel_strength:.3f} GPa for {base_name}")
+                                    else:
+                                        self.progress_signal.emit(f"HEL: Invalid peak/valley velocities for {base_name}")
+                                else:
+                                    self.progress_signal.emit(f"HEL: Insufficient peaks/valleys in {base_name}")
+                        else:
+                            self.progress_signal.emit(f"HEL: Insufficient data points in window for {base_name}")
+                    except Exception as hel_error:
+                        self.progress_signal.emit(f"HEL detection error for {base_name}: {str(hel_error)[:50]}")
+                
                 shot_data = {
                     'file_name': base_name,
                     'mean_velocity_300_400ns_ms': mean_velocity_300_400,
                     'time_window_used': time_window_used,
                     'uncertainty_avg_ms': np.nanmean(uncertainty_data),
                     't0_ns': t0 if t0_idx is not None else np.nan,
-                    'velocity_threshold_ms': velocity_threshold
+                    'velocity_threshold_ms': velocity_threshold,
+                    'hel_strength_gpa': hel_strength,
+                    'hel_uncertainty_gpa': hel_uncertainty,
+                    'free_surface_velocity_ms': free_surface_velocity,
+                    'hel_ok': hel_ok,
                 }
 
                 # Add ALL parameter file data as extra columns (without 'param_' prefix)
