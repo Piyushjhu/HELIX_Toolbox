@@ -567,14 +567,20 @@ class AnalysisThread(QThread):
     def generate_velocity_shots_summary(self, spade_output_dir):
         """Generate velocity shots summary CSV with impact velocity calculations and combined velocity plot"""
         self.progress_signal.emit("Generating velocity shots summary...")
-
-        # Find all velocity files with uncertainty data (which include noise information)
-        velocity_files = glob.glob(
-    os.path.join(
-        self.output_dir,
-         '*--vel-smooth-with-uncert.csv'))
-
+        
+        # In SPADE-only mode, use the provided spade_input_files
+        # In combined/automatic mode, use files from output_dir
+        if self.analysis_mode == "spade_only" and self.spade_input_files:
+            velocity_files = [f for f in self.spade_input_files if os.path.exists(f)]
+            self.progress_signal.emit(f"SPADE-only mode: Using {len(velocity_files)} provided input files")
+        else:
+            # Find all velocity files with uncertainty data (which include noise information)
+            velocity_files = glob.glob(
+        os.path.join(
+            self.output_dir,
+             '*--vel-smooth-with-uncert.csv'))
         # Filter out empty files
+
         valid_velocity_files = []
         for file_path in velocity_files:
             if os.path.getsize(file_path) > 0:
