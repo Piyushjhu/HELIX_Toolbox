@@ -1780,6 +1780,12 @@ class PostProcessingWorker(QObject):
             
             self.progress.emit(f"Found {len(files)} velocity files")
             
+            # Load parameter files to get material info
+            self.progress.emit("Loading parameter files...")
+            param_data = self._load_param_files()
+            if param_data:
+                self.progress.emit(f"Loaded material data from {len(param_data)} parameter entries")
+            
             spade_out = os.path.join(self.output_dir, "SPADE_analysis")
             os.makedirs(spade_out, exist_ok=True)
             
@@ -1787,7 +1793,7 @@ class PostProcessingWorker(QObject):
             self.progress.emit("Generating plot...")
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
             
-            # Use colormap instead of sequential colors for better material differentiation
+            # Use colormap for material differentiation
             cmap = plt.get_cmap('tab20')
             colors = cmap(np.linspace(0, 1, max(1, len(files))))
             
@@ -1851,26 +1857,14 @@ class PostProcessingWorker(QObject):
                         t0 = time_clean[t0_idx]
                         time_clean = time_clean - t0
                     
-                    # Extract material from filename (e.g., C1, C2, Cu, Ti)
+                    # Extract material from parameter file
                     filename = os.path.basename(file_path)
+                    base_name = os.path.splitext(filename)[0]
                     material = "Unknown"
-                    # Try to extract material code from filename
-                    if "C1" in filename:
-                        material = "C1"
-                    elif "C2" in filename:
-                        material = "C2"
-                    elif "C3" in filename:
-                        material = "C3"
-                    elif "C4" in filename:
-                        material = "C4"
-                    elif "C5" in filename:
-                        material = "C5"
-                    else:
-                        # Try to find any capital letter followed by digit
-                        import re
-                        match = re.search(r'([A-Z]\d+)', filename)
-                        if match:
-                            material = match.group(1)
+                    
+                    # Try to get material from param_data
+                    if param_data and base_name in param_data:
+                        material = param_data[base_name].get('Sample material', 'Unknown')
                     
                     # Assign color based on material
                     if material not in material_colors:
@@ -1956,12 +1950,68 @@ class PostProcessingWorker(QObject):
             plt.close(fig)
             
             self.progress.emit(f"✓ Saved: {plot_path}")
-            self.progress.emit(f"✓ Plotted {traces_plotted} traces")
+            self.progress.emit(f"✓ Plotted {traces_plotted} traces with material colors")
             
         except Exception as e:
             self.progress.emit(f"❌ Error: {str(e)}")
         finally:
             self.finished.emit()
+    
+    def _load_param_files(self):
+        """Load parameter files from the output directory to get material info"""
+        param_data = {}
+        try:
+            # Look for parameter files (Excel or CSV) in the output directory or subdirectories
+            pattern_xlsx = os.path.join(self.output_dir, '**/*.xlsx')
+            pattern_xls = os.path.join(self.output_dir, '**/*.xls')
+            pattern_csv = os.path.join(self.output_dir, '**/*parameter*.csv')
+            
+            import glob
+            param_files = glob.glob(pattern_xlsx, recursive=True) + glob.glob(pattern_xls, recursive=True) + glob.glob(pattern_csv, recursive=True)
+            
+            if not param_files:
+                return param_data
+            
+            import pandas as pd
+            
+            for param_file in param_files[:1]:  # Use first parameter file found
+                try:
+                    if param_file.lower().endswith('.csv'):
+                        df = pd.read_csv(param_file)
+                    else:
+                        df = pd.read_excel(param_file)
+                    
+                    # Look for PDV_FileName column (or similar)
+                    filename_col = None
+                    for col in df.columns:
+                        if 'filename' in col.lower() or 'pdv' in col.lower():
+                            filename_col = col
+                            break
+                    
+                    if filename_col is None:
+                        continue
+                    
+                    # Extract material info for each file
+                    for idx, row in df.iterrows():
+                        try:
+                            filename = str(row[filename_col])
+                            if pd.isna(filename):
+                                continue
+                            # Remove extension
+                            base_name = os.path.splitext(filename)[0]
+                            
+                            # Store material and other info
+                            param_data[base_name] = dict(row)
+                        except Exception:
+                            continue
+                    
+                    break  # Use only the first valid parameter file
+                except Exception as e:
+                    continue
+        except Exception as e:
+            pass
+        
+        return param_data
 
 class HELIXAnalysisToolbox(QMainWindow):
     def __init__(self):
