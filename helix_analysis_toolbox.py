@@ -2026,12 +2026,161 @@ class PostProcessingWorker(QObject):
             if material_colors:
                 self.progress.emit(f"✓ Materials: {', '.join(sorted(material_colors.keys()))}")
             
+            # Generate per-material subplots
+            self.progress.emit("Generating per-material subplot plot...")
+            self._generate_material_subplots(files, param_data, spade_out, current_params, material_colors, align_threshold)
+            
         except Exception as e:
             self.progress.emit(f"❌ Error: {str(e)}")
             import traceback
             self.progress.emit(traceback.format_exc()[:200])
         finally:
             self.finished.emit()
+    
+    def _generate_material_subplots(self, files, param_data, spade_out, current_params, material_colors, align_threshold):
+        """Generate a multi-subplot figure with one subplot per material"""
+        try:
+            import glob
+            import pandas as pd
+            import numpy as np
+            import matplotlib.pyplot as plt
+            
+            # Group files by material
+            material_files = {}
+            for file_path in sorted(files):
+                filename = os.path.basename(file_path)
+                base_name = os.path.splitext(filename)[0]
+                
+                # Strip velocity-specific suffixes
+                for suffix in ['--vel-smooth-with-uncert', '--vel-smooth', '--velocity', '--vel']:
+                    if base_name.endswith(suffix):
+                        base_name = base_name[:-len(suffix)]
+                        break
+                
+                material = "Unknown"
+                if param_data and base_name in param_data:
+                    material = param_data[base_name].get('Sample material', 'Unknown')
+                    if isinstance(material, str):
+                        material = material.strip()
+                
+                if material not in material_files:
+                    material_files[material] = []
+                material_files[material].append(file_path)
+            
+            # Create subplots
+            num_materials = len(material_files)
+            if num_materials == 0:
+                return
+            
+            # Arrange subplots in a grid (prefer rows over columns)
+            ncols = min(2, num_materials)
+            nrows = (num_materials + ncols - 1) // ncols
+            
+            fig, axes = plt.subplots(nrows, ncols, figsize=(15, 6 * nrows))
+            if num_materials == 1:
+                axes = [axes]
+            else:
+                axes = axes.flatten()
+            
+            # Plot each material
+            for idx, (material, file_paths) in enumerate(sorted(material_files.items())):
+                ax = axes[idx]
+                color = material_colors.get(material, 'blue')
+                
+                traces_in_material = 0
+                for file_path in file_paths:
+                    try:
+                        df = pd.read_csv(file_path)
+                        if df.shape[1] < 3:
+                            continue
+                        
+                        time_data = df.iloc[:, 0].values
+                        velocity_data = df.iloc[:, 1].values
+                        uncertainty_data = df.iloc[:, 2].values
+                        
+                        # Convert time to ns if needed
+                        if np.nanmax(time_data) < 1e-3:
+                            time_data = time_data * 1e9
+                        elif np.nanmax(time_data) < 1.0:
+                            time_data = time_data * 1e3
+                        
+                        # Noise fraction filtering
+                        noise_file = file_path.replace('--vel-smooth-with-uncert.csv', '--noise--frac.csv')
+                        high_noise_mask = None
+                        if os.path.exists(noise_file):
+                            try:
+                                df_noise = pd.read_csv(noise_file)
+                                if df_noise.shape[1] >= 1:
+                                    noise_fraction = df_noise.iloc[:, -1].values
+                                    if len(noise_fraction) == len(velocity_data):
+                                        high_noise_mask = noise_fraction > 1.0
+                            except Exception:
+                                pass
+                        
+                        valid_mask = ~np.isnan(velocity_data)
+                        if high_noise_mask is not None:
+                            valid_mask &= (~high_noise_mask)
+                        
+                        uncertainty_threshold = current_params.get('uncertainty_threshold_ms', 50.0)
+                        if uncertainty_data is not None:
+                            valid_mask &= (uncertainty_data <= uncertainty_threshold)
+                        
+                        time_clean = time_data[valid_mask]
+                        velocity_clean = velocity_data[valid_mask]
+                        uncert_clean = uncertainty_data[valid_mask] if uncertainty_data is not None else None
+                        
+                        if len(time_clean) == 0:
+                            continue
+                        
+                        # Align at first >= threshold
+                        align_threshold_ms = current_params.get('align_velocity_threshold_ms', 30.0)
+                        t0_idx = None
+                        for j, v in enumerate(velocity_clean):
+                            if not np.isnan(v) and v >= align_threshold_ms:
+                                t0_idx = j
+                                break
+                        
+                        if t0_idx is not None:
+                            t0 = time_clean[t0_idx]
+                            time_clean = time_clean - t0
+                        
+                        # Plot with material color
+                        ax.plot(time_clean, velocity_clean, color=color, alpha=0.7, linewidth=1)
+                        
+                        # Optional uncertainty bands
+                        if current_params.get('include_uncert_bands', True) and uncert_clean is not None:
+                            alpha = float(current_params.get('uncert_alpha', 0.2))
+                            ax.fill_between(time_clean,
+                                           velocity_clean - uncert_clean,
+                                           velocity_clean + uncert_clean,
+                                           color=color, alpha=alpha)
+                        
+                        traces_in_material += 1
+                    except Exception:
+                        continue
+                
+                # Format subplot
+                ax.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold_ms} m/s', fontsize=10)
+                ax.set_ylabel('Velocity (m/s)', fontsize=10)
+                ax.set_title(f'{material} ({traces_in_material} traces)', fontsize=12, color=color, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+            
+            # Hide unused subplots
+            for idx in range(num_materials, len(axes)):
+                axes[idx].set_visible(False)
+            
+            plt.tight_layout()
+            
+            # Save plot
+            plot_path = os.path.join(spade_out, 'velocity_traces_by_material.png')
+            fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            
+            self.progress.emit(f"✓ Saved material subplots: {plot_path}")
+            self.progress.emit(f"✓ Created {num_materials} subplots (one per material)")
+            
+        except Exception as e:
+            self.progress.emit(f"⚠ Error generating material subplots: {str(e)[:80]}")
     
     def _load_param_files(self):
         """Load parameter files using same logic as get_param_file_data"""
@@ -5378,17 +5527,4 @@ def main():
             text-align: center;
             font-weight: bold;
         }
-        QProgressBar::chunk {
-            background-color: #0078d4;
-            border-radius: 3px;
-        }
-    """)
-    
-    window = HELIXAnalysisToolbox()
-    window.show()
-    
-    sys.exit(app.exec_())
-
-if __name__ == "__main__":
-    main() 
-# %%
+        QProgressBar::
