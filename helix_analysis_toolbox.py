@@ -3980,30 +3980,16 @@ Output Files:
         
     def get_alpss_params(self):
         """Get ALPSS parameters from GUI"""
-        # Check if any individual plots are selected
-        any_plots_selected = (self.save_velocity_plot.isChecked() or 
-                             self.save_stft_plot.isChecked() or 
-                             self.save_filtered_plot.isChecked() or 
-                             self.save_phase_plot.isChecked() or 
-                             self.save_amplitude_plot.isChecked() or 
-                             self.save_iq_start_time_plot.isChecked() or 
-                             self.save_peak_detection_plot.isChecked() or 
-                             self.save_uncertainty_plot.isChecked())
-        
-        # Determine save_all_plots value: if any individual plots are selected, save plots
-        # regardless of the dropdown setting, unless dropdown is explicitly "no"
-        save_plots_value = 'no'
-        if self.save_all_plots.currentText() in ['subfolder', 'main_dir']:
-            save_plots_value = 'yes'
-        elif any_plots_selected and self.save_all_plots.currentText() == 'no':
-            # If individual plots are selected but dropdown is "no", still save plots
-            save_plots_value = 'yes'
+        # Determine save_all_plots strictly from dropdown (authoritative)
+        dropdown_value = self.save_all_plots.currentText()
+        save_plots_value = 'yes' if dropdown_value in ['subfolder', 'main_dir'] else 'no'
+        plots_enabled = (save_plots_value == 'yes')
         
         return {
             'filename': 'example_file.csv',  # Will be updated per file in thread
             'save_data': self.save_data.currentText(),
             'save_all_plots': save_plots_value,
-            'save_plots_in_subfolder': self.save_all_plots.currentText() == 'subfolder',
+            'save_plots_in_subfolder': dropdown_value == 'subfolder',
             'start_time_user': self.start_time_user.text(),
             'header_lines': self.header_lines.value(),
             'time_to_skip': self.time_to_skip.value(),
@@ -4051,15 +4037,15 @@ Output Files:
             'spall_calculation': self.spall_calculation.currentText(),
             'plot_figsize': (self.plot_width.value(), self.plot_height.value()),
             'plot_dpi': self.plot_dpi.value(),
-            # Image selection parameters
-            'save_velocity_plot': self.save_velocity_plot.isChecked(),
-            'save_stft_plot': self.save_stft_plot.isChecked(),
-            'save_filtered_plot': self.save_filtered_plot.isChecked(),
-            'save_phase_plot': self.save_phase_plot.isChecked(),
-            'save_amplitude_plot': self.save_amplitude_plot.isChecked(),
-            'save_iq_start_time_plot': self.save_iq_start_time_plot.isChecked(),
-            'save_peak_detection_plot': self.save_peak_detection_plot.isChecked(),
-            'save_uncertainty_plot': self.save_uncertainty_plot.isChecked(),
+            # Image selection parameters (globally gated by Save ALPSS Plots dropdown)
+            'save_velocity_plot': self.save_velocity_plot.isChecked() and plots_enabled,
+            'save_stft_plot': self.save_stft_plot.isChecked() and plots_enabled,
+            'save_filtered_plot': self.save_filtered_plot.isChecked() and plots_enabled,
+            'save_phase_plot': self.save_phase_plot.isChecked() and plots_enabled,
+            'save_amplitude_plot': self.save_amplitude_plot.isChecked() and plots_enabled,
+            'save_iq_start_time_plot': self.save_iq_start_time_plot.isChecked() and plots_enabled,
+            'save_peak_detection_plot': self.save_peak_detection_plot.isChecked() and plots_enabled,
+            'save_uncertainty_plot': self.save_uncertainty_plot.isChecked() and plots_enabled,
             # Output file selection parameters
             'save_velocity_csv': self.save_velocity_csv.isChecked(),
             'save_velocity_smooth_csv': self.save_velocity_smooth_csv.isChecked(),

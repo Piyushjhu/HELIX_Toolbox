@@ -121,10 +121,9 @@ def alpss_main(**inputs):
         print(f"[{datetime.now()}] DEBUG: About to call original ALPSS plotting function...")
         fig = None
         
-        # Check if user wants to save plots
+        # Check if user wants to save plots (dropdown authoritative)
         save_plots = inputs.get("save_all_plots", "no")
         save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
-        
         if save_plots == "yes":
             # Only call simple_plotting to avoid duplication
             # simple_plotting handles both subfolder and main directory saving
@@ -1143,7 +1142,7 @@ def simple_plotting(
     print(f"[{datetime.now()}] Creating simplified plots...")
     os.makedirs(inputs["out_files_dir"], exist_ok=True)
     
-    # Check if user wants to save all plots in subfolder
+    # Check if user wants to save all plots in subfolder (dropdown authoritative)
     save_all_plots = inputs.get("save_all_plots", "no")
     save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
     base_filename = inputs["filename"][0:-4]  # Remove file extension
@@ -1165,7 +1164,7 @@ def simple_plotting(
         print(f"[{datetime.now()}] No plots to save")
     
     try:
-        # Get image selection parameters (default to False if not specified)
+        # Get image selection parameters (default False) already gated by GUI
         save_velocity_plot = inputs.get('save_velocity_plot', False)
         save_stft_plot = inputs.get('save_stft_plot', False)
         save_filtered_plot = inputs.get('save_filtered_plot', False)
@@ -2023,7 +2022,6 @@ def spall_doi_finder(**inputs):
         "t_start_detected_iq": t_start_detected_iq,
     }
 
-    
 ## end of IQ analysis
  
     # calculate magnitude of Zxx
