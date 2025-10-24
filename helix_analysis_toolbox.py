@@ -1761,6 +1761,7 @@ class PostProcessingWorker(QObject):
             import pandas as pd
             import numpy as np
             import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
             
             self.progress.emit("Collecting velocity files...")
             
@@ -1785,12 +1786,18 @@ class PostProcessingWorker(QObject):
             # Generate plot
             self.progress.emit("Generating plot...")
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
-            cmap = plt.get_cmap('tab10')
+            
+            # Use colormap instead of sequential colors for better material differentiation
+            cmap = plt.get_cmap('tab20')
             colors = cmap(np.linspace(0, 1, max(1, len(files))))
             
             traces_plotted = 0
             align_threshold = current_params.get('align_velocity_threshold_ms', 30.0)
             zoom_ns = int(current_params.get('zoom_window_ns', 1000))
+            
+            # Track materials and colors for legend
+            material_colors = {}
+            file_material_map = {}
             
             for i, file_path in enumerate(sorted(files)):
                 try:
@@ -1844,7 +1851,34 @@ class PostProcessingWorker(QObject):
                         t0 = time_clean[t0_idx]
                         time_clean = time_clean - t0
                     
-                    color = colors[i % len(colors)]
+                    # Extract material from filename (e.g., C1, C2, Cu, Ti)
+                    filename = os.path.basename(file_path)
+                    material = "Unknown"
+                    # Try to extract material code from filename
+                    if "C1" in filename:
+                        material = "C1"
+                    elif "C2" in filename:
+                        material = "C2"
+                    elif "C3" in filename:
+                        material = "C3"
+                    elif "C4" in filename:
+                        material = "C4"
+                    elif "C5" in filename:
+                        material = "C5"
+                    else:
+                        # Try to find any capital letter followed by digit
+                        import re
+                        match = re.search(r'([A-Z]\d+)', filename)
+                        if match:
+                            material = match.group(1)
+                    
+                    # Assign color based on material
+                    if material not in material_colors:
+                        material_colors[material] = colors[len(material_colors) % len(colors)]
+                    
+                    color = material_colors[material]
+                    file_material_map[i] = material
+                    
                     ax1.plot(time_clean, velocity_clean, color=color, alpha=0.7, linewidth=1)
                     # Optional uncertainty bands
                     if current_params.get('include_uncert_bands', True) and uncert_clean is not None:
@@ -1857,7 +1891,7 @@ class PostProcessingWorker(QObject):
                     # Bottom zoom window
                     mask_zoom = time_clean <= zoom_ns
                     if np.any(mask_zoom):
-                        ax2.plot(time_clean[mask_zoom], velocity_clean[mask_zoom], color=color, alpha=0.7, linewidth=1)
+                        ax2.plot(time_clean[mask_zoom], velocity_clean[mask_zoom], color=color, alpha=0.7, linewidth=1, label=material if material not in [file_material_map.get(j) for j in range(i)] else "")
                         if current_params.get('include_uncert_bands', True) and uncert_clean is not None:
                             alpha = float(current_params.get('uncert_alpha', 0.2))
                             ax2.fill_between(time_clean[mask_zoom],
@@ -1888,6 +1922,7 @@ class PostProcessingWorker(QObject):
                     x_max_main = float(current_params.get('x_max_main', 100))
                     y_min_main = float(current_params.get('y_min_main', 0))
                     y_max_main = float(current_params.get('y_max_main', 600))
+                    # Apply to BOTH top and zoom subplots
                     ax1.set_xlim(x_min_main, x_max_main)
                     ax1.set_ylim(y_min_main, y_max_main)
                     
@@ -1905,6 +1940,12 @@ class PostProcessingWorker(QObject):
                 self.progress.emit(f"⚠ Axis limits error: {str(e)[:50]}")
                 ax2.set_xlim(0, zoom_ns)
                 ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
+            
+            # Add legend for materials
+            if material_colors:
+                legend_patches = [mpatches.Patch(color=material_colors[mat], label=mat) for mat in sorted(material_colors.keys())]
+                ax1.legend(handles=legend_patches, loc='upper right', title='Material')
+                ax2.legend(handles=legend_patches, loc='upper right', title='Material')
             
             plt.tight_layout()
             
