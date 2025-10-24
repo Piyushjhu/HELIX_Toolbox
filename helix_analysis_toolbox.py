@@ -1785,7 +1785,13 @@ class PostProcessingWorker(QObject):
             self.progress.emit("Loading parameter files...")
             param_data = self._load_param_files()
             if param_data:
-                self.progress.emit(f"Loaded material data from {len(param_data)} parameter entries")
+                self.progress.emit(f"✓ Loaded {len(param_data)} parameter entries")
+                # Debug: show first few entries
+                for i, (key, val) in enumerate(list(param_data.items())[:3]):
+                    material = val.get('Sample material', 'Unknown') if isinstance(val, dict) else 'Unknown'
+                    self.progress.emit(f"  - {key}: {material}")
+            else:
+                self.progress.emit("⚠ No parameter data loaded - material will be 'Unknown'")
             
             spade_out = os.path.join(self.output_dir, "SPADE_analysis")
             os.makedirs(spade_out, exist_ok=True)
@@ -1805,6 +1811,17 @@ class PostProcessingWorker(QObject):
             # Track materials and colors for legend
             material_colors = {}
             file_material_map = {}
+            
+            # Get axis limits first
+            use_custom_limits = not current_params.get('auto_calculate_limits', True)
+            if use_custom_limits:
+                x_min_main = float(current_params.get('x_min_main', 0))
+                x_max_main = float(current_params.get('x_max_main', 100))
+                y_min_main = float(current_params.get('y_min_main', 0))
+                y_max_main = float(current_params.get('y_max_main', 600))
+                self.progress.emit(f"Using custom limits: X({x_min_main}-{x_max_main}), Y({y_min_main}-{y_max_main})")
+            else:
+                self.progress.emit("Using auto axis limits")
             
             for i, file_path in enumerate(sorted(files)):
                 try:
@@ -1866,6 +1883,8 @@ class PostProcessingWorker(QObject):
                     # Try to get material from param_data
                     if param_data and base_name in param_data:
                         material = param_data[base_name].get('Sample material', 'Unknown')
+                        if isinstance(material, str):
+                            material = material.strip()
                     
                     # Assign color based on material
                     if material not in material_colors:
@@ -1910,9 +1929,9 @@ class PostProcessingWorker(QObject):
             ax2.set_ylabel('Velocity (m/s)', fontsize=12)
             ax2.grid(True, alpha=0.3)
             
-            # Apply axis limits from post-processing settings
+            # Apply axis limits from post-processing settings - BEFORE tight_layout
             try:
-                if not current_params.get('auto_calculate_limits', True):
+                if use_custom_limits:
                     x_min_main = float(current_params.get('x_min_main', 0))
                     x_max_main = float(current_params.get('x_max_main', 100))
                     y_min_main = float(current_params.get('y_min_main', 0))
@@ -1920,6 +1939,7 @@ class PostProcessingWorker(QObject):
                     # Apply to BOTH top and zoom subplots
                     ax1.set_xlim(x_min_main, x_max_main)
                     ax1.set_ylim(y_min_main, y_max_main)
+                    self.progress.emit(f"Applied top limits: X({x_min_main}-{x_max_main}), Y({y_min_main}-{y_max_main})")
                     
                     x_min_zoom = float(current_params.get('x_min_zoom', 0))
                     x_max_zoom = float(current_params.get('x_max_zoom', zoom_ns))
@@ -1932,7 +1952,7 @@ class PostProcessingWorker(QObject):
                     ax2.set_xlim(0, zoom_ns)
                     ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
             except Exception as e:
-                self.progress.emit(f"⚠ Axis limits error: {str(e)[:50]}")
+                self.progress.emit(f"⚠ Axis limits error: {str(e)[:80]}")
                 ax2.set_xlim(0, zoom_ns)
                 ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
             
@@ -1951,10 +1971,14 @@ class PostProcessingWorker(QObject):
             plt.close(fig)
             
             self.progress.emit(f"✓ Saved: {plot_path}")
-            self.progress.emit(f"✓ Plotted {traces_plotted} traces with material colors")
+            self.progress.emit(f"✓ Plotted {traces_plotted} traces")
+            if material_colors:
+                self.progress.emit(f"✓ Materials: {', '.join(sorted(material_colors.keys()))}")
             
         except Exception as e:
             self.progress.emit(f"❌ Error: {str(e)}")
+            import traceback
+            self.progress.emit(traceback.format_exc()[:200])
         finally:
             self.finished.emit()
     
