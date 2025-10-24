@@ -19,7 +19,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
     QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QLineEdit, QPushButton, QTextEdit, QPlainTextEdit, QProgressBar,
-    QFileDialog, QCheckBox, QComboBox, QSpinBox,
+    QFileDialog, QCheckBox, QComboBox, QSpinBox, QRadioButton, QButtonGroup,
     QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
     QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
@@ -2294,21 +2294,24 @@ class HELIXAnalysisToolbox(QMainWindow):
         mode_group = QGroupBox("Analysis Mode")
         mode_layout = QVBoxLayout(mode_group)
         
-        # Radio buttons for different modes
-        self.mode_alpss_only = QCheckBox("ALPSS Only")
-        self.mode_alpss_only.setChecked(False)
-        self.mode_alpss_only.toggled.connect(self.on_analysis_mode_changed)
+        # Radio buttons for different modes (mutually exclusive)
+        self.mode_button_group = QButtonGroup(mode_group)
+        self.mode_button_group.setExclusive(True)
+        
+        self.mode_alpss_only = QRadioButton("ALPSS Only")
+        self.mode_button_group.addButton(self.mode_alpss_only)
         mode_layout.addWidget(self.mode_alpss_only)
         
-        self.mode_spade_only = QCheckBox("SPADE Only")
-        self.mode_spade_only.setChecked(False)
-        self.mode_spade_only.toggled.connect(self.on_analysis_mode_changed)
+        self.mode_spade_only = QRadioButton("SPADE Only")
+        self.mode_button_group.addButton(self.mode_spade_only)
         mode_layout.addWidget(self.mode_spade_only)
         
-        self.mode_both = QCheckBox("ALPSS + SPADE (Combined)")
+        self.mode_both = QRadioButton("ALPSS + SPADE (Combined)")
         self.mode_both.setChecked(True)
-        self.mode_both.toggled.connect(self.on_analysis_mode_changed)
+        self.mode_button_group.addButton(self.mode_both)
         mode_layout.addWidget(self.mode_both)
+        
+        self.mode_button_group.buttonToggled.connect(self.on_analysis_mode_changed)
         
         # Description text
         desc_text = QPlainTextEdit()
@@ -3552,20 +3555,6 @@ Output Files:
         
     def on_analysis_mode_changed(self):
         """Handle analysis mode radio button changes"""
-        # Ensure only one mode is selected
-        if self.mode_alpss_only.isChecked():
-            self.mode_spade_only.setChecked(False)
-            self.mode_both.setChecked(False)
-        elif self.mode_spade_only.isChecked():
-            self.mode_alpss_only.setChecked(False)
-            self.mode_both.setChecked(False)
-        elif self.mode_both.isChecked():
-            self.mode_alpss_only.setChecked(False)
-            self.mode_spade_only.setChecked(False)
-        else:
-            # If none are checked, default to both
-            self.mode_both.setChecked(True)
-            
         # Update UI based on selected mode
         self.update_ui_for_analysis_mode()
         
