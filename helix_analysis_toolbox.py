@@ -1927,6 +1927,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         super().__init__()
         self.current_theme = 'light'
         self.config_file = os.path.join(os.path.expanduser('~'), '.helix_analysis_toolbox_config.json')
+        self.spade_params = {}  # Initialize spade_params dict
         self.init_ui()
         self.load_settings()
         
@@ -2742,6 +2743,9 @@ class HELIXAnalysisToolbox(QMainWindow):
             self.pp_preview_btn.setEnabled(False)
             self.pp_save_btn.setEnabled(False)
             
+            # Build spade_params from current settings
+            self.pp_apply_limits_to_spade_params()
+            
             # Run in background thread
             self.pp_worker = PostProcessingWorker(out_dir, self.spade_params)
             self.pp_thread = QThread()
@@ -2766,6 +2770,9 @@ class HELIXAnalysisToolbox(QMainWindow):
             self.pp_preview.appendPlainText("Starting plot save in background...")
             self.pp_preview_btn.setEnabled(False)
             self.pp_save_btn.setEnabled(False)
+            
+            # Build spade_params from current settings
+            self.pp_apply_limits_to_spade_params()
             
             # Run in background thread (same as preview, just a label difference)
             self.pp_worker = PostProcessingWorker(out_dir, self.spade_params)
