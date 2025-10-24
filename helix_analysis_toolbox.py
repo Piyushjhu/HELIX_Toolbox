@@ -5527,4 +5527,16 @@ def main():
             text-align: center;
             font-weight: bold;
         }
-        QProgressBar::
+        QProgressBar::chunk {
+            background-color: #0078d4;
+            border-radius: 3px;
+        }
+    """)
+    
+    window = HELIXAnalysisToolbox()
+    window.show()
+    
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
