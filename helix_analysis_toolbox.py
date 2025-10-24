@@ -976,6 +976,18 @@ class AnalysisThread(QThread):
             ax.set_ylabel('Velocity (m/s)', fontsize=12)
             ax.set_title('Combined Velocity Traces - Aligned (Color-coded by Material)', fontsize=14)
             ax.grid(True, alpha=0.3)
+
+            # Apply axis limits from SPADE params if not auto
+            try:
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    x_min = float(self.spade_params.get('x_min_main', 0))
+                    x_max = float(self.spade_params.get('x_max_main', 100))
+                    y_min = float(self.spade_params.get('y_min_main', 0))
+                    y_max = float(self.spade_params.get('y_max_main', 600))
+                    ax.set_xlim(x_min, x_max)
+                    ax.set_ylim(y_min, y_max)
+            except Exception:
+                pass
             
             # Create legend with material colors
             legend_elements = [mpatches.Patch(color=material_to_color[m], label=m) for m in unique_materials]
@@ -1100,9 +1112,36 @@ class AnalysisThread(QThread):
 
             ax2.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax2.set_ylabel('Velocity (m/s)', fontsize=12)
-            ax2.set_title('First 1000ns Velocity Traces', fontsize=14)
             ax2.grid(True, alpha=0.3)
-            ax2.set_xlim(0, int(self.spade_params.get('zoom_window_ns', 1000)))
+
+            # Apply axis limits
+            try:
+                if not self.spade_params.get('auto_calculate_limits', True):
+                    x_min_main = float(self.spade_params.get('x_min_main', 0))
+                    x_max_main = float(self.spade_params.get('x_max_main', 100))
+                    y_min_main = float(self.spade_params.get('y_min_main', 0))
+                    y_max_main = float(self.spade_params.get('y_max_main', 600))
+                    # Top subplot should match combined plot main limits
+                    ax1.set_xlim(x_min_main, x_max_main)
+                    ax1.set_ylim(y_min_main, y_max_main)
+
+                    x_min_zoom = float(self.spade_params.get('x_min_zoom', 0))
+                    x_max_zoom = float(self.spade_params.get('x_max_zoom', self.spade_params.get('zoom_window_ns', 1000)))
+                    y_min_zoom = float(self.spade_params.get('y_min_zoom', y_min_main))
+                    y_max_zoom = float(self.spade_params.get('y_max_zoom', y_max_main))
+                    ax2.set_xlim(x_min_zoom, x_max_zoom)
+                    ax2.set_ylim(y_min_zoom, y_max_zoom)
+                    ax2.set_title(f'Zoomed Velocity Traces ({int(x_min_zoom)} to {int(x_max_zoom)} ns)', fontsize=14)
+                else:
+                    # Default zoom: 0 to zoom_window_ns
+                    zoom_ns = int(self.spade_params.get('zoom_window_ns', 1000))
+                    ax2.set_xlim(0, zoom_ns)
+                    ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
+            except Exception:
+                # Fallback to default behavior
+                zoom_ns = int(self.spade_params.get('zoom_window_ns', 1000))
+                ax2.set_xlim(0, zoom_ns)
+                ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
 
             plt.tight_layout()
 
