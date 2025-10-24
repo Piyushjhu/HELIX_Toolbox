@@ -143,6 +143,11 @@ class AnalysisThread(QThread):
             from alpss_main import alpss_main
             from spall_analysis import process_velocity_files
 
+
+            # Set matplotlib backend to Agg for thread safety on macOS
+            # This prevents crashes when matplotlib runs in background thread
+            import matplotlib
+            matplotlib.use("Agg")
             # Create output directory
             os.makedirs(self.output_dir, exist_ok=True)
 
