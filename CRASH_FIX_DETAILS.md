@@ -104,3 +104,44 @@ plot_individual=False,
 3. Consider using multiprocessing instead of threading for better isolation
 4. Add option to save plots to file instead of displaying them
 
+
+---
+
+## FINAL ROOT CAUSE & SOLUTION (Commit feee388)
+
+### The Missing Piece
+
+Even after setting `plot_individual=False`, crashes still occurred because:
+
+**matplotlib was initializing with the interactive (TkAgg/MacOSX) backend when imported.**
+
+This interactive backend attempts to connect to a display server, which:
+- Fails or crashes on macOS when running in background thread
+- Results in SIGABRT (signal 6 - abort)
+
+### The Real Fix
+
+Set the matplotlib backend to 'Agg' (non-interactive) **BEFORE** any plotting:
+
+```python
+# In AnalysisThread.run(), after imports:
+import matplotlib
+matplotlib.use("Agg")
+```
+
+### Why 'Agg' Backend?
+
+- **Non-interactive**: Doesn't need display server
+- **Thread-safe**: Safe to use in background threads
+- **File-based**: Saves plots to files instead of displaying
+- **Universal**: Works on macOS, Linux, Windows
+- **Fast**: No GUI overhead
+
+### Complete Fix Stack
+
+1. **File Discovery** (21b042f): Use spade_input_files in SPADE-only mode
+2. **Disable Individual Plots** (17d0e4f): Set plot_individual=False  
+3. **Backend Configuration** (feee388): Set matplotlib backend to Agg
+
+All three fixes together eliminate the crash and allow successful SPADE processing.
+
