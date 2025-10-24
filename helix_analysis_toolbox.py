@@ -1845,6 +1845,11 @@ class PostProcessingWorker(QObject):
             # Apply limits from post-processing settings
             current_params = self.spade_params.copy()
             current_params.update(spade_params)
+            # Debug: Log parameter updates
+            self.progress.emit(f"[WORKER] Received parameters in regenerate_plots:")
+            self.progress.emit(f"  auto_calc_limits: {current_params.get('auto_calculate_limits')}")
+            self.progress.emit(f"  x_min/max_main: {current_params.get('x_min_main')}/{current_params.get('x_max_main')}")
+            self.progress.emit(f"  y_min/max_main: {current_params.get('y_min_main')}/{current_params.get('y_max_main')}")
             
             pattern = os.path.join(self.output_dir, '**/*--vel-smooth-with-uncert.csv')
             files = glob.glob(pattern, recursive=True)
@@ -3233,6 +3238,12 @@ class HELIXAnalysisToolbox(QMainWindow):
         
         self.spade_params['zoom_window_ns'] = self.pp_zoom_ns.value()
         self.spade_params['align_velocity_threshold_ms'] = self.pp_align_threshold.value()
+
+        # Debug: Log applied parameters
+        self.progress_text.appendPlainText(f"[POST-PROCESSING] Parameters applied:")
+        self.progress_text.appendPlainText(f"  auto_calc_limits: {self.spade_params.get('auto_calculate_limits')}")
+        self.progress_text.appendPlainText(f"  x_min/max_main: {self.spade_params.get('x_min_main')}/{self.spade_params.get('x_max_main')}")
+        self.progress_text.appendPlainText(f"  y_min/max_main: {self.spade_params.get('y_min_main')}/{self.spade_params.get('y_max_main')}")
 
     def pp_preview_plots(self):
         try:
