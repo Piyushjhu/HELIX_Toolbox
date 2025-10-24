@@ -2035,6 +2035,29 @@ class HELIXAnalysisToolbox(QMainWindow):
                     width: 16px;
                     height: 16px;
                 }
+                QCheckBox::indicator:focus {
+                    border: 2px solid #0078d4;
+                }
+                QRadioButton {
+                    font-size: 14px;
+                    color: #f0f0f0;
+                    spacing: 8px;
+                    background: transparent;
+                }
+                QRadioButton::indicator {
+                    width: 16px;
+                    height: 16px;
+                    border: 1px solid #888;
+                    border-radius: 8px;
+                    background: transparent;
+                }
+                QRadioButton::indicator:checked {
+                    border: 1px solid #0078d4;
+                    background-color: #0078d4;
+                }
+                QRadioButton::indicator:focus {
+                    border: 2px solid #0078d4;
+                }
                 QTextEdit {
                     border: 1px solid #444;
                     border-radius: 4px;
@@ -2145,6 +2168,29 @@ class HELIXAnalysisToolbox(QMainWindow):
                 QCheckBox::indicator {
                     width: 16px;
                     height: 16px;
+                }
+                QCheckBox::indicator:focus {
+                    border: 2px solid #0078d4;
+                }
+                QRadioButton {
+                    font-size: 14px;
+                    color: #2c2c2c;
+                    spacing: 8px;
+                    background: transparent;
+                }
+                QRadioButton::indicator {
+                    width: 16px;
+                    height: 16px;
+                    border: 1px solid #888;
+                    border-radius: 8px;
+                    background: transparent;
+                }
+                QRadioButton::indicator:checked {
+                    border: 1px solid #0078d4;
+                    background-color: #0078d4;
+                }
+                QRadioButton::indicator:focus {
+                    border: 2px solid #0078d4;
                 }
                 QTextEdit {
                     border: 1px solid #c0c0c0;
