@@ -1781,6 +1781,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.create_analysis_mode_tab()
         self.create_alpss_params_tab()
         self.create_spade_params_tab()
+        self.create_post_processing_tab()
         self.create_control_tab()
         self.create_documentation_tab()
         
@@ -2422,6 +2423,166 @@ class HELIXAnalysisToolbox(QMainWindow):
         layout.addWidget(mode_group)
         layout.addStretch()
         self.tab_widget.addTab(tab, "Analysis Mode")
+
+    def create_post_processing_tab(self):
+        """Create Post-Processing tab for quick plot edits after analysis"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Source selection
+        src_group = QGroupBox("Source (ALPSS Output)")
+        src_layout = QGridLayout(src_group)
+        src_layout.setSpacing(10)
+
+        src_layout.addWidget(QLabel("Output Directory:"), 0, 0)
+        self.pp_output_dir = QLineEdit()
+        self.pp_output_dir.setPlaceholderText("Select ALPSS output directory...")
+        src_layout.addWidget(self.pp_output_dir, 0, 1)
+        self.pp_browse_output = QPushButton("Browse")
+        self.pp_browse_output.clicked.connect(self.pp_select_output_dir)
+        src_layout.addWidget(self.pp_browse_output, 0, 2)
+
+        # Plot options
+        opt_group = QGroupBox("Plot Options")
+        opt_layout = QGridLayout(opt_group)
+        opt_layout.setSpacing(10)
+
+        self.pp_regen_combined = QCheckBox("Regenerate combined aligned velocity plot")
+        self.pp_regen_combined.setChecked(True)
+        opt_layout.addWidget(self.pp_regen_combined, 0, 0, 1, 2)
+
+        self.pp_use_material_colors = QCheckBox("Color by Sample material (if available)")
+        self.pp_use_material_colors.setChecked(True)
+        opt_layout.addWidget(self.pp_use_material_colors, 1, 0, 1, 2)
+
+        opt_layout.addWidget(QLabel("Zoom Window (ns):"), 2, 0)
+        self.pp_zoom_ns = QSpinBox()
+        self.pp_zoom_ns.setRange(10, 10000)
+        self.pp_zoom_ns.setValue(1000)
+        opt_layout.addWidget(self.pp_zoom_ns, 2, 1)
+
+        # Axis limits
+        axis_group = QGroupBox("Axis Limits")
+        axis_layout = QGridLayout(axis_group)
+        axis_layout.setSpacing(10)
+        self.pp_auto_limits = QCheckBox("Auto")
+        self.pp_auto_limits.setChecked(True)
+        axis_layout.addWidget(self.pp_auto_limits, 0, 0)
+
+        axis_layout.addWidget(QLabel("X min (ns):"), 1, 0)
+        self.pp_xmin = QDoubleSpinBox()
+        self.pp_xmin.setRange(-1e6, 1e6)
+        self.pp_xmin.setDecimals(2)
+        self.pp_xmin.setValue(0.0)
+        axis_layout.addWidget(self.pp_xmin, 1, 1)
+
+        axis_layout.addWidget(QLabel("X max (ns):"), 1, 2)
+        self.pp_xmax = QDoubleSpinBox()
+        self.pp_xmax.setRange(-1e6, 1e6)
+        self.pp_xmax.setDecimals(2)
+        self.pp_xmax.setValue(100.0)
+        axis_layout.addWidget(self.pp_xmax, 1, 3)
+
+        axis_layout.addWidget(QLabel("Y min (m/s):"), 2, 0)
+        self.pp_ymin = QDoubleSpinBox()
+        self.pp_ymin.setRange(-1e6, 1e6)
+        self.pp_ymin.setDecimals(2)
+        self.pp_ymin.setValue(0.0)
+        axis_layout.addWidget(self.pp_ymin, 2, 1)
+
+        axis_layout.addWidget(QLabel("Y max (m/s):"), 2, 2)
+        self.pp_ymax = QDoubleSpinBox()
+        self.pp_ymax.setRange(-1e6, 1e6)
+        self.pp_ymax.setDecimals(2)
+        self.pp_ymax.setValue(600.0)
+        axis_layout.addWidget(self.pp_ymax, 2, 3)
+
+        # Actions
+        action_layout = QHBoxLayout()
+        self.pp_preview_btn = QPushButton("Preview")
+        self.pp_preview_btn.clicked.connect(self.pp_preview_plots)
+        self.pp_save_btn = QPushButton("Save")
+        self.pp_save_btn.clicked.connect(self.pp_save_plots)
+        action_layout.addStretch()
+        action_layout.addWidget(self.pp_preview_btn)
+        action_layout.addWidget(self.pp_save_btn)
+
+        # Preview area
+        self.pp_preview = QPlainTextEdit()
+        self.pp_preview.setReadOnly(True)
+        self.pp_preview.setMaximumHeight(120)
+        self.pp_preview.setPlaceholderText("Preview log will appear here...")
+
+        layout.addWidget(src_group)
+        layout.addWidget(opt_group)
+        layout.addWidget(axis_group)
+        layout.addLayout(action_layout)
+        layout.addWidget(self.pp_preview)
+        layout.addStretch()
+        self.tab_widget.addTab(tab, "Post-Processing")
+
+    def pp_select_output_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select ALPSS Output Directory")
+        if dir_path:
+            self.pp_output_dir.setText(dir_path)
+
+    def pp_apply_limits_to_spade_params(self):
+        # Ensure we have a params dict to work with
+        try:
+            current_params = self.get_spade_params()
+        except Exception:
+            current_params = {}
+        if not hasattr(self, 'spade_params') or not isinstance(getattr(self, 'spade_params'), dict):
+            self.spade_params = current_params.copy()
+        else:
+            # Refresh base values from current UI before applying overrides
+            self.spade_params.update(current_params)
+
+        # Temporarily override SPADE params for plotting routines
+        self.spade_params['auto_calculate_limits'] = self.pp_auto_limits.isChecked()
+        if not self.pp_auto_limits.isChecked():
+            self.spade_params['x_min_main'] = self.pp_xmin.value()
+            self.spade_params['x_max_main'] = self.pp_xmax.value()
+            self.spade_params['y_min_main'] = self.pp_ymin.value()
+            self.spade_params['y_max_main'] = self.pp_ymax.value()
+            # Keep zoom consistent with main if not otherwise desired
+            self.spade_params['x_min_zoom'] = self.pp_xmin.value()
+            self.spade_params['x_max_zoom'] = self.pp_xmax.value()
+            self.spade_params['y_min_zoom'] = self.pp_ymin.value()
+            self.spade_params['y_max_zoom'] = self.pp_ymax.value()
+        self.spade_params['zoom_window_ns'] = self.pp_zoom_ns.value()
+
+    def pp_preview_plots(self):
+        try:
+            out_dir = self.pp_output_dir.text().strip() or self.output_path.text().strip()
+            if not out_dir or not os.path.exists(out_dir):
+                QMessageBox.warning(self, "Invalid Output Directory", "Please select a valid ALPSS output directory.")
+                return
+            self.pp_apply_limits_to_spade_params()
+            spade_out = os.path.join(out_dir, "SPADE_analysis")
+            os.makedirs(spade_out, exist_ok=True)
+            # Re-generate 'all velocity traces' plot only for preview
+            self.generate_all_velocity_traces_plot(out_dir, spade_out, self.spade_params.get('uncertainty_threshold_ms', 50.0))
+            self.pp_preview.appendPlainText("Preview generated: all_velocity_traces.png")
+        except Exception as e:
+            self.pp_preview.appendPlainText(f"Error generating preview: {e}")
+
+    def pp_save_plots(self):
+        try:
+            out_dir = self.pp_output_dir.text().strip() or self.output_path.text().strip()
+            if not out_dir or not os.path.exists(out_dir):
+                QMessageBox.warning(self, "Invalid Output Directory", "Please select a valid ALPSS output directory.")
+                return
+            self.pp_apply_limits_to_spade_params()
+            spade_out = os.path.join(out_dir, "SPADE_analysis")
+            os.makedirs(spade_out, exist_ok=True)
+            # Regenerate combined plot (requires in-memory velocity plot data only available post-run)
+            # Fallback: run the comprehensive all-traces generator
+            self.generate_all_velocity_traces_plot(out_dir, spade_out, self.spade_params.get('uncertainty_threshold_ms', 50.0))
+            self.pp_preview.appendPlainText("Saved updated plots to SPADE_analysis/")
+        except Exception as e:
+            self.pp_preview.appendPlainText(f"Error saving plots: {e}")
         
     def create_alpss_params_tab(self):
         """Create ALPSS parameters tab"""
