@@ -1893,6 +1893,14 @@ class PostProcessingWorker(QObject):
                     # Extract material from parameter file
                     filename = os.path.basename(file_path)
                     base_name = os.path.splitext(filename)[0]
+                    
+                    # Strip velocity-specific suffixes from base_name to match parameter file PDV_FileName
+                    # E.g., "C1--20251023--00099--vel-smooth-with-uncert" -> "C1--20251023--00099"
+                    for suffix in ['--vel-smooth-with-uncert', '--vel-smooth', '--velocity', '--vel']:
+                        if base_name.endswith(suffix):
+                            base_name = base_name[:-len(suffix)]
+                            break
+                    
                     material = "Unknown"
                     
                     # Try to get material from param_data
@@ -2012,6 +2020,7 @@ class PostProcessingWorker(QObject):
         
         try:
             import pandas as pd
+            import re
             
             # Find all Excel and CSV files in the folder
             param_files = []
@@ -2040,23 +2049,70 @@ class PostProcessingWorker(QObject):
                             continue
                         df = pd.read_excel(param_file_path)
                     
-                    # Process each row to extract parameter data
+                    # Handle different possible column names for PDV file name
+                    pdv_col = None
+                    # First pass: exact-ish known variants, ignoring spaces/underscores/dashes
+                    normalized_columns = {col: re.sub(r"[^a-z0-9]", "", col.lower()) for col in df.columns}
+                    known_variants = [
+                        'pdvfilename', 'pdvfile', 'pdv_file', 'pdv_file_name', 'pdv file name',
+                        'dvfilename', 'dv_file', 'dvfile', 'filename', 'file_name', 'file name'
+                    ]
+                    normalized_variants = {re.sub(r"[^a-z0-9]", "", v): v for v in known_variants}
+                    for col, norm in normalized_columns.items():
+                        if norm in normalized_variants:
+                            pdv_col = col
+                            break
+                    # Second pass: heuristic containing tokens 'pdv' and ('file' or 'name')
+                    if pdv_col is None:
+                        for col in df.columns:
+                            col_lower = col.lower()
+                            if ('pdv' in col_lower or 'dv' in col_lower) and ('file' in col_lower or 'name' in col_lower):
+                                pdv_col = col
+                                break
+                    # Final fallback: a standalone 'filename' or 'file name' column
+                    if pdv_col is None:
+                        for col in df.columns:
+                            if col.strip().lower() in ['filename', 'file name', 'file_name']:
+                                pdv_col = col
+                                break
+                    
+                    if pdv_col is None:
+                        continue
+                    
+                    # Create mapping for each experiment
                     for idx, row in df.iterrows():
-                        try:
-                            # Look for PDV_FileName column
-                            pdv_filename = None
-                            for col in df.columns:
-                                if 'pdv' in col.lower() or 'filename' in col.lower():
-                                    pdv_filename = str(row[col])
-                                    break
-                            
-                            if pdv_filename and pdv_filename != 'nan':
-                                # Remove file extension to get base name
-                                base_name = os.path.splitext(pdv_filename)[0]
-                                # Store entire row as dict for this file
-                                combined_param_data[base_name] = dict(row)
-                        except Exception:
+                        pdv_file = row[pdv_col]
+                        if pd.isna(pdv_file) or pdv_file == 0:
                             continue
+                        
+                        # Convert PDV file name to string to ensure consistency
+                        pdv_file_str = str(pdv_file).strip()
+                        
+                        # Clean the filename for better matching
+                        # Remove common extensions and clean up the name
+                        clean_pdv_file = pdv_file_str
+                        for ext in ['.csv', '.txt', '.dat', '.xlsx', '.xls']:
+                            if clean_pdv_file.lower().endswith(ext):
+                                clean_pdv_file = clean_pdv_file[:-len(ext)]
+                        
+                        # Extract ALL columns from the row (except the PDV filename column itself)
+                        exp_info = {}
+                        for col in df.columns:
+                            if col != pdv_col:  # Skip the PDV filename column
+                                value = row.get(col)
+                                if not pd.isna(value):  # Only include non-NaN values
+                                    exp_info[col] = value
+                        
+                        # Store both original and cleaned versions for better matching
+                        combined_param_data[pdv_file_str] = exp_info
+                        if clean_pdv_file != pdv_file_str:
+                            combined_param_data[clean_pdv_file] = exp_info
+                        
+                        # Also store with common variations for better matching
+                        # Remove date patterns if present
+                        date_cleaned = re.sub(r'\d{4}[-_]\d{2}[-_]\d{2}', '', clean_pdv_file)
+                        if date_cleaned != clean_pdv_file:
+                            combined_param_data[date_cleaned] = exp_info
                 
                 except Exception:
                     continue
@@ -4776,7 +4832,7 @@ Output Files:
                     date_cleaned = re.sub(r'\d{4}[-_]\d{2}[-_]\d{2}', '', clean_pdv_file)
                     if date_cleaned != clean_pdv_file:
                         combined_param_data[date_cleaned] = exp_info
-                    
+                
             except Exception as e:
                 print(f"Error loading parameter file {param_file_path}: {e}")
                 continue
