@@ -1749,10 +1749,11 @@ class PostProcessingWorker(QObject):
     progress = pyqtSignal(str)
     finished = pyqtSignal()
     
-    def __init__(self, output_dir, spade_params):
+    def __init__(self, output_dir, spade_params, param_folder):
         super().__init__()
         self.output_dir = output_dir
         self.spade_params = spade_params or {}
+        self.param_folder = param_folder
     
     def regenerate_plots(self, spade_params):
         """Regenerate velocity plots with current axis settings"""
@@ -1958,57 +1959,65 @@ class PostProcessingWorker(QObject):
             self.finished.emit()
     
     def _load_param_files(self):
-        """Load parameter files from the output directory to get material info"""
+        """Load parameter files using same logic as get_param_file_data"""
         param_data = {}
+        
+        if not self.param_folder or not os.path.exists(self.param_folder):
+            return param_data
+        
         try:
-            # Look for parameter files (Excel or CSV) in the output directory or subdirectories
-            pattern_xlsx = os.path.join(self.output_dir, '**/*.xlsx')
-            pattern_xls = os.path.join(self.output_dir, '**/*.xls')
-            pattern_csv = os.path.join(self.output_dir, '**/*parameter*.csv')
+            import pandas as pd
             
-            import glob
-            param_files = glob.glob(pattern_xlsx, recursive=True) + glob.glob(pattern_xls, recursive=True) + glob.glob(pattern_csv, recursive=True)
+            # Find all Excel and CSV files in the folder
+            param_files = []
+            for file in os.listdir(self.param_folder):
+                if file.lower().endswith(('.xlsx', '.xls', '.csv')):
+                    param_files.append(os.path.join(self.param_folder, file))
             
             if not param_files:
                 return param_data
             
-            import pandas as pd
+            # Combine data from all parameter files
+            combined_param_data = {}
             
-            for param_file in param_files[:1]:  # Use first parameter file found
+            for param_file_path in param_files:
+                if not os.path.exists(param_file_path):
+                    continue
+                
                 try:
-                    if param_file.lower().endswith('.csv'):
-                        df = pd.read_csv(param_file)
+                    # Try to read the file (Excel or CSV)
+                    if param_file_path.lower().endswith('.csv'):
+                        df = pd.read_csv(param_file_path)
                     else:
-                        df = pd.read_excel(param_file)
+                        try:
+                            import openpyxl
+                        except ImportError:
+                            continue
+                        df = pd.read_excel(param_file_path)
                     
-                    # Look for PDV_FileName column (or similar)
-                    filename_col = None
-                    for col in df.columns:
-                        if 'filename' in col.lower() or 'pdv' in col.lower():
-                            filename_col = col
-                            break
-                    
-                    if filename_col is None:
-                        continue
-                    
-                    # Extract material info for each file
+                    # Process each row to extract parameter data
                     for idx, row in df.iterrows():
                         try:
-                            filename = str(row[filename_col])
-                            if pd.isna(filename):
-                                continue
-                            # Remove extension
-                            base_name = os.path.splitext(filename)[0]
+                            # Look for PDV_FileName column
+                            pdv_filename = None
+                            for col in df.columns:
+                                if 'pdv' in col.lower() or 'filename' in col.lower():
+                                    pdv_filename = str(row[col])
+                                    break
                             
-                            # Store material and other info
-                            param_data[base_name] = dict(row)
+                            if pdv_filename and pdv_filename != 'nan':
+                                # Remove file extension to get base name
+                                base_name = os.path.splitext(pdv_filename)[0]
+                                # Store entire row as dict for this file
+                                combined_param_data[base_name] = dict(row)
                         except Exception:
                             continue
-                    
-                    break  # Use only the first valid parameter file
-                except Exception as e:
+                
+                except Exception:
                     continue
-        except Exception as e:
+            
+            param_data = combined_param_data
+        except Exception:
             pass
         
         return param_data
@@ -2837,8 +2846,11 @@ class HELIXAnalysisToolbox(QMainWindow):
             # Build spade_params from current settings
             self.pp_apply_limits_to_spade_params()
             
+            # Get parameter folder from File Selection tab
+            param_folder = self.param_folder_path.text() if hasattr(self, 'param_folder_path') else ""
+            
             # Run in background thread
-            self.pp_worker = PostProcessingWorker(out_dir, self.spade_params)
+            self.pp_worker = PostProcessingWorker(out_dir, self.spade_params, param_folder)
             self.pp_thread = QThread()
             self.pp_worker.moveToThread(self.pp_thread)
             self.pp_worker.progress.connect(self.pp_on_progress)
@@ -2865,8 +2877,11 @@ class HELIXAnalysisToolbox(QMainWindow):
             # Build spade_params from current settings
             self.pp_apply_limits_to_spade_params()
             
+            # Get parameter folder from File Selection tab
+            param_folder = self.param_folder_path.text() if hasattr(self, 'param_folder_path') else ""
+            
             # Run in background thread (same as preview, just a label difference)
-            self.pp_worker = PostProcessingWorker(out_dir, self.spade_params)
+            self.pp_worker = PostProcessingWorker(out_dir, self.spade_params, param_folder)
             self.pp_thread = QThread()
             self.pp_worker.moveToThread(self.pp_thread)
             self.pp_worker.progress.connect(self.pp_on_progress)
