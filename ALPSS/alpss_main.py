@@ -170,7 +170,9 @@ def alpss_main(**inputs):
                 try:
                     print(f"[{datetime.now()}] Attempting to save essential velocity data...")
                     base_name = inputs["filename"][0:-4]
-                    velocity_data = np.stack((vc_out["time_f"], vc_out["velocity_f_smooth"]), axis=1)
+                    # Ensure arrays have the same length
+                    min_length_emergency = min(len(vc_out["time_f"]), len(vc_out["velocity_f_smooth"]))
+                    velocity_data = np.stack((vc_out["time_f"][:min_length_emergency], vc_out["velocity_f_smooth"][:min_length_emergency]), axis=1)
                     np.savetxt(
                         os.path.join(inputs["out_files_dir"], f"{base_name}--velocity--smooth.csv"),
                         velocity_data, delimiter=",",
@@ -1529,7 +1531,9 @@ def saving(
         
         # Save velocity data if selected
         if save_velocity_csv:
-            velocity_data = np.stack((vc_out["time_f"], vc_out["velocity_f"]), axis=1)
+            # Ensure arrays have the same length
+            min_length_vel = min(len(vc_out["time_f"]), len(vc_out["velocity_f"]))
+            velocity_data = np.stack((vc_out["time_f"][:min_length_vel], vc_out["velocity_f"][:min_length_vel]), axis=1)
             print(f"[{datetime.now()}] Saving velocity data...")
             np.savetxt(
                 os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--velocity" + ".csv"),
@@ -1544,8 +1548,10 @@ def saving(
         
         # Save velocity smooth data if selected
         if save_velocity_smooth_csv:
+            # Ensure arrays have the same length
+            min_length_smooth = min(len(vc_out["time_f"]), len(vc_out["velocity_f_smooth"]))
             velocity_data_smooth = np.stack(
-                (vc_out["time_f"], vc_out["velocity_f_smooth"]), axis=1
+                (vc_out["time_f"][:min_length_smooth], vc_out["velocity_f_smooth"][:min_length_smooth]), axis=1
             )
             print(f"[{datetime.now()}] Saving velocity smooth...")
             np.savetxt(
@@ -1560,11 +1566,13 @@ def saving(
             print(f"[{datetime.now()}] Skipping velocity smooth (not selected)")
         
         # Save voltage data (always save for debugging)
+        # Ensure arrays have the same length
+        min_length_voltage = min(len(sdf_out["time"]), len(vc_out["voltage_filt"]))
         voltage_data = np.stack(
             (
-                sdf_out["time"],
-                np.real(vc_out["voltage_filt"]),
-                np.imag(vc_out["voltage_filt"]),
+                sdf_out["time"][:min_length_voltage],
+                np.real(vc_out["voltage_filt"][:min_length_voltage]),
+                np.imag(vc_out["voltage_filt"][:min_length_voltage]),
             ),
             axis=1,
         )
@@ -1580,7 +1588,9 @@ def saving(
         
         # Save noise data if selected
         if save_noise_csv:
-            noise_data = np.stack((vc_out["time_f"], iua_out["inst_noise"]), axis=1)
+            # Ensure arrays have the same length
+            min_length_noise = min(len(vc_out["time_f"]), len(iua_out["inst_noise"]))
+            noise_data = np.stack((vc_out["time_f"][:min_length_noise], iua_out["inst_noise"][:min_length_noise]), axis=1)
             print(f"[{datetime.now()}] Saving noise data...")
             np.savetxt(
                 os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--noise--frac" + ".csv"),
@@ -1595,7 +1605,9 @@ def saving(
         
         # Save velocity uncertainty data if selected
         if save_velocity_uncert_csv:
-            vel_uncert_data = np.stack((vc_out["time_f"], iua_out["vel_uncert"]), axis=1)
+            # Ensure arrays have the same length
+            min_length_uncert = min(len(vc_out["time_f"]), len(iua_out["vel_uncert"]))
+            vel_uncert_data = np.stack((vc_out["time_f"][:min_length_uncert], iua_out["vel_uncert"][:min_length_uncert]), axis=1)
             print(f"[{datetime.now()}] Saving velocity uncertainty data...")
             np.savetxt(
                 os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel--uncert" + ".csv"),
