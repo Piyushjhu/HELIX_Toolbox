@@ -150,15 +150,300 @@ export QT_QPA_PLATFORM=offscreen
 - View generated plots and results
 - Access comprehensive output files
 
+## Physical Parameter Calculations
+
+### 1. Free Surface Velocity Extraction
+
+**Method**: Phase unwrapping and differentiation of PDV signal
+
+The free surface velocity is extracted from the PDV (Photonic Doppler Velocimetry) signal using the fundamental relationship:
+
+```
+v(t) = (λ/2) × f_Doppler(t)
+```
+
+Where:
+- `v(t)` = free surface velocity (m/s)
+- `λ` = laser wavelength (typically 1550 nm)
+- `f_Doppler(t)` = instantaneous Doppler shift frequency (Hz)
+
+**Process**:
+1. **Signal Demodulation**: Extract In-phase (I) and Quadrature (Q) components via IQ analysis
+2. **Phase Calculation**: `φ(t) = arctan2(Q, I)`
+3. **Phase Unwrapping**: Remove 2π discontinuities
+4. **Frequency Extraction**: `f(t) = (1/2π) × dφ/dt`
+5. **Velocity Conversion**: `v(t) = (λ/2) × f(t)`
+6. **Smoothing**: Apply Gaussian window for noise reduction
+
+**Implementation**: `velocity_calculation()` in `ALPSS/alpss_main.py`
+
+---
+
+### 2. Velocity Uncertainty Calculation
+
+**Method**: Instantaneous noise analysis with time-frequency uncertainty principle
+
+The velocity uncertainty accounts for signal-to-noise ratio and temporal resolution:
+
+```
+Δv(t) = (λ/2) × Δf(t)
+```
+
+Where the frequency uncertainty is:
+
+```
+Δf(t) = η(t) × (1/π) × √[6 / (f_s × τ³)]
+```
+
+**Parameters**:
+- `η(t)` = instantaneous noise fraction = `std(noise) / [A(t)/2]`
+- `A(t)` = instantaneous signal amplitude (from envelope detection)
+- `f_s` = sampling frequency (Hz)
+- `τ` = characteristic time = FWHM of Gaussian smoothing window (s)
+
+**Process**:
+1. **Noise Estimation**: Fit sinusoid to pre-event signal, calculate residuals
+2. **Envelope Detection**: Extract upper and lower signal envelopes
+3. **Instantaneous Amplitude**: `A(t)` = envelope_max - envelope_min
+4. **Noise Fraction**: `η(t) = std(noise) / [A(t)/2]`
+5. **Characteristic Time**: Calculate FWHM of smoothing window
+6. **Frequency Uncertainty**: Apply uncertainty formula
+7. **Velocity Uncertainty**: Convert using `Δv = (λ/2) × Δf`
+
+**Reference**: [Fratanduono et al., Review of Scientific Instruments 91, 051501 (2020)](https://doi.org/10.1063/12.0000870)
+
+**Implementation**: `instantaneous_uncertainty_analysis()` in `ALPSS/alpss_main.py`
+
+---
+
+### 3. Spall Strength Calculation
+
+**Method**: Acoustic approximation from pullback velocity
+
+Spall strength is calculated from the velocity pullback using the acoustic approximation:
+
+```
+σ_spall = (1/2) × ρ₀ × c_b × Δv_pullback
+```
+
+Where:
+- `σ_spall` = spall strength (GPa)
+- `ρ₀` = initial material density (kg/m³)
+- `c_b` = bulk sound speed (m/s)
+- `Δv_pullback` = velocity pullback magnitude = |v_peak - v_min| (m/s)
+
+**Process**:
+1. **Peak Detection**: Find maximum velocity (peak) after shock arrival
+2. **Minimum Detection**: Find minimum velocity (valley) after peak
+3. **Pullback Calculation**: `Δv = |v_peak - v_min|`
+4. **Material Properties**: Get ρ₀ and c_b from database or user input
+5. **Spall Strength**: Apply formula, convert Pa → GPa (÷10⁹)
+
+**Uncertainty Propagation**:
+```
+Δσ_spall = (1/2) × ρ₀ × c_b × √(Δv²_peak + Δv²_min)
+```
+
+**Implementation**: `calculate_spall_strength()` in `SPADE/spall_analysis_release/spall_analysis/data_processing.py`
+
+---
+
+### 4. Strain Rate Calculation
+
+**Method**: Time derivative of velocity during pullback
+
+The strain rate during spalling is estimated from the rate of velocity change:
+
+```
+ε̇ = (1/c_b) × |dv/dt|_pullback
+```
+
+Where:
+- `ε̇` = strain rate (s⁻¹)
+- `c_b` = bulk sound speed (m/s)
+- `|dv/dt|` = velocity change rate during pullback (m/s²)
+
+**Process**:
+1. **Identify Pullback Region**: Time between peak and minimum velocity
+2. **Linear Fit**: Fit line to velocity vs. time in pullback region
+3. **Velocity Rate**: Extract slope `dv/dt`
+4. **Strain Rate**: `ε̇ = |dv/dt| / c_b`
+
+**Alternative Method** (if linear fit fails):
+```
+ε̇ ≈ Δv_pullback / (c_b × Δt_pullback)
+```
+
+**Implementation**: `calculate_strain_rate()` in SPADE data processing module
+
+---
+
+### 5. HEL (Hugoniot Elastic Limit) Calculation
+
+**Method**: Peak-valley analysis with material properties
+
+The HEL strength is determined from the elastic wave amplitude:
+
+```
+σ_HEL = (1/2) × ρ₀ × c_b × (v_peak - v_valley)
+```
+
+Where:
+- `σ_HEL` = Hugoniot Elastic Limit (GPa)
+- `v_peak` = first peak velocity in elastic wave (m/s)
+- `v_valley` = first valley velocity after peak (m/s)
+- `ρ₀` = material density (kg/m³)
+- `c_b` = bulk sound speed (m/s)
+
+**Process**:
+1. **Elastic Wave Detection**: Identify oscillations in early-time velocity
+2. **Peak Finding**: Detect first maximum with prominence threshold
+3. **Valley Finding**: Detect first minimum after peak
+4. **Material Lookup**: Get ρ₀ and c_b from `material_properties.py` database
+5. **HEL Calculation**: Apply formula, convert to GPa
+
+**Uncertainty Propagation**:
+```
+Δσ_HEL = (1/2) × ρ₀ × c_b × √(Δv²_peak + Δv²_valley)
+```
+
+**Implementation**: `generate_velocity_shots_summary()` in `helix_analysis_toolbox.py` (lines ~810-840)
+
+---
+
+### 6. Shock Stress Calculation
+
+**Method**: Impedance matching with flyer impact velocity
+
+Shock stress is calculated from the impact conditions:
+
+```
+σ_shock = (1/2) × ρ₀ × c_b × v_impact
+```
+
+Or using the measured free surface velocity:
+
+```
+σ_shock = (1/2) × ρ₀ × c_b × (2 × v_fs)
+```
+
+Where:
+- `σ_shock` = shock stress (GPa)
+- `v_impact` = flyer impact velocity (m/s)
+- `v_fs` = free surface velocity (m/s)
+- Factor of 2 accounts for free surface approximation
+
+**Implementation**: User-provided impact velocity or extracted from peak velocity
+
+---
+
+### 7. Peak Velocity and Time Parameters
+
+**Peak Velocity** (`v_peak`):
+- Maximum velocity in the velocity trace
+- Detected using `scipy.signal.find_peaks()` with prominence threshold
+- Represents the maximum particle velocity reached during loading
+
+**Pullback Velocity** (`v_min`):
+- Minimum velocity after the peak
+- Indicates onset of tension/spall damage
+- Used for spall strength calculation
+
+**Recompression Velocity** (`v_rc`):
+- Velocity increase after minimum (if present)
+- Indicates shock wave reflection and recompression
+- Used for damage evolution analysis
+
+**Time Parameters**:
+- `t_10%`: Time when velocity reaches 10% of peak
+- `t_peak`: Time of maximum velocity
+- `t_min`: Time of minimum velocity (pullback)
+- `t_rc`: Time of recompression (if detected)
+- `Δt_pullback`: Duration of pullback = `t_min - t_peak`
+
+**Implementation**: `spall_analysis()` and peak detection routines in ALPSS
+
+---
+
+### 8. Material Properties Database
+
+**Source**: `material_properties.py`
+
+The toolbox includes a comprehensive database of material properties:
+
+**Properties Stored**:
+- `density` (ρ₀): Initial density (kg/m³)
+- `bulk_wave_speed` (c_b): Longitudinal sound speed (m/s)
+
+**Supported Materials** (48 materials):
+- **Metals**: Cu, Al, Fe, Ti, Ni, Ta, W, Au, Ag, Pb, Mg, Zn
+- **Polymers**: PMMA, Polycarbonate, Teflon, Polyethylene
+- **Ceramics**: Sapphire, Silicon, SiC, Glass, Fused Silica
+- **Others**: Diamond, Graphite, Water
+
+**Usage**:
+```python
+from material_properties import get_material_properties
+props = get_material_properties('Copper')
+# Returns: {'density': 8960, 'bulk_wave_speed': 3940, 'material_found': True}
+```
+
+**Fallback**: If material not found, uses Copper properties as default or user-specified values
+
+---
+
+### 9. Noise Fraction
+
+**Method**: Ratio of noise to signal amplitude
+
+```
+η(t) = std(noise) / [A(t)/2]
+```
+
+Where:
+- `noise` = residuals from sinusoidal fit to pre-event signal
+- `A(t)` = instantaneous signal amplitude
+
+**Purpose**: 
+- Quantifies signal quality at each time point
+- Used in velocity uncertainty calculation
+- Helps identify regions of poor signal quality
+
+**Output**: Saved in `*--noise--frac.csv`
+
+---
+
+### Summary Table of Calculations
+
+| Parameter | Formula | Units | Uncertainty Method |
+|-----------|---------|-------|-------------------|
+| Velocity | v = (λ/2) × f | m/s | Time-frequency uncertainty |
+| Spall Strength | σ = (1/2) × ρ × c × Δv | GPa | Propagate velocity uncertainties |
+| Strain Rate | ε̇ = \|dv/dt\|/c | s⁻¹ | Linear fit residuals |
+| HEL | σ_HEL = (1/2) × ρ × c × Δv_elastic | GPa | Peak-valley uncertainties |
+| Shock Stress | σ = (1/2) × ρ × c × v_impact | GPa | Impact velocity uncertainty |
+| Noise Fraction | η = std(noise)/(A/2) | - | Statistical (std) |
+
+**References**:
+- ALPSS methodology: Diamond et al. (methodology paper if available)
+- Uncertainty quantification: [Fratanduono et al., RSI 91, 051501 (2020)](https://doi.org/10.1063/12.0000870)
+- Spall strength theory: Antoun et al., "Spall Fracture" (2003)
+
+---
+
 ## Output Files
 
 ### ALPSS Outputs
-- `*--velocity.csv`: Raw velocity data
-- `*--velocity--smooth.csv`: Smoothed velocity data
-- `*--vel--uncert.csv`: Velocity uncertainty data
-- `*--vel-smooth-with-uncert.csv`: Smoothed velocity with uncertainty
+- `*--velocity.csv`: Raw velocity data (Time_s, Velocity_m_s)
+- `*--velocity--smooth.csv`: Smoothed velocity data (Time_s, Velocity_Smooth_m_s)
+- `*--vel--uncert.csv`: Velocity uncertainty data (Time_s, Velocity_Uncertainty_m_s)
+- `*--vel-smooth-with-uncert.csv`: Smoothed velocity with uncertainty (Time_s, Velocity_Smooth_m_s, Velocity_Uncertainty_m_s, Velocity_Plus_Uncertainty_m_s)
+- `*--noise--frac.csv`: Noise fraction data (Time_s, Noise_Fraction)
+- `*--voltage.csv`: Filtered voltage signal (Time_s, Voltage_Real_V, Voltage_Imag_V)
 - `*--results.csv`: Analysis results with uncertainties
 - `*--plots.png`: Individual analysis plots
+
+**See [CSV_FILE_FORMATS.md](CSV_FILE_FORMATS.md) for detailed column descriptions**
 
 ### SPADE Outputs
 - `enhanced_spall_summary.csv`: Complete results with ALPSS data (supersedes the older `spall_summary.csv`)
