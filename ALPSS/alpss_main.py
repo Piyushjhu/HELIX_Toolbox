@@ -173,7 +173,9 @@ def alpss_main(**inputs):
                     velocity_data = np.stack((vc_out["time_f"], vc_out["velocity_f_smooth"]), axis=1)
                     np.savetxt(
                         os.path.join(inputs["out_files_dir"], f"{base_name}--velocity--smooth.csv"),
-                        velocity_data, delimiter=","
+                        velocity_data, delimiter=",",
+                        header="Time_s,Velocity_Smooth_m_s",
+                        comments=""
                     )
                     print(f"[{datetime.now()}] Saved essential velocity data")
                 except Exception as save_error:
@@ -1530,7 +1532,11 @@ def saving(
             velocity_data = np.stack((vc_out["time_f"], vc_out["velocity_f"]), axis=1)
             print(f"[{datetime.now()}] Saving velocity data...")
             np.savetxt(
-                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--velocity" + ".csv"), velocity_data, delimiter=","
+                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--velocity" + ".csv"),
+                velocity_data,
+                delimiter=",",
+                header="Time_s,Velocity_m_s",
+                comments=""
             )
             print(f"[{datetime.now()}] Saved velocity data.")
         else:
@@ -1546,6 +1552,8 @@ def saving(
                 os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--velocity--smooth" + ".csv"),
                 velocity_data_smooth,
                 delimiter=",",
+                header="Time_s,Velocity_Smooth_m_s",
+                comments=""
             )
             print(f"[{datetime.now()}] Saved velocity smooth.")
         else:
@@ -1562,7 +1570,11 @@ def saving(
         )
         print(f"[{datetime.now()}] Saving voltage data...")
         np.savetxt(
-            os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--voltage" + ".csv"), voltage_data, delimiter=","
+            os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--voltage" + ".csv"),
+            voltage_data,
+            delimiter=",",
+            header="Time_s,Voltage_Real_V,Voltage_Imag_V",
+            comments=""
         )
         print(f"[{datetime.now()}] Saved voltage data.")
         
@@ -1571,7 +1583,11 @@ def saving(
             noise_data = np.stack((vc_out["time_f"], iua_out["inst_noise"]), axis=1)
             print(f"[{datetime.now()}] Saving noise data...")
             np.savetxt(
-                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--noise--frac" + ".csv"), noise_data, delimiter=","
+                os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--noise--frac" + ".csv"),
+                noise_data,
+                delimiter=",",
+                header="Time_s,Noise_Fraction",
+                comments=""
             )
             print(f"[{datetime.now()}] Saved noise data.")
         else:
@@ -1585,6 +1601,8 @@ def saving(
                 os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel--uncert" + ".csv"),
                 vel_uncert_data,
                 delimiter=",",
+                header="Time_s,Velocity_Uncertainty_m_s",
+                comments=""
             )
             print(f"[{datetime.now()}] Saved velocity uncertainty data.")
         else:
@@ -1669,6 +1687,8 @@ def saving(
                     os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel-smooth-with-uncert" + ".csv"),
                     vel_smooth_with_uncert,
                     delimiter=",",
+                    header="Time_s,Velocity_Smooth_m_s,Velocity_Uncertainty_m_s,Velocity_Plus_Uncertainty_m_s",
+                    comments=""
                 )
                 print(f"[{datetime.now()}] Saved vel_smooth_with_uncert.")
             except Exception as e:
@@ -1687,6 +1707,8 @@ def saving(
                         os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel-smooth-only" + ".csv"),
                         vel_smooth_only,
                         delimiter=",",
+                        header="Time_s,Velocity_Smooth_m_s",
+                        comments=""
                     )
                     print(f"[{datetime.now()}] Saved vel_smooth_only.")
                 except Exception as e2:
