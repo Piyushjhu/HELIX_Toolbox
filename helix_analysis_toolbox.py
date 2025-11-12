@@ -29,6 +29,7 @@ from PyQt5.QtCore import QThread, pyqtSignal, Qt, QObject
 from PyQt5.QtGui import QFont, QValidator
 from SPADE.spall_analysis_release.spall_analysis import plot_combined_mean_traces, plot_spall_vs_strain_rate, plot_spall_vs_shock_stress
 from datetime import datetime
+from material_properties import get_material_properties, list_available_materials
 
 def cleanup_matplotlib():
     """Clean up matplotlib figures to prevent memory leaks"""
@@ -813,8 +814,17 @@ class AnalysisThread(QThread):
                                         free_surface_velocity = first_peak_vel
                                         
                                         # HEL strength = 0.5 * density * c * (v_peak - v_valley)
-                                        density = param_info.get('Density_kg_m3', 8960)  # Default to copper
-                                        acoustic_velocity = param_info.get('Bulk_Wave_Speed_m_s', 3950)  # Default to copper
+                                        # Get material properties from database based on 'Sample material' column
+                                        sample_material = param_info.get('Sample material', 'Unknown')
+                                        mat_props = get_material_properties(sample_material)
+                                        
+                                        # Use material-specific properties or parameter file overrides
+                                        density = param_info.get('Density_kg_m3', mat_props['density'])
+                                        acoustic_velocity = param_info.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed'])
+                                        
+                                        # Log which material properties are being used
+                                        if mat_props['material_found']:
+                                            self.progress_signal.emit(f"Using {mat_props['material_name']} properties: ρ={density:.0f} kg/m³, c={acoustic_velocity:.0f} m/s")
                                         
                                         pullback_velocity = abs(first_peak_vel - first_valley_vel)
                                         if pullback_velocity > 0:
@@ -828,6 +838,19 @@ class AnalysisThread(QThread):
                                             hel_uncertainty = 0.5 * density * acoustic_velocity * pullback_unc / 1e9  # GPa
                                             
                                             self.progress_signal.emit(f"HEL detected: {hel_strength:.3f} GPa for {base_name}")
+                                            
+                                            # Generate individual HEL detection plot if plot_individual is enabled
+                                            if self.spade_params.get('plot_individual', False):
+                                                try:
+                                                    self._plot_individual_hel_detection(
+                                                        base_name, time_aligned, velocity_filtered, 
+                                                        hel_start, hel_end, hel_time_clean, hel_velocity_clean,
+                                                        peaks, valleys, first_peak_vel, first_valley_vel,
+                                                        hel_strength, hel_uncertainty, sample_material,
+                                                        spade_output_dir
+                                                    )
+                                                except Exception as plot_error:
+                                                    self.progress_signal.emit(f"Warning: Could not create HEL plot for {base_name}: {str(plot_error)[:50]}")
                                     else:
                                         self.progress_signal.emit(f"HEL: Invalid peak/valley velocities for {base_name}")
                                 else:
@@ -912,26 +935,32 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"Saved to: {velocity_shots_path}")
             self.progress_signal.emit(f"Parameter columns included: {param_cols}")
 
-            # Generate combined velocity plot
-            if velocity_plot_data:
-                self.generate_combined_velocity_plot(velocity_plot_data, spade_output_dir)
+            # Generate combined velocity plot - DISABLED (material classification now in all_velocity_traces.png)
+            # The all_velocity_traces.png plot already includes material-wise classification
+            # if velocity_plot_data:
+            #     self.generate_combined_velocity_plot(velocity_plot_data, spade_output_dir)
 
-                # Optionally, generate the comprehensive aligned plot using ALPSS outputs and GUI threshold
-                try:
-                    if hasattr(self, 'spade_params'):
-                        # Use ALPSS output directory as input; same folder SPADE takes input from
-                        input_path = self.output_dir
-                        uncertainty_threshold = self.spade_params.get('uncertainty_threshold_ms', 50.0)
-                        generate_all = self.spade_params.get('generate_all_velocity_plot', True)
-                        if generate_all and os.path.exists(input_path):
-                            self.progress_signal.emit(
-                                f"Generating 'All Velocity Traces' aligned plot (threshold={uncertainty_threshold} m/s) from {input_path}")
-                            self.generate_all_velocity_traces_plot(input_path, spade_output_dir, uncertainty_threshold)
-                except Exception as e:
-                    self.progress_signal.emit(f"Warning: Failed to create comprehensive aligned velocity plot: {e}")
+            # Generate the comprehensive aligned plot using ALPSS outputs and GUI threshold
+            # This plot includes material-wise classification (color coding by material)
+            try:
+                if hasattr(self, 'spade_params'):
+                    # Use ALPSS output directory as input; same folder SPADE takes input from
+                    input_path = self.output_dir
+                    uncertainty_threshold = self.spade_params.get('uncertainty_threshold_ms', 50.0)
+                    generate_all = self.spade_params.get('generate_all_velocity_plot', True)
+                    if generate_all and os.path.exists(input_path):
+                        self.progress_signal.emit(
+                            f"Generating 'All Velocity Traces' aligned plot with material classification (threshold={uncertainty_threshold} m/s)")
+                        self.generate_all_velocity_traces_plot(input_path, spade_output_dir, uncertainty_threshold)
+            except Exception as e:
+                self.progress_signal.emit(f"Warning: Failed to create comprehensive aligned velocity plot: {e}")
             
             # Create parameter mapping report for debugging
             self.create_parameter_mapping_report(velocity_shots_data, spade_output_dir)
+            
+            # Generate HEL vs Laser Energy plot if HEL detection was enabled
+            if self.spade_params.get('hel_detection_enabled', False):
+                self.generate_hel_vs_laser_energy_plot(spade_output_dir)
         else:
             self.progress_signal.emit("No velocity shots data generated")
 
@@ -977,6 +1006,203 @@ class AnalysisThread(QThread):
             
         except Exception as e:
             self.progress_signal.emit(f"Error creating parameter mapping report: {str(e)}")
+
+    def generate_hel_vs_laser_energy_plot(self, spade_output_dir):
+        """Generate HEL vs Laser Energy plot grouped by material"""
+        self.progress_signal.emit("Generating HEL vs Laser Energy plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
+            import numpy as np
+            
+            # Load velocity shots summary which contains HEL data
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping HEL vs Laser Energy plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            
+            # Check if HEL and laser energy columns exist
+            if 'hel_strength_gpa' not in df.columns:
+                self.progress_signal.emit("⚠ HEL strength not found in velocity shots - skipping HEL vs Laser Energy plot")
+                return
+            
+            # Look for laser energy column (various possible names)
+            laser_energy_col = None
+            possible_names = ['Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy', 
+                            'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power']
+            for col_name in df.columns:
+                col_normalized = col_name.lower().replace('_', ' ').replace('-', ' ')
+                for possible in possible_names:
+                    if possible.lower().replace('_', ' ').replace('-', ' ') in col_normalized:
+                        laser_energy_col = col_name
+                        break
+                if laser_energy_col:
+                    break
+            
+            if laser_energy_col is None:
+                self.progress_signal.emit("⚠ Laser energy column not found in parameter file - skipping HEL vs Laser Energy plot")
+                return
+            
+            # Filter data: only rows with valid HEL and laser energy
+            valid_data = df[(df['hel_strength_gpa'].notna()) & (df[laser_energy_col].notna())]
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid HEL + Laser Energy data points - skipping plot")
+                return
+            
+            # Get material column (should be added by parameter file)
+            material_col = None
+            for col_name in valid_data.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            
+            if material_col is None:
+                # No material column, create a default one
+                valid_data['Material'] = 'Unknown'
+                material_col = 'Material'
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Get unique materials and assign colors
+            materials = valid_data[material_col].unique()
+            cmap = plt.get_cmap('tab10' if len(materials) <= 10 else 'tab20')
+            colors = {mat: cmap(i / max(len(materials), 1)) for i, mat in enumerate(materials)}
+            
+            # Plot data grouped by material
+            markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
+            for i, material in enumerate(materials):
+                material_data = valid_data[valid_data[material_col] == material]
+                
+                # Get marker for this material
+                marker = markers[i % len(markers)]
+                color = colors[material]
+                
+                # Plot with error bars if HEL uncertainty is available
+                if 'hel_uncertainty_gpa' in material_data.columns:
+                    ax.errorbar(
+                        material_data[laser_energy_col],
+                        material_data['hel_strength_gpa'],
+                        yerr=material_data['hel_uncertainty_gpa'],
+                        fmt=marker,
+                        color=color,
+                        markersize=10,
+                        linewidth=0,
+                        elinewidth=1.5,
+                        capsize=4,
+                        alpha=0.7,
+                        label=material
+                    )
+                else:
+                    ax.scatter(
+                        material_data[laser_energy_col],
+                        material_data['hel_strength_gpa'],
+                        marker=marker,
+                        c=[color],
+                        s=100,
+                        alpha=0.7,
+                        label=material
+                    )
+            
+            # Set labels and title
+            ax.set_xlabel('Laser Energy (J)', fontsize=14, fontweight='bold')
+            ax.set_ylabel('HEL Strength (GPa)', fontsize=14, fontweight='bold')
+            ax.set_title('Hugoniot Elastic Limit vs Laser Energy by Material', fontsize=16, fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            ax.legend(title='Material', loc='best', fontsize=11)
+            
+            # Tight layout and save
+            plt.tight_layout()
+            plot_path = os.path.join(spade_output_dir, 'hel_vs_laser_energy.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated HEL vs Laser Energy plot: {plot_path}")
+            self.progress_signal.emit(f"   Plotted {len(valid_data)} data points from {len(materials)} material(s)")
+            
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating HEL vs Laser Energy plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def _plot_individual_hel_detection(self, base_name, time_aligned, velocity_filtered,
+                                       hel_start, hel_end, hel_time_clean, hel_velocity_clean,
+                                       peaks, valleys, first_peak_vel, first_valley_vel,
+                                       hel_strength, hel_uncertainty, sample_material,
+                                       spade_output_dir):
+        """Generate individual HEL detection plot showing detection results"""
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        
+        # Create figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        
+        # Top subplot: Full velocity trace with HEL window highlighted
+        ax1.plot(time_aligned, velocity_filtered, 'b-', linewidth=1.5, alpha=0.7, label='Velocity')
+        
+        # Highlight HEL detection window
+        ax1.axvspan(hel_start, hel_end, alpha=0.2, color='yellow', label='HEL Window')
+        ax1.axvline(hel_start, color='orange', linestyle='--', linewidth=1, alpha=0.7)
+        ax1.axvline(hel_end, color='orange', linestyle='--', linewidth=1, alpha=0.7)
+        
+        ax1.set_xlabel('Time (ns)', fontsize=12)
+        ax1.set_ylabel('Velocity (m/s)', fontsize=12)
+        ax1.set_title(f'HEL Detection - {base_name}\nMaterial: {sample_material}', fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(loc='upper left')
+        
+        # Bottom subplot: Zoomed HEL window with peak/valley detection
+        ax2.plot(hel_time_clean, hel_velocity_clean, 'b-', linewidth=2, label='Velocity in HEL window')
+        
+        # Mark detected peaks and valleys
+        if len(peaks) > 0 and peaks[0] < len(hel_time_clean):
+            peak_time = hel_time_clean[peaks[0]]
+            ax2.plot(peak_time, first_peak_vel, 'ro', markersize=12, 
+                    label=f'Peak (Elastic Limit): {first_peak_vel:.1f} m/s', zorder=5)
+            ax2.axhline(first_peak_vel, color='red', linestyle='--', linewidth=1, alpha=0.5)
+        
+        if len(valleys) > 0 and valleys[0] < len(hel_time_clean):
+            valley_time = hel_time_clean[valleys[0]]
+            ax2.plot(valley_time, first_valley_vel, 'gs', markersize=12,
+                    label=f'Valley (Pullback): {first_valley_vel:.1f} m/s', zorder=5)
+            ax2.axhline(first_valley_vel, color='green', linestyle='--', linewidth=1, alpha=0.5)
+        
+        # Add arrow showing pullback
+        if len(peaks) > 0 and len(valleys) > 0 and peaks[0] < len(hel_time_clean) and valleys[0] < len(hel_time_clean):
+            mid_time = (hel_time_clean[peaks[0]] + hel_time_clean[valleys[0]]) / 2
+            ax2.annotate('', xy=(mid_time, first_valley_vel), xytext=(mid_time, first_peak_vel),
+                        arrowprops=dict(arrowstyle='<->', color='purple', lw=2))
+            pullback = abs(first_peak_vel - first_valley_vel)
+            ax2.text(mid_time, (first_peak_vel + first_valley_vel) / 2, 
+                    f'  ΔV = {pullback:.1f} m/s', fontsize=10, color='purple',
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
+        
+        ax2.set_xlabel('Time (ns)', fontsize=12)
+        ax2.set_ylabel('Velocity (m/s)', fontsize=12)
+        ax2.set_title(f'HEL Window Detail', fontsize=13, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend(loc='best', fontsize=10)
+        
+        # Add text box with HEL results
+        result_text = f'HEL Strength: {hel_strength:.3f} ± {hel_uncertainty:.3f} GPa'
+        ax2.text(0.02, 0.98, result_text, transform=ax2.transAxes,
+                fontsize=12, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+        
+        plt.tight_layout()
+        
+        # Save plot in SPADE_analysis folder
+        plot_filename = f'{base_name}--hel_detection.png'
+        plot_path = os.path.join(spade_output_dir, plot_filename)
+        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        
+        self.progress_signal.emit(f"  Saved HEL plot: {plot_filename}")
 
     def generate_combined_velocity_plot(self, velocity_plot_data, spade_output_dir):
         """Generate combined velocity plot with color coding based on material information"""
@@ -1639,9 +1865,12 @@ class AnalysisThread(QThread):
             summary_csv = os.path.join(spade_output_dir, 'spall_summary.csv')
             if os.path.exists(summary_csv):
                 summary_df = pd.read_csv(summary_csv)
-                # Get density and acoustic velocity from GUI/spade_params
-                density = self.spade_params.get('density', 8960)
-                acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
+                # Get default density and acoustic velocity from GUI/spade_params (used as fallback)
+                default_density = self.spade_params.get('density', 8960)
+                default_acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
+                
+                # Use parameter file data passed to AnalysisThread
+                param_data = self.param_data if self.param_data else {}
                 
                 # Enhance SPADE summary with ALPSS results and additional calculations
                 enhanced_summary = []
@@ -1649,6 +1878,29 @@ class AnalysisThread(QThread):
                 for idx, row in summary_df.iterrows():
                     enhanced_row = row.copy()
                     filename = row.get('Filename', '')
+                    
+                    # Get material-specific properties if available
+                    base_name = filename
+                    for suffix in ['--vel-smooth-with-uncert', '--vel-smooth', '--velocity', '--vel']:
+                        if base_name.endswith(suffix):
+                            base_name = base_name[:-len(suffix)]
+                            break
+                    
+                    # Try to get material from parameter file
+                    sample_material = 'Unknown'
+                    if param_data and base_name in param_data:
+                        sample_material = param_data[base_name].get('Sample material', 'Unknown')
+                    
+                    # Get material-specific properties from database
+                    mat_props = get_material_properties(sample_material, default_density, default_acoustic_velocity)
+                    density = mat_props['density']
+                    acoustic_velocity = mat_props['bulk_wave_speed']
+                    
+                    # Add material information to enhanced row
+                    enhanced_row['Material'] = sample_material
+                    enhanced_row['Density_kg_m3'] = density
+                    enhanced_row['Acoustic_Velocity_m_s'] = acoustic_velocity
+                    enhanced_row['Material_Found_In_Database'] = mat_props['material_found']
                     
                     # Try to find corresponding ALPSS results file
                     alpss_results_file = os.path.join(self.output_dir, f"{filename}--results.csv")
@@ -1664,6 +1916,8 @@ class AnalysisThread(QThread):
                             enhanced_row['ALPSS_Strain_Rate_s1'] = alpss_dict.get('Strain Rate', np.nan)
                             enhanced_row['ALPSS_Strain_Rate_Uncertainty_s1'] = alpss_dict.get('Strain Rate Uncertainty', np.nan)
                             enhanced_row['ALPSS_Peak_Shock_Stress_GPa'] = alpss_dict.get('Peak Shock Stress', np.nan)
+                            enhanced_row['ALPSS_Peak_Velocity_Uncertainty_ms'] = alpss_dict.get('Peak Velocity Uncertainty', np.nan)
+                            enhanced_row['ALPSS_Pullback_Velocity_Uncertainty_ms'] = alpss_dict.get('Pullback Velocity Uncertainty', np.nan)
                             enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] = alpss_dict.get('Velocity at Max Compression', np.nan)
                             enhanced_row['ALPSS_Velocity_at_Max_Tension_ms'] = alpss_dict.get('Velocity at Max Tension', np.nan)
                             enhanced_row['ALPSS_Velocity_at_Recompression_ms'] = alpss_dict.get('Velocity at Recompression', np.nan)
@@ -1677,10 +1931,11 @@ class AnalysisThread(QThread):
                         except Exception as e:
                             print(f"[WARNING] Could not read ALPSS results for {filename}: {e}")
                     
-                    # Calculate shock stress uncertainty if we have velocity uncertainty
-                    if 'ALPSS_Velocity_at_Max_Compression_ms' in enhanced_row and not pd.isna(enhanced_row['ALPSS_Velocity_at_Max_Compression_ms']):
-                        # Estimate velocity uncertainty as 1% of velocity (typical for PDV)
-                        vel_uncertainty = enhanced_row['ALPSS_Velocity_at_Max_Compression_ms'] * 0.01
+                    # Calculate shock stress uncertainty using ALPSS-calculated velocity uncertainty
+                    # Only use rigorously calculated uncertainty - no ad-hoc estimates
+                    vel_uncertainty = enhanced_row.get('ALPSS_Peak_Velocity_Uncertainty_ms', np.nan)
+                    
+                    if not pd.isna(vel_uncertainty) and not pd.isna(density) and not pd.isna(acoustic_velocity):
                         enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = 0.5 * density * acoustic_velocity * vel_uncertainty * 1e-9
                     else:
                         enhanced_row['ALPSS_Peak_Shock_Stress_Uncertainty_GPa'] = np.nan
@@ -2053,40 +2308,39 @@ class PostProcessingWorker(QObject):
             # Labels and axis limits
             ax1.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax1.set_ylabel('Velocity (m/s)', fontsize=12)
-            ax1.set_title(f'All Velocity Traces (Aligned) - {traces_plotted} traces', fontsize=14)
+            ax1.set_title(f'All Velocity Traces (Aligned - Full Length) - {traces_plotted} traces', fontsize=14)
             ax1.grid(True, alpha=0.3)
             
             ax2.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax2.set_ylabel('Velocity (m/s)', fontsize=12)
             ax2.grid(True, alpha=0.3)
             
-            # Apply axis limits from post-processing settings - BEFORE tight_layout
+            # TOP SUBPLOT (ax1): Always use auto-calculated limits (full length)
+            # This gives a complete overview of all data without user input
+            self.progress.emit(f"Top subplot: Using auto-calculated limits (full length)")
+            
+            # BOTTOM SUBPLOT (ax2): Use user-specified zoom window
+            # Apply axis limits from post-processing settings for ZOOM plot only
             try:
                 if not current_params.get('auto_calculate_limits', True):
-                    x_min_main = float(current_params.get('x_min_main', 0))
-                    x_max_main = float(current_params.get('x_max_main', 100))
-                    y_min_main = float(current_params.get('y_min_main', 0))
-                    y_max_main = float(current_params.get('y_max_main', 600))
-                    # Apply to top subplot
-                    ax1.set_xlim(x_min_main, x_max_main)
-                    ax1.set_ylim(y_min_main, y_max_main)
-                    self.progress.emit(f"Applied top limits: X({x_min_main}-{x_max_main}), Y({y_min_main}-{y_max_main})")
-                    
+                    # User has specified custom zoom limits
                     x_min_zoom = float(current_params.get('x_min_zoom', 0))
-                    x_max_zoom = float(current_params.get('x_max_zoom', 50))
+                    x_max_zoom = float(current_params.get('x_max_zoom', zoom_ns))
                     y_min_zoom = float(current_params.get('y_min_zoom', 0))
                     y_max_zoom = float(current_params.get('y_max_zoom', 300))
                     ax2.set_xlim(x_min_zoom, x_max_zoom)
                     ax2.set_ylim(y_min_zoom, y_max_zoom)
                     ax2.set_title(f'Zoomed Velocity Traces ({int(x_min_zoom)}-{int(x_max_zoom)} ns)', fontsize=14)
-                    self.progress.emit(f"Applied zoom limits: X({x_min_zoom}-{x_max_zoom}), Y({y_min_zoom}-{y_max_zoom})")
+                    self.progress.emit(f"Bottom subplot: Using user zoom limits X({x_min_zoom}-{x_max_zoom}), Y({y_min_zoom}-{y_max_zoom})")
                 else:
+                    # Use default zoom window from zoom_window_ns parameter
                     ax2.set_xlim(0, zoom_ns)
-                    ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
+                    ax2.set_title(f'Zoomed Velocity Traces (First {zoom_ns} ns)', fontsize=14)
+                    self.progress.emit(f"Bottom subplot: Using default zoom window (0-{zoom_ns} ns)")
             except Exception as e:
                 self.progress.emit(f"⚠ Axis limits error: {str(e)[:80]}")
                 ax2.set_xlim(0, zoom_ns)
-                ax2.set_title(f'First {zoom_ns} ns Velocity Traces', fontsize=14)
+                ax2.set_title(f'Zoomed Velocity Traces (First {zoom_ns} ns)', fontsize=14)
             
             # Add legend for materials
             if material_colors:
@@ -4129,20 +4383,35 @@ class HELIXAnalysisToolbox(QMainWindow):
         material_layout.setSpacing(10)  # Increase spacing between elements
         
         # Density
-        material_layout.addWidget(QLabel("Density (kg/m³):"), 0, 0)
+        material_layout.addWidget(QLabel("Default Density (kg/m³):"), 0, 0)
         self.spade_density = QDoubleSpinBox()
         self.spade_density.setRange(1000, 25000)
         self.spade_density.setDecimals(2)
         self.spade_density.setValue(8960)  # Default: Copper
+        self.spade_density.setToolTip("Fallback value if material not found in database")
         material_layout.addWidget(self.spade_density, 0, 1)
         
         # Acoustic velocity
-        material_layout.addWidget(QLabel("Acoustic Velocity (m/s):"), 0, 2)
+        material_layout.addWidget(QLabel("Default Acoustic Velocity (m/s):"), 0, 2)
         self.spade_acoustic_velocity = QDoubleSpinBox()
         self.spade_acoustic_velocity.setRange(1000, 10000)
         self.spade_acoustic_velocity.setDecimals(2)
         self.spade_acoustic_velocity.setValue(3950)  # Default: Copper
+        self.spade_acoustic_velocity.setToolTip("Fallback value if material not found in database")
         material_layout.addWidget(self.spade_acoustic_velocity, 0, 3)
+        
+        # Add help text explaining material properties priority
+        material_help = QPlainTextEdit()
+        material_help.setMaximumHeight(80)
+        material_help.setReadOnly(True)
+        material_help.setPlainText(
+            "📌 Material Properties Priority:\n"
+            "1. Parameter file explicit columns (Density_kg_m3, Bulk_Wave_Speed_m_s) - HIGHEST\n"
+            "2. Material Database lookup via 'Sample material' column - OVERRIDES GUI values\n"
+            "3. GUI values above - FALLBACK only when material not found\n"
+            "💡 Tip: Leave defaults as-is. System auto-detects from parameter file!"
+        )
+        material_layout.addWidget(material_help, 1, 0, 1, 4)
         
         layout.addWidget(material_group)
         
@@ -4255,6 +4524,10 @@ class HELIXAnalysisToolbox(QMainWindow):
         
         self.plot_individual = QCheckBox("Generate Individual Plots")
         self.plot_individual.setChecked(True)
+        self.plot_individual.setToolTip("Generate individual plots for each file:\n"
+                                       "• Spall analysis: spall detection plots\n"
+                                       "• HEL detection: HEL window plots with peak/valley markers\n"
+                                       "Plots saved in SPADE_analysis folder")
         output_layout.addWidget(self.plot_individual, 0, 0)
         
         self.save_summary = QCheckBox("Save Summary Table")
@@ -4567,6 +4840,8 @@ Peak Detection:
 
 Output Options:
 - plot_individual: Generate individual analysis plots
+  * For spall analysis: individual spall detection plots
+  * For HEL detection: individual HEL detection plots (shows full trace + zoomed HEL window with peak/valley markers)
 - save_summary_table: Save summary CSV with results
 - show_plots: Display plots during analysis (if possible)
 
