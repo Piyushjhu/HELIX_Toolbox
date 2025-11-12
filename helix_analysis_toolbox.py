@@ -127,6 +127,45 @@ class AnalysisThread(QThread):
         self.spade_input_files = spade_input_files
         self.analysis_mode = analysis_mode  # "alpss_only", "spade_only", or "both"
 
+    def get_param_data_for_file(self, base_name):
+        """
+        Get parameter data for a filename using multiple matching strategies.
+        Tries: 1) Exact match, 2) Date-shot pattern match, 3) Partial match
+        
+        Args:
+            base_name: Base filename (without extension and suffixes)
+            
+        Returns:
+            Dictionary of parameter data, or empty dict if no match found
+        """
+        import re
+        
+        if not self.param_data:
+            return {}
+        
+        # Try exact match first
+        if base_name in self.param_data:
+            return self.param_data[base_name]
+        
+        # Extract date-shot pattern (YYYYMMDD--NNNNN) for matching
+        date_shot_pattern = re.search(r'(\d{8}--\d{5})', base_name)
+        
+        if date_shot_pattern:
+            date_shot = date_shot_pattern.group(1)
+            # Try matching with just date and shot number
+            for key in self.param_data.keys():
+                if date_shot in str(key):
+                    self.progress_signal.emit(f"Date-shot match: {base_name} -> {key} (using {date_shot})")
+                    return self.param_data[key]
+        
+        # Try partial match as fallback
+        for key in self.param_data.keys():
+            if base_name in str(key) or str(key) in base_name:
+                self.progress_signal.emit(f"Partial match: {base_name} -> {key}")
+                return self.param_data[key]
+        
+        return {}
+
     def run(self):
         try:
             # Add memory management
@@ -731,40 +770,10 @@ class AnalysisThread(QThread):
     os.path.basename(file_path))[0].replace(
         '--vel-smooth-with-uncert', '')
 
-                # Get parameter data if available - try multiple matching strategies
-                param_info = {}
-                if self.param_data:
-                    # Try exact match first
-                    if base_name in self.param_data:
-                        param_info = self.param_data[base_name]
-                        self.progress_signal.emit(f"Exact match found for {base_name}")
-                    else:
-                        # Try partial matches with more robust matching
-                        best_match = None
-                        best_match_score = 0
-                        
-                        for key in self.param_data.keys():
-                            # Clean both names for comparison
-                            clean_base = base_name.lower().replace('_', '').replace('-', '').replace(' ', '')
-                            clean_key = str(key).lower().replace('_', '').replace('-', '').replace(' ', '')
-                            
-                            # Calculate match score
-                            if clean_base == clean_key:
-                                best_match = key
-                                best_match_score = 100
-                                break
-                            elif clean_base in clean_key or clean_key in clean_base:
-                                # Calculate similarity score
-                                score = len(set(clean_base) & set(clean_key)) / len(set(clean_base) | set(clean_key))
-                                if score > best_match_score:
-                                    best_match = key
-                                    best_match_score = score
-                        
-                        if best_match and best_match_score > 0.3:  # Threshold for acceptable match
-                            param_info = self.param_data[best_match]
-                            self.progress_signal.emit(f"Partial match found for {base_name} -> {best_match} (score: {best_match_score:.2f})")
-                        else:
-                            self.progress_signal.emit(f"No suitable parameter match found for {base_name}")
+                # Get parameter data if available using helper function
+                param_info = self.get_param_data_for_file(base_name)
+                if not param_info:
+                    self.progress_signal.emit(f"No parameter match found for {base_name}")
                 
                 # Debug parameter data
                 if param_info:
@@ -1489,18 +1498,8 @@ class AnalysisThread(QThread):
             # Get file base name for parameter matching
             base_name = os.path.splitext(filename)[0]
 
-            # Get parameter data if available - try multiple matching strategies
-            param_info = {}
-            if self.param_data:
-                # Try exact match first
-                if base_name in self.param_data:
-                    param_info = self.param_data[base_name]
-                else:
-                    # Try partial matches
-                    for key in self.param_data.keys():
-                        if base_name in key or key in base_name:
-                            param_info = self.param_data[key]
-                            break
+            # Get parameter data if available using helper function
+            param_info = self.get_param_data_for_file(base_name)
 
             # Debug parameter data
             if param_info:
@@ -1886,10 +1885,11 @@ class AnalysisThread(QThread):
                             base_name = base_name[:-len(suffix)]
                             break
                     
-                    # Try to get material from parameter file
+                    # Try to get material from parameter file using helper function
                     sample_material = 'Unknown'
-                    if param_data and base_name in param_data:
-                        sample_material = param_data[base_name].get('Sample material', 'Unknown')
+                    matched_param = self.get_param_data_for_file(base_name)
+                    if matched_param:
+                        sample_material = matched_param.get('Sample material', 'Unknown')
                     
                     # Get material-specific properties from database
                     mat_props = get_material_properties(sample_material, default_density, default_acoustic_velocity)
@@ -2178,8 +2178,21 @@ class PostProcessingWorker(QObject):
                             break
                     
                     material = "Unknown"
-                    if param_data and base_name in param_data:
-                        material = param_data[base_name].get('Sample material', 'Unknown')
+                    if param_data:
+                        # Try exact match first
+                        if base_name in param_data:
+                            material = param_data[base_name].get('Sample material', 'Unknown')
+                        else:
+                            # Try date-shot pattern matching (YYYYMMDD--NNNNN)
+                            import re
+                            date_shot_pattern = re.search(r'(\d{8}--\d{5})', base_name)
+                            if date_shot_pattern:
+                                date_shot = date_shot_pattern.group(1)
+                                for key in param_data.keys():
+                                    if date_shot in str(key):
+                                        material = param_data[key].get('Sample material', 'Unknown')
+                                        break
+                        
                         if isinstance(material, str):
                             material = material.strip()
                     
@@ -2261,16 +2274,30 @@ class PostProcessingWorker(QObject):
                     material = "Unknown"
                     
                     # Try to get material from param_data
-                    if param_data and base_name in param_data:
-                        material = param_data[base_name].get('Sample material', 'Unknown')
+                    if param_data:
+                        # Try exact match first
+                        if base_name in param_data:
+                            material = param_data[base_name].get('Sample material', 'Unknown')
+                        else:
+                            # Try date-shot pattern matching (YYYYMMDD--NNNNN)
+                            import re
+                            date_shot_pattern = re.search(r'(\d{8}--\d{5})', base_name)
+                            if date_shot_pattern:
+                                date_shot = date_shot_pattern.group(1)
+                                for key in param_data.keys():
+                                    if date_shot in str(key):
+                                        material = param_data[key].get('Sample material', 'Unknown')
+                                        break
+                        
                         if isinstance(material, str):
                             material = material.strip()
-                    else:
-                        # Debug: show first few mismatches
-                        if i < 5:
-                            self.progress.emit(f"  No match for: {base_name}")
-                        elif i == 5:
-                            self.progress.emit(f"  ... (more non-matching files)")
+                        
+                        if material == "Unknown":
+                            # Debug: show first few mismatches
+                            if i < 5:
+                                self.progress.emit(f"  No match for: {base_name}")
+                            elif i == 5:
+                                self.progress.emit(f"  ... (more non-matching files)")
                     
                     # Assign color based on material
                     if material not in material_colors:
@@ -2393,8 +2420,20 @@ class PostProcessingWorker(QObject):
                         break
                 
                 material = "Unknown"
-                if param_data and base_name in param_data:
-                    material = param_data[base_name].get('Sample material', 'Unknown')
+                if param_data:
+                    # Try exact match first
+                    if base_name in param_data:
+                        material = param_data[base_name].get('Sample material', 'Unknown')
+                    else:
+                        # Try date-shot pattern matching (YYYYMMDD--NNNNN)
+                        import re
+                        date_shot_pattern = re.search(r'(\d{8}--\d{5})', base_name)
+                        if date_shot_pattern:
+                            date_shot = date_shot_pattern.group(1)
+                            for key in param_data.keys():
+                                if date_shot in str(key):
+                                    material = param_data[key].get('Sample material', 'Unknown')
+                                    break
                     if isinstance(material, str):
                         material = material.strip()
                 
