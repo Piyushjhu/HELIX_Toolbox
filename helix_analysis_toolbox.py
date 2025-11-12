@@ -223,7 +223,8 @@ class AnalysisThread(QThread):
                     if self.param_data:
                         base_name = os.path.splitext(
                             os.path.basename(input_file))[0]
-                        exp_info = self.param_data.get(base_name, {})
+                        # Use helper function for smart matching (exact, date-shot pattern, or partial)
+                        exp_info = self.get_param_data_for_file(base_name)
                         if exp_info:
                             alpss_params['experiment_info'] = exp_info
                             # Handle different possible column names for experiment info
