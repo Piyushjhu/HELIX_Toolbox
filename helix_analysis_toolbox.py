@@ -6443,11 +6443,11 @@ Output Files:
             if not success:
                 QMessageBox.critical(self, "Error", f"Failed to load ALPSS config:\n{message}")
                 return
-            self.log_message(f"✓ Using ALPSS parameters from config file: {config_path}")
+            self.progress_text.appendPlainText(f"✓ Using ALPSS parameters from config file: {config_path}")
         else:
             # Use GUI parameters
             alpss_params = self.get_alpss_params()
-            self.log_message("✓ Using ALPSS parameters from GUI")
+            self.progress_text.appendPlainText("✓ Using ALPSS parameters from GUI")
         
         # SPADE Parameters
         if self.spade_config_mode.isChecked():
@@ -6460,11 +6460,11 @@ Output Files:
             if not success:
                 QMessageBox.critical(self, "Error", f"Failed to load SPADE config:\n{message}")
                 return
-            self.log_message(f"✓ Using SPADE parameters from config file: {config_path}")
+            self.progress_text.appendPlainText(f"✓ Using SPADE parameters from config file: {config_path}")
         else:
             # Use GUI parameters
             spade_params = self.get_spade_params()
-            self.log_message("✓ Using SPADE parameters from GUI")
+            self.progress_text.appendPlainText("✓ Using SPADE parameters from GUI")
         
         # Get parameter file data if available
         param_data = self.get_param_file_data()
