@@ -700,9 +700,10 @@ class AnalysisThread(QThread):
                     self.progress_signal.emit(
                         f"Info: No noise fraction file found for {os.path.basename(file_path)}, using unfiltered data")
 
-                # TRACE ALIGNMENT: Find t=0 when velocity reaches 30 m/s
-                velocity_threshold = 30.0  # m/s
+                # TRACE ALIGNMENT: Find t=0 when velocity reaches user-defined threshold
+                velocity_threshold = self.spade_params.get('align_velocity_threshold_ms', 30.0)  # m/s
                 t0_idx = None
+                t0 = None
                 
                 # Find first point where velocity exceeds threshold
                 for i, vel in enumerate(velocity_filtered):
@@ -1284,7 +1285,8 @@ class AnalysisThread(QThread):
                 ax.plot(time_data, velocity_data, color=color, alpha=0.7, linewidth=1)
             
             # Customize plot
-            ax.set_xlabel('Time (ns) - Aligned to t=0 at 30 m/s', fontsize=12)
+            align_threshold = self.spade_params.get('align_velocity_threshold_ms', 30.0)
+            ax.set_xlabel(f'Time (ns) - Aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax.set_ylabel('Velocity (m/s)', fontsize=12)
             ax.set_title('Combined Velocity Traces - Aligned (Color-coded by Material)', fontsize=14)
             ax.grid(True, alpha=0.3)
