@@ -10,6 +10,7 @@
 ---
 
 **Latest Updates:**
+- **NEW:** Configuration file support for ALPSS and SPADE parameters - Save/load parameter sets for reproducible analysis
 - Enhanced post-processing with laser energy vs. impact velocity plots
 - Improved noise fraction-based data filtering with consistent CSV output lengths
 - User-configurable alignment thresholds for velocity trace analysis
@@ -491,6 +492,15 @@ Where:
 - **X11 Integration**: Native Linux desktop integration
 - **Package Manager Support**: Easy installation via pip
 - **Terminal Friendly**: Full command-line interface
+
+## Documentation
+
+Additional documentation files are available:
+
+- **[CONFIG_FILE_GUIDE.md](CONFIG_FILE_GUIDE.md)**: Complete guide to using configuration files for parameter management
+- **[CSV_FILE_FORMATS.md](CSV_FILE_FORMATS.md)**: Detailed specifications of all output CSV file formats
+- **[POST_PROCESSING_GUIDE.md](POST_PROCESSING_GUIDE.md)**: Guide to post-processing and visualization options
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)**: Quick reference guide for common operations
 
 ## Credits
 

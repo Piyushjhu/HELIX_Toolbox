@@ -38,6 +38,24 @@ def cleanup_matplotlib():
     plt.clf()  # Clear current figure
     plt.cla()  # Clear current axes
 
+def save_config_to_file(config_dict, file_path):
+    """Save configuration dictionary to JSON file"""
+    try:
+        with open(file_path, 'w') as f:
+            json.dump(config_dict, f, indent=4)
+        return True, f"Configuration saved to {file_path}"
+    except Exception as e:
+        return False, f"Error saving config: {str(e)}"
+
+def load_config_from_file(file_path):
+    """Load configuration dictionary from JSON file"""
+    try:
+        with open(file_path, 'r') as f:
+            config_dict = json.load(f)
+        return True, config_dict, f"Configuration loaded from {file_path}"
+    except Exception as e:
+        return False, {}, f"Error loading config: {str(e)}"
+
 class ScientificSpinBox(QDoubleSpinBox):
     """Custom spin box that accepts scientific notation input"""
 
@@ -4160,6 +4178,51 @@ class HELIXAnalysisToolbox(QMainWindow):
         layout = QVBoxLayout(scroll_widget)
         layout.setSpacing(15)  # Increase spacing between groups
         
+        # Config File Management
+        config_group = QGroupBox("Configuration File Management")
+        config_layout = QGridLayout(config_group)
+        config_layout.setSpacing(10)
+        
+        # Mode selection
+        config_layout.addWidget(QLabel("Parameter Entry Mode:"), 0, 0)
+        self.alpss_config_mode_group = QButtonGroup()
+        self.alpss_manual_mode = QRadioButton("Manual Entry (use GUI controls)")
+        self.alpss_config_mode = QRadioButton("Use Config File")
+        self.alpss_config_mode_group.addButton(self.alpss_manual_mode)
+        self.alpss_config_mode_group.addButton(self.alpss_config_mode)
+        self.alpss_manual_mode.setChecked(True)
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(self.alpss_manual_mode)
+        mode_layout.addWidget(self.alpss_config_mode)
+        config_layout.addLayout(mode_layout, 0, 1, 1, 3)
+        
+        # Config file path
+        config_layout.addWidget(QLabel("Config File Path:"), 1, 0)
+        self.alpss_config_path = QLineEdit()
+        self.alpss_config_path.setPlaceholderText("Select a config file to load ALPSS parameters")
+        self.alpss_config_path.setEnabled(False)
+        config_layout.addWidget(self.alpss_config_path, 1, 1, 1, 2)
+        
+        self.alpss_config_browse_btn = QPushButton("Browse")
+        self.alpss_config_browse_btn.clicked.connect(self.browse_alpss_config)
+        self.alpss_config_browse_btn.setEnabled(False)
+        config_layout.addWidget(self.alpss_config_browse_btn, 1, 3)
+        
+        # Load and Save buttons
+        self.alpss_config_load_btn = QPushButton("Load Config")
+        self.alpss_config_load_btn.clicked.connect(self.load_alpss_config)
+        self.alpss_config_load_btn.setEnabled(False)
+        config_layout.addWidget(self.alpss_config_load_btn, 2, 0)
+        
+        self.alpss_config_save_btn = QPushButton("Save Current Settings to Config")
+        self.alpss_config_save_btn.clicked.connect(self.save_alpss_config)
+        config_layout.addWidget(self.alpss_config_save_btn, 2, 1, 1, 3)
+        
+        # Connect mode change
+        self.alpss_config_mode.toggled.connect(self.on_alpss_config_mode_changed)
+        
+        layout.addWidget(config_group)
+        
         # Basic parameters
         basic_group = QGroupBox("Basic Parameters")
         basic_layout = QGridLayout(basic_group)
@@ -4778,6 +4841,51 @@ class HELIXAnalysisToolbox(QMainWindow):
         scroll_widget = QWidget()
         layout = QVBoxLayout(scroll_widget)
         layout.setSpacing(15)  # Increase spacing between groups
+        
+        # Config File Management
+        config_group = QGroupBox("Configuration File Management")
+        config_layout = QGridLayout(config_group)
+        config_layout.setSpacing(10)
+        
+        # Mode selection
+        config_layout.addWidget(QLabel("Parameter Entry Mode:"), 0, 0)
+        self.spade_config_mode_group = QButtonGroup()
+        self.spade_manual_mode = QRadioButton("Manual Entry (use GUI controls)")
+        self.spade_config_mode = QRadioButton("Use Config File")
+        self.spade_config_mode_group.addButton(self.spade_manual_mode)
+        self.spade_config_mode_group.addButton(self.spade_config_mode)
+        self.spade_manual_mode.setChecked(True)
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(self.spade_manual_mode)
+        mode_layout.addWidget(self.spade_config_mode)
+        config_layout.addLayout(mode_layout, 0, 1, 1, 3)
+        
+        # Config file path
+        config_layout.addWidget(QLabel("Config File Path:"), 1, 0)
+        self.spade_config_path = QLineEdit()
+        self.spade_config_path.setPlaceholderText("Select a config file to load SPADE parameters")
+        self.spade_config_path.setEnabled(False)
+        config_layout.addWidget(self.spade_config_path, 1, 1, 1, 2)
+        
+        self.spade_config_browse_btn = QPushButton("Browse")
+        self.spade_config_browse_btn.clicked.connect(self.browse_spade_config)
+        self.spade_config_browse_btn.setEnabled(False)
+        config_layout.addWidget(self.spade_config_browse_btn, 1, 3)
+        
+        # Load and Save buttons
+        self.spade_config_load_btn = QPushButton("Load Config")
+        self.spade_config_load_btn.clicked.connect(self.load_spade_config)
+        self.spade_config_load_btn.setEnabled(False)
+        config_layout.addWidget(self.spade_config_load_btn, 2, 0)
+        
+        self.spade_config_save_btn = QPushButton("Save Current Settings to Config")
+        self.spade_config_save_btn.clicked.connect(self.save_spade_config)
+        config_layout.addWidget(self.spade_config_save_btn, 2, 1, 1, 3)
+        
+        # Connect mode change
+        self.spade_config_mode.toggled.connect(self.on_spade_config_mode_changed)
+        
+        layout.addWidget(config_group)
         
         # Experiment type selection
         experiment_group = QGroupBox("Experiment Type")
@@ -5487,6 +5595,264 @@ Output Files:
             self.hel_group.setVisible(bool(checked))
         except Exception:
             pass
+    
+    # ========== Config File Management Functions ==========
+    
+    def on_alpss_config_mode_changed(self, checked):
+        """Enable/disable config file controls when ALPSS config mode changes"""
+        if checked:  # Config file mode selected
+            self.alpss_config_path.setEnabled(True)
+            self.alpss_config_browse_btn.setEnabled(True)
+            self.alpss_config_load_btn.setEnabled(True)
+        else:  # Manual mode selected
+            self.alpss_config_path.setEnabled(False)
+            self.alpss_config_browse_btn.setEnabled(False)
+            self.alpss_config_load_btn.setEnabled(False)
+    
+    def on_spade_config_mode_changed(self, checked):
+        """Enable/disable config file controls when SPADE config mode changes"""
+        if checked:  # Config file mode selected
+            self.spade_config_path.setEnabled(True)
+            self.spade_config_browse_btn.setEnabled(True)
+            self.spade_config_load_btn.setEnabled(True)
+        else:  # Manual mode selected
+            self.spade_config_path.setEnabled(False)
+            self.spade_config_browse_btn.setEnabled(False)
+            self.spade_config_load_btn.setEnabled(False)
+    
+    def browse_alpss_config(self):
+        """Browse for ALPSS config file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select ALPSS Config File", "", 
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if file_path:
+            self.alpss_config_path.setText(file_path)
+    
+    def browse_spade_config(self):
+        """Browse for SPADE config file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select SPADE Config File", "", 
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if file_path:
+            self.spade_config_path.setText(file_path)
+    
+    def load_alpss_config(self):
+        """Load ALPSS parameters from config file"""
+        config_path = self.alpss_config_path.text()
+        if not config_path or not os.path.exists(config_path):
+            QMessageBox.warning(self, "Error", "Please select a valid config file")
+            return
+        
+        success, config_dict, message = load_config_from_file(config_path)
+        if not success:
+            QMessageBox.critical(self, "Error", message)
+            return
+        
+        # Apply loaded config to GUI controls
+        try:
+            self.apply_alpss_config(config_dict)
+            QMessageBox.information(self, "Success", f"{message}\n\nALPSS parameters loaded successfully!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error applying config: {str(e)}")
+    
+    def load_spade_config(self):
+        """Load SPADE parameters from config file"""
+        config_path = self.spade_config_path.text()
+        if not config_path or not os.path.exists(config_path):
+            QMessageBox.warning(self, "Error", "Please select a valid config file")
+            return
+        
+        success, config_dict, message = load_config_from_file(config_path)
+        if not success:
+            QMessageBox.critical(self, "Error", message)
+            return
+        
+        # Apply loaded config to GUI controls
+        try:
+            self.apply_spade_config(config_dict)
+            QMessageBox.information(self, "Success", f"{message}\n\nSPADE parameters loaded successfully!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error applying config: {str(e)}")
+    
+    def save_alpss_config(self):
+        """Save current ALPSS parameters to config file"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save ALPSS Config File", "alpss_config.json", 
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not file_path:
+            return
+        
+        # Get current parameters
+        alpss_params = self.get_alpss_params()
+        
+        success, message = save_config_to_file(alpss_params, file_path)
+        if success:
+            QMessageBox.information(self, "Success", message)
+            self.alpss_config_path.setText(file_path)
+        else:
+            QMessageBox.critical(self, "Error", message)
+    
+    def save_spade_config(self):
+        """Save current SPADE parameters to config file"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save SPADE Config File", "spade_config.json", 
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if not file_path:
+            return
+        
+        # Get current parameters
+        spade_params = self.get_spade_params()
+        
+        success, message = save_config_to_file(spade_params, file_path)
+        if success:
+            QMessageBox.information(self, "Success", message)
+            self.spade_config_path.setText(file_path)
+        else:
+            QMessageBox.critical(self, "Error", message)
+    
+    def apply_alpss_config(self, config_dict):
+        """Apply loaded ALPSS config to GUI controls"""
+        # Basic parameters
+        if 'save_data' in config_dict:
+            self.save_data.setCurrentText(config_dict['save_data'])
+        if 'display_plots' in config_dict:
+            self.display_plots.setCurrentText(config_dict['display_plots'])
+        if 'save_all_plots' in config_dict:
+            self.save_all_plots.setCurrentText(config_dict['save_all_plots'])
+        if 'spall_calculation' in config_dict:
+            self.spall_calculation.setCurrentText(config_dict['spall_calculation'])
+        if 'header_lines' in config_dict:
+            self.header_lines.setValue(config_dict['header_lines'])
+        if 'start_time_user' in config_dict:
+            self.start_time_user.setText(config_dict['start_time_user'])
+        if 'start_time_correction' in config_dict:
+            self.start_time_correction.setValue(config_dict['start_time_correction'])
+        
+        # Time parameters
+        if 'time_to_skip' in config_dict:
+            self.time_to_skip.setValue(config_dict['time_to_skip'])
+        if 'time_to_take' in config_dict:
+            self.time_to_take.setValue(config_dict['time_to_take'])
+        if 't_before' in config_dict:
+            self.t_before.setValue(config_dict['t_before'])
+        if 't_after' in config_dict:
+            self.t_after.setValue(config_dict['t_after'])
+        
+        # Signal processing
+        if 'use_notch_filter' in config_dict:
+            self.use_notch_filter.setChecked(config_dict['use_notch_filter'])
+        if 'carrier_freq' in config_dict:
+            self.carrier_freq.setValue(config_dict['carrier_freq'])
+        if 'bandwidth_notch' in config_dict:
+            self.bandwidth_notch.setValue(config_dict['bandwidth_notch'])
+        if 'smoothing_window_size' in config_dict:
+            self.smoothing_window_size.setValue(config_dict['smoothing_window_size'])
+        
+        # Uncertainty parameters
+        if 'noise_window_duration' in config_dict:
+            self.noise_window_duration.setValue(config_dict['noise_window_duration'])
+        if 'noise_threshold_multiplier' in config_dict:
+            self.noise_threshold_multiplier.setValue(config_dict['noise_threshold_multiplier'])
+        if 'use_advanced_noise_model' in config_dict:
+            self.use_advanced_noise_model.setChecked(config_dict['use_advanced_noise_model'])
+        
+        # Velocity calculation
+        if 'lambda_laser' in config_dict:
+            self.lambda_laser.setValue(config_dict['lambda_laser'])
+        if 'velocity_per_fringe' in config_dict:
+            self.velocity_per_fringe.setValue(config_dict['velocity_per_fringe'])
+        
+        # Output file selection checkboxes
+        if 'save_voltage_csv' in config_dict:
+            self.save_voltage_csv.setChecked(config_dict['save_voltage_csv'])
+        if 'save_velocity_csv' in config_dict:
+            self.save_velocity_csv.setChecked(config_dict['save_velocity_csv'])
+        if 'save_velocity_smooth_csv' in config_dict:
+            self.save_velocity_smooth_csv.setChecked(config_dict['save_velocity_smooth_csv'])
+        if 'save_velocity_uncert_csv' in config_dict:
+            self.save_velocity_uncert_csv.setChecked(config_dict['save_velocity_uncert_csv'])
+        if 'save_velocity_smooth_uncert_csv' in config_dict:
+            self.save_velocity_smooth_uncert_csv.setChecked(config_dict['save_velocity_smooth_uncert_csv'])
+        if 'save_results_csv' in config_dict:
+            self.save_results_csv.setChecked(config_dict['save_results_csv'])
+        if 'save_noise_csv' in config_dict:
+            self.save_noise_csv.setChecked(config_dict['save_noise_csv'])
+    
+    def apply_spade_config(self, config_dict):
+        """Apply loaded SPADE config to GUI controls"""
+        # Experiment type
+        if 'experiment_velocity_shots' in config_dict:
+            self.experiment_velocity_shots.setChecked(config_dict['experiment_velocity_shots'])
+        if 'experiment_spall_analysis' in config_dict:
+            self.experiment_spall_analysis.setChecked(config_dict['experiment_spall_analysis'])
+        if 'experiment_hel_detection' in config_dict:
+            self.experiment_hel_detection.setChecked(config_dict['experiment_hel_detection'])
+        
+        # Material properties
+        if 'density' in config_dict:
+            self.spade_density.setValue(config_dict['density'])
+        if 'acoustic_velocity' in config_dict:
+            self.spade_acoustic_velocity.setValue(config_dict['acoustic_velocity'])
+        
+        # Velocity shots parameters
+        if 'impact_velocity_window_start' in config_dict:
+            self.impact_velocity_window_start.setValue(config_dict['impact_velocity_window_start'])
+        if 'impact_velocity_window_end' in config_dict:
+            self.impact_velocity_window_end.setValue(config_dict['impact_velocity_window_end'])
+        if 'align_velocity_threshold_ms' in config_dict:
+            self.align_velocity_threshold.setValue(config_dict['align_velocity_threshold_ms'])
+        
+        # Spall analysis parameters
+        if 'smoothing_method' in config_dict:
+            self.smoothing_method.setCurrentText(config_dict['smoothing_method'])
+        if 'smoothing_window_length' in config_dict:
+            self.smoothing_window_length.setValue(config_dict['smoothing_window_length'])
+        if 'derivative_smoothing_window_length' in config_dict:
+            self.derivative_smoothing_window_length.setValue(config_dict['derivative_smoothing_window_length'])
+        if 'pullback_threshold_fraction' in config_dict:
+            self.pullback_threshold_fraction.setValue(config_dict['pullback_threshold_fraction'])
+        if 'min_pullback_velocity_ms' in config_dict:
+            self.min_pullback_velocity_ms.setValue(config_dict['min_pullback_velocity_ms'])
+        if 'uncertainty_threshold_ms' in config_dict:
+            self.uncertainty_threshold.setValue(config_dict['uncertainty_threshold_ms'])
+        if 'include_uncert_bands' in config_dict:
+            self.include_uncert_bands.setChecked(config_dict['include_uncert_bands'])
+        
+        # Combined plot parameters
+        if 'auto_calculate_limits' in config_dict:
+            self.auto_calculate_limits.setChecked(config_dict['auto_calculate_limits'])
+        if 'x_min_main' in config_dict:
+            self.x_min_main.setValue(config_dict['x_min_main'])
+        if 'x_max_main' in config_dict:
+            self.x_max_main.setValue(config_dict['x_max_main'])
+        if 'y_min_main' in config_dict:
+            self.y_min_main.setValue(config_dict['y_min_main'])
+        if 'y_max_main' in config_dict:
+            self.y_max_main.setValue(config_dict['y_max_main'])
+        if 'x_min_zoom' in config_dict:
+            self.x_min_zoom.setValue(config_dict['x_min_zoom'])
+        if 'x_max_zoom' in config_dict:
+            self.x_max_zoom.setValue(config_dict['x_max_zoom'])
+        if 'y_min_zoom' in config_dict:
+            self.y_min_zoom.setValue(config_dict['y_min_zoom'])
+        if 'y_max_zoom' in config_dict:
+            self.y_max_zoom.setValue(config_dict['y_max_zoom'])
+        
+        # HEL parameters
+        if 'hel_time_window_start_ns' in config_dict:
+            self.hel_time_window_start_ns.setValue(config_dict['hel_time_window_start_ns'])
+        if 'hel_time_window_end_ns' in config_dict:
+            self.hel_time_window_end_ns.setValue(config_dict['hel_time_window_end_ns'])
+        if 'hel_derivative_threshold' in config_dict:
+            self.hel_derivative_threshold.setValue(config_dict['hel_derivative_threshold'])
+        if 'hel_smoothing_window' in config_dict:
+            self.hel_smoothing_window.setValue(config_dict['hel_smoothing_window'])
+    
+    # ========== End Config File Management ==========
             
     def toggle_signal_length_spin(self):
         """Toggle signal length spin box based on combo selection"""
@@ -6003,9 +6369,40 @@ Output Files:
             QMessageBox.warning(self, "No Output Directory", "Please select an output directory.")
             return
             
-        # Get parameters
-        alpss_params = self.get_alpss_params()
-        spade_params = self.get_spade_params()
+        # Get parameters - from config file or GUI
+        # ALPSS Parameters
+        if self.alpss_config_mode.isChecked():
+            # Use config file
+            config_path = self.alpss_config_path.text()
+            if not config_path or not os.path.exists(config_path):
+                QMessageBox.warning(self, "Error", "Config file mode selected but no valid ALPSS config file specified.\nPlease select a config file or switch to manual mode.")
+                return
+            success, alpss_params, message = load_config_from_file(config_path)
+            if not success:
+                QMessageBox.critical(self, "Error", f"Failed to load ALPSS config:\n{message}")
+                return
+            self.log_message(f"✓ Using ALPSS parameters from config file: {config_path}")
+        else:
+            # Use GUI parameters
+            alpss_params = self.get_alpss_params()
+            self.log_message("✓ Using ALPSS parameters from GUI")
+        
+        # SPADE Parameters
+        if self.spade_config_mode.isChecked():
+            # Use config file
+            config_path = self.spade_config_path.text()
+            if not config_path or not os.path.exists(config_path):
+                QMessageBox.warning(self, "Error", "Config file mode selected but no valid SPADE config file specified.\nPlease select a config file or switch to manual mode.")
+                return
+            success, spade_params, message = load_config_from_file(config_path)
+            if not success:
+                QMessageBox.critical(self, "Error", f"Failed to load SPADE config:\n{message}")
+                return
+            self.log_message(f"✓ Using SPADE parameters from config file: {config_path}")
+        else:
+            # Use GUI parameters
+            spade_params = self.get_spade_params()
+            self.log_message("✓ Using SPADE parameters from GUI")
         
         # Get parameter file data if available
         param_data = self.get_param_file_data()
