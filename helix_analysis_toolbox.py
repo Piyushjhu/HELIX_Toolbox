@@ -2436,6 +2436,11 @@ class PostProcessingWorker(QObject):
                 self.progress.emit("Generating per-material subplot plot...")
                 self._generate_material_subplots(files, param_data, spade_out, current_params, group_colors, align_threshold)
             
+            # Generate laser energy vs impact velocity plot (if enabled)
+            if current_params.get('laser_energy_vs_velocity', False):
+                self.progress.emit("Generating Laser Energy vs Impact Velocity plot...")
+                self._generate_energy_vs_velocity_plot(files, param_data, spade_out, current_params)
+            
         except Exception as e:
             self.progress.emit(f"❌ Error: {str(e)}")
             import traceback
@@ -2608,6 +2613,164 @@ class PostProcessingWorker(QObject):
             
         except Exception as e:
             self.progress.emit(f"⚠ Error generating material subplots: {str(e)[:80]}")
+    
+    def _generate_energy_vs_velocity_plot(self, files, param_data, spade_out, current_params):
+        """Generate laser energy vs impact velocity plot (mean velocity 250-300 ns)"""
+        try:
+            import pandas as pd
+            import numpy as np
+            import matplotlib.pyplot as plt
+            
+            # Collect data: laser energy -> list of velocities
+            energy_velocity_data = {}
+            align_threshold = current_params.get('align_velocity_threshold_ms', 30.0)
+            
+            self.progress.emit("Processing files for laser energy vs velocity...")
+            
+            for file_path in sorted(files):
+                try:
+                    # Read velocity data
+                    df = pd.read_csv(file_path)
+                    if df.shape[1] < 2:
+                        continue
+                    
+                    time_data = df.iloc[:, 0].values
+                    velocity_data = df.iloc[:, 1].values
+                    
+                    # Convert time to ns if needed
+                    if np.nanmax(time_data) < 1e-3:
+                        time_data = time_data * 1e9
+                    elif np.nanmax(time_data) < 1.0:
+                        time_data = time_data * 1e3
+                    
+                    # Filter NaN values
+                    valid_mask = ~np.isnan(velocity_data) & ~np.isnan(time_data)
+                    time_clean = time_data[valid_mask]
+                    velocity_clean = velocity_data[valid_mask]
+                    
+                    if len(time_clean) == 0:
+                        continue
+                    
+                    # Align time to t=0 at threshold velocity
+                    t0_idx = None
+                    for j, v in enumerate(velocity_clean):
+                        if not np.isnan(v) and v >= align_threshold:
+                            t0_idx = j
+                            break
+                    
+                    if t0_idx is not None:
+                        t0 = time_clean[t0_idx]
+                        time_aligned = time_clean - t0
+                    else:
+                        time_aligned = time_clean
+                    
+                    # Calculate mean velocity in 250-300 ns window
+                    mask_window = (time_aligned >= 250) & (time_aligned <= 300)
+                    if np.sum(mask_window) > 0:
+                        mean_velocity = np.mean(velocity_clean[mask_window])
+                    else:
+                        # Fallback: use nearest available data
+                        self.progress.emit(f"  Warning: No data in 250-300ns window for {os.path.basename(file_path)}")
+                        continue
+                    
+                    # Get laser energy from parameter file
+                    filename = os.path.basename(file_path)
+                    base_name = os.path.splitext(filename)[0]
+                    
+                    # Strip velocity-specific suffixes
+                    for suffix in ['--vel-smooth-with-uncert', '--vel-smooth', '--velocity', '--vel']:
+                        if base_name.endswith(suffix):
+                            base_name = base_name[:-len(suffix)]
+                            break
+                    
+                    laser_energy = None
+                    if param_data:
+                        # Try exact match first
+                        if base_name in param_data:
+                            laser_energy = param_data[base_name].get('Laser_Target_Energy (mJ)', None)
+                        else:
+                            # Try date-shot pattern matching
+                            import re
+                            date_shot_pattern = re.search(r'(\d{8}--\d{5})', base_name)
+                            if date_shot_pattern:
+                                date_shot = date_shot_pattern.group(1)
+                                for key in param_data.keys():
+                                    if date_shot in str(key):
+                                        laser_energy = param_data[key].get('Laser_Target_Energy (mJ)', None)
+                                        break
+                    
+                    if laser_energy is not None:
+                        try:
+                            energy_float = float(laser_energy)
+                            if energy_float not in energy_velocity_data:
+                                energy_velocity_data[energy_float] = []
+                            energy_velocity_data[energy_float].append(mean_velocity)
+                        except (ValueError, TypeError):
+                            self.progress.emit(f"  Warning: Invalid laser energy value for {base_name}")
+                    else:
+                        self.progress.emit(f"  Warning: No laser energy found for {base_name}")
+                
+                except Exception as e:
+                    self.progress.emit(f"  Error processing {os.path.basename(file_path)}: {str(e)[:50]}")
+                    continue
+            
+            if not energy_velocity_data:
+                self.progress.emit("⚠ No valid laser energy vs velocity data found")
+                return
+            
+            # Calculate mean and std for each energy
+            energies = sorted(energy_velocity_data.keys())
+            mean_velocities = []
+            std_velocities = []
+            
+            for energy in energies:
+                velocities = energy_velocity_data[energy]
+                mean_velocities.append(np.mean(velocities))
+                std_velocities.append(np.std(velocities) if len(velocities) > 1 else 0)
+            
+            self.progress.emit(f"Found {len(energies)} unique laser energy values")
+            
+            # Create plot
+            fig, ax = plt.subplots(figsize=(10, 7))
+            
+            # Plot with error bars
+            ax.errorbar(energies, mean_velocities, yerr=std_velocities, 
+                       fmt='o-', markersize=8, linewidth=2, capsize=5,
+                       color='#1f77b4', ecolor='#1f77b4', alpha=0.7)
+            
+            # Add individual data points
+            for energy in energies:
+                velocities = energy_velocity_data[energy]
+                # Add slight jitter to x for visibility when multiple points
+                x_jitter = energy + np.random.normal(0, energy*0.01, len(velocities))
+                ax.scatter(x_jitter, velocities, alpha=0.3, color='gray', s=30)
+            
+            ax.set_xlabel('Laser Target Energy (mJ)', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Flyer Impact Velocity (m/s)', fontsize=12, fontweight='bold')
+            ax.set_title('Laser Energy vs Flyer Impact Velocity\n(Mean velocity at 250-300 ns)', fontsize=14, fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            
+            # Add text box with statistics
+            textstr = f'Data points: {sum(len(v) for v in energy_velocity_data.values())}\n'
+            textstr += f'Energy range: {min(energies):.1f} - {max(energies):.1f} mJ'
+            props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+            ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+                   verticalalignment='top', bbox=props)
+            
+            plt.tight_layout()
+            
+            # Save plot
+            plot_path = os.path.join(spade_out, 'laser_energy_vs_impact_velocity.png')
+            fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            
+            self.progress.emit(f"✓ Saved: {plot_path}")
+            self.progress.emit(f"✓ Plotted {len(energies)} energy levels with {sum(len(v) for v in energy_velocity_data.values())} total measurements")
+            
+        except Exception as e:
+            self.progress.emit(f"⚠ Error generating energy vs velocity plot: {str(e)[:80]}")
+            import traceback
+            self.progress.emit(traceback.format_exc()[:200])
     
     def _load_param_files(self):
         """Load parameter files using same logic as get_param_file_data"""
@@ -3445,20 +3608,25 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.pp_color_by_laser_energy.stateChanged.connect(self.pp_on_laser_energy_color_changed)
         opt_layout.addWidget(self.pp_color_by_laser_energy, 3, 0, 1, 2)
 
-        opt_layout.addWidget(QLabel("Zoom Window (ns):"), 4, 0)
+        self.pp_laser_energy_vs_velocity = QCheckBox("Generate Laser Energy vs Impact Velocity plot")
+        self.pp_laser_energy_vs_velocity.setChecked(False)
+        self.pp_laser_energy_vs_velocity.setToolTip("Plot laser energy vs mean velocity (250-300 ns)")
+        opt_layout.addWidget(self.pp_laser_energy_vs_velocity, 4, 0, 1, 2)
+
+        opt_layout.addWidget(QLabel("Zoom Window (ns):"), 5, 0)
         self.pp_zoom_ns = QSpinBox()
         self.pp_zoom_ns.setRange(10, 10000)
         self.pp_zoom_ns.setValue(1000)
-        opt_layout.addWidget(self.pp_zoom_ns, 4, 1)
+        opt_layout.addWidget(self.pp_zoom_ns, 5, 1)
 
-        opt_layout.addWidget(QLabel("Alignment Threshold (m/s):"), 5, 0)
+        opt_layout.addWidget(QLabel("Alignment Threshold (m/s):"), 6, 0)
         self.pp_align_threshold = QDoubleSpinBox()
         self.pp_align_threshold.setRange(0.0, 1000.0)
         self.pp_align_threshold.setDecimals(2)
         self.pp_align_threshold.setValue(30.0)
         self.pp_align_threshold.setSuffix(" m/s")
         self.pp_align_threshold.setToolTip("Align traces to first velocity ≥ threshold (t=0)")
-        opt_layout.addWidget(self.pp_align_threshold, 5, 1)
+        opt_layout.addWidget(self.pp_align_threshold, 6, 1)
 
         # Axis limits
         axis_group = QGroupBox("Axis Limits")
@@ -3639,6 +3807,9 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.spade_params['use_material_colors'] = self.pp_use_material_colors.isChecked()
         self.spade_params['color_by_waveplate'] = self.pp_color_by_waveplate.isChecked()
         self.spade_params['color_by_laser_energy'] = self.pp_color_by_laser_energy.isChecked()
+        
+        # Additional plot options
+        self.spade_params['laser_energy_vs_velocity'] = self.pp_laser_energy_vs_velocity.isChecked()
 
         # Debug: Log applied parameters
         self.progress_text.appendPlainText(f"[POST-PROCESSING] Parameters applied:")
