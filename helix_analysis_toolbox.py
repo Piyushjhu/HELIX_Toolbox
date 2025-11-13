@@ -2661,24 +2661,34 @@ class PostProcessingWorker(QObject):
                     if len(time_clean) == 0:
                         continue
                     
-                    # For impact velocity calculation, use ABSOLUTE time (not aligned)
-                    # We're looking for steady-state velocity during flyer impact at a specific
-                    # absolute time in the experiment, not relative to shock arrival
+                    # ALIGN TRACE: Find t=0 when velocity first exceeds threshold
+                    threshold_mask = velocity_clean >= align_threshold
+                    if np.sum(threshold_mask) > 0:
+                        t0_idx = np.where(threshold_mask)[0][0]
+                        t0_time = time_clean[t0_idx]
+                        # Shift time so t=0 is at threshold crossing
+                        time_aligned = time_clean - t0_time
+                    else:
+                        # No alignment possible - skip this trace
+                        max_vel = np.max(velocity_clean)
+                        self.progress.emit(f"  Warning: Velocity never reached {align_threshold} m/s for {os.path.basename(file_path)} (max: {max_vel:.1f} m/s)")
+                        continue
                     
-                    # Calculate mean velocity in 250-300 ns window (absolute time)
-                    mask_window = (time_clean >= 250) & (time_clean <= 300)
+                    # Calculate mean velocity in 250-300ns window AFTER alignment (relative to t=0)
+                    mask_window = (time_aligned >= 250) & (time_aligned <= 300)
                     if np.sum(mask_window) > 0:
                         mean_velocity = np.mean(velocity_clean[mask_window])
+                        self.progress.emit(f"  ✓ Impact velocity 250-300ns after t=0 for {os.path.basename(file_path)}")
                     else:
-                        # Fallback: try 300-320 ns window
-                        mask_window = (time_clean >= 300) & (time_clean <= 320)
+                        # Fallback: try 300-320ns window
+                        mask_window = (time_aligned >= 300) & (time_aligned <= 320)
                         if np.sum(mask_window) > 0:
                             mean_velocity = np.mean(velocity_clean[mask_window])
-                            self.progress.emit(f"  Note: Using 300-320ns window (absolute time) for {os.path.basename(file_path)}")
+                            self.progress.emit(f"  Note: Using 300-320ns after t=0 for {os.path.basename(file_path)}")
                         else:
                             # Check what time range is actually available
-                            time_range = f"{np.min(time_clean):.0f} to {np.max(time_clean):.0f}ns"
-                            self.progress.emit(f"  Warning: No data in 250-300ns or 300-320ns (absolute time) for {os.path.basename(file_path)} (available: {time_range})")
+                            time_range = f"{np.min(time_aligned):.0f} to {np.max(time_aligned):.0f}ns"
+                            self.progress.emit(f"  Warning: No data in 250-300ns or 300-320ns after t=0 for {os.path.basename(file_path)} (available: {time_range})")
                             continue
                     
                     # Get laser energy and waveplate angle from parameter file
@@ -2753,7 +2763,7 @@ class PostProcessingWorker(QObject):
             
             ax.set_xlabel('Laser Target Energy (mJ)', fontsize=12, fontweight='bold')
             ax.set_ylabel('Flyer Impact Velocity (m/s)', fontsize=12, fontweight='bold')
-            ax.set_title('Laser Energy vs Flyer Impact Velocity\n(Mean velocity 250-300ns, Color-coded by Waveplate Angle)', fontsize=14, fontweight='bold')
+            ax.set_title(f'Laser Energy vs Flyer Impact Velocity\n(Mean velocity 250-300ns after t=0 at {align_threshold:.0f} m/s, Color-coded by Waveplate Angle)', fontsize=14, fontweight='bold')
             ax.grid(True, alpha=0.3, linestyle='--')
             
             # Create legend for waveplate angles
@@ -2764,7 +2774,8 @@ class PostProcessingWorker(QObject):
             
             # Add text box with statistics
             textstr = f'Total points: {len(data_points)}\n'
-            textstr += f'Time window: 250-300ns (absolute)\n'
+            textstr += f'Alignment: t=0 at {align_threshold:.0f} m/s\n'
+            textstr += f'Time window: 250-300ns after t=0\n'
             textstr += f'Energy range: {min(dp[0] for dp in data_points):.1f} - {max(dp[0] for dp in data_points):.1f} mJ\n'
             textstr += f'Velocity range: {min(dp[1] for dp in data_points):.1f} - {max(dp[1] for dp in data_points):.1f} m/s'
             props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
@@ -2958,13 +2969,6 @@ class HELIXAnalysisToolbox(QMainWindow):
             QCheckBox::indicator:checked {
                 background-color: #2196F3;
                 border: 2px solid #2196F3;
-            }
-            
-            QCheckBox::indicator:checked::after {
-                content: "✓";
-                color: white;
-                font-size: 16px;
-                font-weight: bold;
             }
             
             QCheckBox::indicator:checked:hover {
