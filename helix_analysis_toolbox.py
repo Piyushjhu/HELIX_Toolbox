@@ -2366,15 +2366,21 @@ class PostProcessingWorker(QObject):
             ax2.set_ylabel('Velocity (m/s)', fontsize=12)
             ax2.grid(True, alpha=0.3)
             
-            # TOP SUBPLOT (ax1): Always use auto-calculated limits (full length)
-            # This gives a complete overview of all data without user input
-            self.progress.emit(f"Top subplot: Using auto-calculated limits (full length)")
-            
-            # BOTTOM SUBPLOT (ax2): Use user-specified zoom window
-            # Apply axis limits from post-processing settings for ZOOM plot only
+            # Apply axis limits from post-processing settings
             try:
                 if not current_params.get('auto_calculate_limits', True):
-                    # User has specified custom zoom limits
+                    # User has specified custom limits for both subplots
+                    
+                    # TOP SUBPLOT (ax1): Apply main subplot limits
+                    x_min_main = float(current_params.get('x_min_main', 0))
+                    x_max_main = float(current_params.get('x_max_main', 100))
+                    y_min_main = float(current_params.get('y_min_main', 0))
+                    y_max_main = float(current_params.get('y_max_main', 600))
+                    ax1.set_xlim(x_min_main, x_max_main)
+                    ax1.set_ylim(y_min_main, y_max_main)
+                    self.progress.emit(f"Top subplot: Using user main limits X({x_min_main}-{x_max_main}), Y({y_min_main}-{y_max_main})")
+                    
+                    # BOTTOM SUBPLOT (ax2): Apply zoom subplot limits
                     x_min_zoom = float(current_params.get('x_min_zoom', 0))
                     x_max_zoom = float(current_params.get('x_max_zoom', zoom_ns))
                     y_min_zoom = float(current_params.get('y_min_zoom', 0))
@@ -2384,10 +2390,10 @@ class PostProcessingWorker(QObject):
                     ax2.set_title(f'Zoomed Velocity Traces ({int(x_min_zoom)}-{int(x_max_zoom)} ns)', fontsize=14)
                     self.progress.emit(f"Bottom subplot: Using user zoom limits X({x_min_zoom}-{x_max_zoom}), Y({y_min_zoom}-{y_max_zoom})")
                 else:
-                    # Use default zoom window from zoom_window_ns parameter
+                    # Use auto-calculated limits
+                    self.progress.emit(f"Using auto-calculated limits for both subplots")
                     ax2.set_xlim(0, zoom_ns)
                     ax2.set_title(f'Zoomed Velocity Traces (First {zoom_ns} ns)', fontsize=14)
-                    self.progress.emit(f"Bottom subplot: Using default zoom window (0-{zoom_ns} ns)")
             except Exception as e:
                 self.progress.emit(f"⚠ Axis limits error: {str(e)[:80]}")
                 ax2.set_xlim(0, zoom_ns)
