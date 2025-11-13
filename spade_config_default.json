@@ -1,7 +1,7 @@
 {
     "experiment_velocity_shots": true,
-    "experiment_spall_analysis": false,
-    "experiment_hel_detection": false,
+    "experiment_spall_analysis": true,
+    "experiment_hel_detection": true,
     "density": 8960.0,
     "acoustic_velocity": 3950.0,
     "analysis_model": "hybrid_5_segment",
@@ -18,19 +18,19 @@
     "save_summary": true,
     "show_plots": false,
     "x_min_main": 0.0,
-    "x_max_main": 100.0,
+    "x_max_main": 1000.0,
     "y_min_main": 0.0,
-    "y_max_main": 700.0,
+    "y_max_main": 1000.0,
     "x_min_zoom": 0.0,
-    "x_max_zoom": 20.0,
+    "x_max_zoom": 200.0,
     "y_min_zoom": 0.0,
-    "y_max_zoom": 700.0,
-    "auto_calculate_limits": true,
+    "y_max_zoom": 1000.0,
+    "auto_calculate_limits": false,
     "generate_all_velocity_plot": true,
-    "align_velocity_threshold_ms": 30.0,
+    "align_velocity_threshold_ms": 20.0,
     "uncertainty_threshold_ms": 50.0,
     "include_uncert_bands": true,
     "uncert_alpha": 0.2,
-    "zoom_window_ns": 1000
+    "zoom_window_ns": 500
 }
 

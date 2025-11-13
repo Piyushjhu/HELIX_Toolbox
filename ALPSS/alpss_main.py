@@ -122,8 +122,9 @@ def alpss_main(**inputs):
         fig = None
         
         # Check if user wants to save plots (dropdown authoritative)
-        save_plots = inputs.get("save_all_plots", "no")
+        save_plots = inputs.get("save_all_plots_enabled", inputs.get("save_all_plots", "no"))  # Try new key first, fallback to old
         save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
+        print(f"[{datetime.now()}] DEBUG PLOT PARAMS: save_all_plots_enabled='{save_plots}', save_plots_in_subfolder={save_in_subfolder}")
         if save_plots == "yes":
             # Only call simple_plotting to avoid duplication
             # simple_plotting handles both subfolder and main directory saving
@@ -1147,7 +1148,7 @@ def simple_plotting(
     os.makedirs(inputs["out_files_dir"], exist_ok=True)
     
     # Check if user wants to save all plots in subfolder (dropdown authoritative)
-    save_all_plots = inputs.get("save_all_plots", "no")
+    save_all_plots = inputs.get("save_all_plots_enabled", inputs.get("save_all_plots", "no"))  # Try new key first, fallback to old
     save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
     base_filename = inputs["filename"][0:-4]  # Remove file extension
     
@@ -1479,7 +1480,7 @@ def saving(
     print(f"[{datetime.now()}] Entered saving function")
     
     # Check if user wants to save all plots in subfolder
-    save_all_plots = inputs.get("save_all_plots", "no")
+    save_all_plots = inputs.get("save_all_plots_enabled", inputs.get("save_all_plots", "no"))  # Try new key first, fallback to old
     save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
     base_filename = inputs["filename"][0:-4]  # Remove file extension
     
@@ -2008,7 +2009,7 @@ def spall_doi_finder(**inputs):
     ax1.tick_params(axis='both', labelsize=20)
 
     # Save IQ amplitude plot as a separate figure (only if plots are enabled)
-    save_all_plots = inputs.get("save_all_plots", "no")
+    save_all_plots = inputs.get("save_all_plots_enabled", inputs.get("save_all_plots", "no"))  # Try new key first, fallback to old
     save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
     save_iq_start_time_plot = inputs.get('save_iq_start_time_plot', False)
     

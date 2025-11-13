@@ -6300,7 +6300,8 @@ Output Files:
         return {
             'filename': 'example_file.csv',  # Will be updated per file in thread
             'save_data': self.save_data.currentText(),
-            'save_all_plots': save_plots_value,
+            'save_all_plots': dropdown_value,  # Save actual dropdown value for config files
+            'save_all_plots_enabled': save_plots_value,  # Converted yes/no for ALPSS
             'save_plots_in_subfolder': dropdown_value == 'subfolder',
             'start_time_user': self.start_time_user.text(),
             'header_lines': self.header_lines.value(),
