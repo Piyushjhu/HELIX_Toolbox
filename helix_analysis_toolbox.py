@@ -3534,34 +3534,52 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.tab_widget.addTab(tab, "Post-Processing")
 
     def pp_on_material_color_changed(self, state):
-        """Handle material color checkbox - uncheck others if this is checked"""
-        if state == 2:  # Qt.Checked
+        """Handle material color checkbox - ensure mutual exclusivity"""
+        if state == 2:  # Qt.Checked - uncheck others
             self.pp_color_by_waveplate.blockSignals(True)
             self.pp_color_by_laser_energy.blockSignals(True)
             self.pp_color_by_waveplate.setChecked(False)
             self.pp_color_by_laser_energy.setChecked(False)
             self.pp_color_by_waveplate.blockSignals(False)
             self.pp_color_by_laser_energy.blockSignals(False)
+        elif state == 0:  # Unchecked - prevent if it's the only one checked
+            if not self.pp_color_by_waveplate.isChecked() and not self.pp_color_by_laser_energy.isChecked():
+                # Re-check this one since at least one must be checked
+                self.pp_use_material_colors.blockSignals(True)
+                self.pp_use_material_colors.setChecked(True)
+                self.pp_use_material_colors.blockSignals(False)
 
     def pp_on_waveplate_color_changed(self, state):
-        """Handle waveplate angle color checkbox - uncheck others if this is checked"""
-        if state == 2:  # Qt.Checked
+        """Handle waveplate angle color checkbox - ensure mutual exclusivity"""
+        if state == 2:  # Qt.Checked - uncheck others
             self.pp_use_material_colors.blockSignals(True)
             self.pp_color_by_laser_energy.blockSignals(True)
             self.pp_use_material_colors.setChecked(False)
             self.pp_color_by_laser_energy.setChecked(False)
             self.pp_use_material_colors.blockSignals(False)
             self.pp_color_by_laser_energy.blockSignals(False)
+        elif state == 0:  # Unchecked - prevent if it's the only one checked
+            if not self.pp_use_material_colors.isChecked() and not self.pp_color_by_laser_energy.isChecked():
+                # Re-check this one since at least one must be checked
+                self.pp_color_by_waveplate.blockSignals(True)
+                self.pp_color_by_waveplate.setChecked(True)
+                self.pp_color_by_waveplate.blockSignals(False)
 
     def pp_on_laser_energy_color_changed(self, state):
-        """Handle laser energy color checkbox - uncheck others if this is checked"""
-        if state == 2:  # Qt.Checked
+        """Handle laser energy color checkbox - ensure mutual exclusivity"""
+        if state == 2:  # Qt.Checked - uncheck others
             self.pp_use_material_colors.blockSignals(True)
             self.pp_color_by_waveplate.blockSignals(True)
             self.pp_use_material_colors.setChecked(False)
             self.pp_color_by_waveplate.setChecked(False)
             self.pp_use_material_colors.blockSignals(False)
             self.pp_color_by_waveplate.blockSignals(False)
+        elif state == 0:  # Unchecked - prevent if it's the only one checked
+            if not self.pp_use_material_colors.isChecked() and not self.pp_color_by_waveplate.isChecked():
+                # Re-check this one since at least one must be checked
+                self.pp_color_by_laser_energy.blockSignals(True)
+                self.pp_color_by_laser_energy.setChecked(True)
+                self.pp_color_by_laser_energy.blockSignals(False)
 
     def pp_select_output_dir(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select ALPSS Output Directory")
