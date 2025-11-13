@@ -2908,12 +2908,62 @@ class HELIXAnalysisToolbox(QMainWindow):
         main_layout.addWidget(self.tab_widget)
         
         # Increase tab size for better text fit (increased font size by 25%)
+        # Enhanced checkbox styling for better usability
         self.tab_widget.setStyleSheet("""
             QTabBar::tab {
                 min-width: 200px;
                 min-height: 40px;
                 font-size: 16px;
                 padding: 10px 20px;
+            }
+            
+            QCheckBox {
+                spacing: 10px;
+                font-size: 14px;
+                padding: 5px;
+                min-height: 25px;
+            }
+            
+            QCheckBox:hover {
+                background-color: rgba(0, 0, 0, 0.05);
+                border-radius: 3px;
+            }
+            
+            QCheckBox::indicator {
+                width: 20px;
+                height: 20px;
+                border-radius: 3px;
+                border: 2px solid #999;
+            }
+            
+            QCheckBox::indicator:hover {
+                border: 2px solid #555;
+                background-color: #f0f0f0;
+            }
+            
+            QCheckBox::indicator:checked {
+                background-color: #2196F3;
+                border: 2px solid #2196F3;
+            }
+            
+            QCheckBox::indicator:checked::after {
+                content: "✓";
+                color: white;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            
+            QCheckBox::indicator:checked:hover {
+                background-color: #1976D2;
+                border: 2px solid #1976D2;
+            }
+            
+            QCheckBox::indicator:unchecked {
+                background-color: white;
+            }
+            
+            QCheckBox:disabled {
+                color: #999;
             }
         """)
         
@@ -3217,17 +3267,41 @@ class HELIXAnalysisToolbox(QMainWindow):
                     color: #888;
                 }
                 QCheckBox {
+                    spacing: 10px;
                     font-size: 14px;
                     color: #f0f0f0;
-                    spacing: 8px;
+                    padding: 5px;
+                    min-height: 25px;
                     background: transparent;
                 }
-                QCheckBox::indicator {
-                    width: 16px;
-                    height: 16px;
+                QCheckBox:hover {
+                    background-color: rgba(255, 255, 255, 0.05);
+                    border-radius: 3px;
                 }
-                QCheckBox::indicator:focus {
+                QCheckBox::indicator {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 3px;
+                    border: 2px solid #666;
+                    background-color: #232629;
+                }
+                QCheckBox::indicator:hover {
                     border: 2px solid #0078d4;
+                    background-color: #2a2d30;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #0078d4;
+                    border: 2px solid #0078d4;
+                }
+                QCheckBox::indicator:checked:hover {
+                    background-color: #106ebe;
+                    border: 2px solid #106ebe;
+                }
+                QCheckBox::indicator:unchecked {
+                    background-color: #232629;
+                }
+                QCheckBox:disabled {
+                    color: #666;
                 }
                 QRadioButton {
                     font-size: 14px;
@@ -3351,17 +3425,41 @@ class HELIXAnalysisToolbox(QMainWindow):
                     color: #666666;
                 }
                 QCheckBox {
+                    spacing: 10px;
                     font-size: 14px;
                     color: #2c2c2c;
-                    spacing: 8px;
+                    padding: 5px;
+                    min-height: 25px;
                     background: transparent;
                 }
-                QCheckBox::indicator {
-                    width: 16px;
-                    height: 16px;
+                QCheckBox:hover {
+                    background-color: rgba(0, 0, 0, 0.05);
+                    border-radius: 3px;
                 }
-                QCheckBox::indicator:focus {
-                    border: 2px solid #0078d4;
+                QCheckBox::indicator {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 3px;
+                    border: 2px solid #999;
+                    background-color: white;
+                }
+                QCheckBox::indicator:hover {
+                    border: 2px solid #555;
+                    background-color: #f0f0f0;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #2196F3;
+                    border: 2px solid #2196F3;
+                }
+                QCheckBox::indicator:checked:hover {
+                    background-color: #1976D2;
+                    border: 2px solid #1976D2;
+                }
+                QCheckBox::indicator:unchecked {
+                    background-color: white;
+                }
+                QCheckBox:disabled {
+                    color: #999;
                 }
                 QRadioButton {
                     font-size: 14px;
