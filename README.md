@@ -5,7 +5,15 @@
 **Author:** Piyush Wanchoo  
 **GitHub:** [@Piyushjhu](https://github.com/Piyushjhu)  
 **Institution:** Johns Hopkins University  
-**Year:** 2025  
+**Year:** 2025
+
+---
+
+**Latest Updates:**
+- Enhanced post-processing with laser energy vs. impact velocity plots
+- Improved noise fraction-based data filtering with consistent CSV output lengths
+- User-configurable alignment thresholds for velocity trace analysis
+- Fixed CSS styling for improved GUI checkbox appearance
 
 ## Overview
 
