@@ -5741,34 +5741,96 @@ Output Files:
             self.t_before.setValue(config_dict['t_before'])
         if 't_after' in config_dict:
             self.t_after.setValue(config_dict['t_after'])
+        if 'iq_threshold_factor' in config_dict:
+            self.iq_threshold_factor.setValue(config_dict['iq_threshold_factor'])
+        
+        # Frequency parameters
+        if 'freq_min' in config_dict:
+            self.freq_min.setValue(config_dict['freq_min'])
+        if 'freq_max' in config_dict:
+            self.freq_max.setValue(config_dict['freq_max'])
+        
+        # Smoothing parameters
+        if 'smoothing_window' in config_dict:
+            self.smoothing_window.setValue(config_dict['smoothing_window'])
+        if 'smoothing_wid' in config_dict:
+            self.smoothing_wid.setValue(config_dict['smoothing_wid'])
+        if 'smoothing_amp' in config_dict:
+            self.smoothing_amp.setValue(config_dict['smoothing_amp'])
+        if 'smoothing_sigma' in config_dict:
+            self.smoothing_sigma.setValue(config_dict['smoothing_sigma'])
+        if 'smoothing_mu' in config_dict:
+            self.smoothing_mu.setValue(config_dict['smoothing_mu'])
+        
+        # Peak detection parameters
+        if 'pb_neighbors' in config_dict:
+            self.pb_neighbors.setValue(config_dict['pb_neighbors'])
+        if 'pb_idx_correction' in config_dict:
+            self.pb_idx_correction.setValue(config_dict['pb_idx_correction'])
+        if 'rc_neighbors' in config_dict:
+            self.rc_neighbors.setValue(config_dict['rc_neighbors'])
+        if 'rc_idx_correction' in config_dict:
+            self.rc_idx_correction.setValue(config_dict['rc_idx_correction'])
+        
+        # STFT parameters
+        if 'sample_rate' in config_dict:
+            self.sample_rate.setValue(config_dict['sample_rate'])
+        if 'nperseg' in config_dict:
+            self.nperseg.setValue(config_dict['nperseg'])
+        if 'noverlap' in config_dict:
+            self.noverlap.setValue(config_dict['noverlap'])
+        if 'nfft' in config_dict:
+            self.nfft.setValue(config_dict['nfft'])
+        if 'window' in config_dict:
+            self.window.setCurrentText(config_dict['window'])
+        if 'carrier_band_time' in config_dict:
+            self.carrier_band_time.setValue(config_dict['carrier_band_time'])
+        
+        # Blur parameters
+        if 'blur_kernel_x' in config_dict:
+            self.blur_kernel_x.setValue(config_dict['blur_kernel_x'])
+        if 'blur_kernel_y' in config_dict:
+            self.blur_kernel_y.setValue(config_dict['blur_kernel_y'])
+        if 'blur_sigx' in config_dict:
+            self.blur_sigx.setValue(config_dict['blur_sigx'])
+        if 'blur_sigy' in config_dict:
+            self.blur_sigy.setValue(config_dict['blur_sigy'])
         
         # Signal processing
         if 'use_notch_filter' in config_dict:
             self.use_notch_filter.setChecked(config_dict['use_notch_filter'])
-        if 'carrier_freq' in config_dict:
-            self.carrier_freq.setValue(config_dict['carrier_freq'])
-        if 'bandwidth_notch' in config_dict:
-            self.bandwidth_notch.setValue(config_dict['bandwidth_notch'])
-        if 'smoothing_window_size' in config_dict:
-            self.smoothing_window_size.setValue(config_dict['smoothing_window_size'])
+        if 'order' in config_dict:
+            self.order.setValue(config_dict['order'])
+        if 'wid' in config_dict:
+            self.wid.setValue(config_dict['wid'])
+        if 'uncert_mult' in config_dict:
+            self.uncert_mult.setValue(config_dict['uncert_mult'])
+        if 'cmap' in config_dict:
+            self.cmap.setCurrentText(config_dict['cmap'])
         
-        # Uncertainty parameters
-        if 'noise_window_duration' in config_dict:
-            self.noise_window_duration.setValue(config_dict['noise_window_duration'])
-        if 'noise_threshold_multiplier' in config_dict:
-            self.noise_threshold_multiplier.setValue(config_dict['noise_threshold_multiplier'])
-        if 'use_advanced_noise_model' in config_dict:
-            self.use_advanced_noise_model.setChecked(config_dict['use_advanced_noise_model'])
+        # PDV wavelength
+        if 'lam' in config_dict:
+            self.lam.setValue(config_dict['lam'])
+        if 'theta' in config_dict:
+            self.theta.setValue(config_dict['theta'])
         
-        # Velocity calculation
-        if 'lambda_laser' in config_dict:
-            self.lambda_laser.setValue(config_dict['lambda_laser'])
-        if 'velocity_per_fringe' in config_dict:
-            self.velocity_per_fringe.setValue(config_dict['velocity_per_fringe'])
+        # Uncertainty deltas
+        if 'delta_rho' in config_dict:
+            self.delta_rho.setValue(config_dict['delta_rho'])
+        if 'delta_C0' in config_dict:
+            self.delta_C0.setValue(config_dict['delta_C0'])
+        if 'delta_lam' in config_dict:
+            self.delta_lam.setValue(config_dict['delta_lam'])
+        if 'delta_theta' in config_dict:
+            self.delta_theta.setValue(config_dict['delta_theta'])
+        
+        # Material properties
+        if 'C0' in config_dict:
+            self.C0.setValue(config_dict['C0'])
+        if 'density' in config_dict:
+            self.density.setValue(config_dict['density'])
         
         # Output file selection checkboxes
-        if 'save_voltage_csv' in config_dict:
-            self.save_voltage_csv.setChecked(config_dict['save_voltage_csv'])
         if 'save_velocity_csv' in config_dict:
             self.save_velocity_csv.setChecked(config_dict['save_velocity_csv'])
         if 'save_velocity_smooth_csv' in config_dict:

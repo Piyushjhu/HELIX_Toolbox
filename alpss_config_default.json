@@ -45,7 +45,6 @@
     "delta_C0": 23.0,
     "delta_lam": 8e-18,
     "delta_theta": 5.0,
-    "save_voltage_csv": false,
     "save_velocity_csv": false,
     "save_velocity_smooth_csv": false,
     "save_velocity_uncert_csv": false,
