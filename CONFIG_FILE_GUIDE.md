@@ -4,6 +4,17 @@
 
 The HELIX Toolbox now supports loading analysis parameters from configuration files (JSON format). This feature allows you to:
 
+**📁 Default Config Files Available:**
+- `alpss_config_default.json` - Standard ALPSS parameters for typical PDV analysis
+- `spade_config_default.json` - Standard SPADE parameters for velocity shots analysis
+
+These files are included in the HELIX_Toolbox_v_2 directory and can be used as:
+- Starting templates for your own configurations
+- Quick-start configs for standard analysis
+- Reference examples for parameter formatting
+
+## Benefits
+
 - **Save time**: Reuse the same parameter sets across multiple analysis sessions
 - **Ensure consistency**: Use identical parameters for reproducible results
 - **Easy sharing**: Share configuration files with collaborators
