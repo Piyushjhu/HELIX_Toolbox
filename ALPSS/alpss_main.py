@@ -1529,10 +1529,23 @@ def saving(
         save_results_csv = inputs.get("save_results_csv", True)
         save_noise_csv = inputs.get("save_noise_csv", True)
         
+        # Calculate GLOBAL min_length for ALL arrays to ensure consistent CSV file lengths
+        # This fixes the "noise fraction length mismatch" issue
+        array_lengths = {
+            'time_f': len(vc_out["time_f"]),
+            'velocity_f': len(vc_out["velocity_f"]),
+            'velocity_f_smooth': len(vc_out["velocity_f_smooth"]),
+            'vel_uncert': len(iua_out["vel_uncert"]),
+            'inst_noise': len(iua_out["inst_noise"])
+        }
+        global_min_length = min(array_lengths.values())
+        print(f"[{datetime.now()}] Array lengths: {array_lengths}")
+        print(f"[{datetime.now()}] Using global_min_length = {global_min_length} for all CSV files")
+        
         # Save velocity data if selected
         if save_velocity_csv:
-            # Ensure arrays have the same length
-            min_length_vel = min(len(vc_out["time_f"]), len(vc_out["velocity_f"]))
+            # Use global min_length for consistency
+            min_length_vel = global_min_length
             velocity_data = np.stack((vc_out["time_f"][:min_length_vel], vc_out["velocity_f"][:min_length_vel]), axis=1)
             print(f"[{datetime.now()}] Saving velocity data...")
             np.savetxt(
@@ -1548,10 +1561,9 @@ def saving(
         
         # Save velocity smooth data if selected
         if save_velocity_smooth_csv:
-            # Ensure arrays have the same length
-            min_length_smooth = min(len(vc_out["time_f"]), len(vc_out["velocity_f_smooth"]))
+            # Use global min_length for consistency
             velocity_data_smooth = np.stack(
-                (vc_out["time_f"][:min_length_smooth], vc_out["velocity_f_smooth"][:min_length_smooth]), axis=1
+                (vc_out["time_f"][:global_min_length], vc_out["velocity_f_smooth"][:global_min_length]), axis=1
             )
             print(f"[{datetime.now()}] Saving velocity smooth...")
             np.savetxt(
@@ -1588,9 +1600,8 @@ def saving(
         
         # Save noise data if selected
         if save_noise_csv:
-            # Ensure arrays have the same length
-            min_length_noise = min(len(vc_out["time_f"]), len(iua_out["inst_noise"]))
-            noise_data = np.stack((vc_out["time_f"][:min_length_noise], iua_out["inst_noise"][:min_length_noise]), axis=1)
+            # Use global min_length for consistency
+            noise_data = np.stack((vc_out["time_f"][:global_min_length], iua_out["inst_noise"][:global_min_length]), axis=1)
             print(f"[{datetime.now()}] Saving noise data...")
             np.savetxt(
                 os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--noise--frac" + ".csv"),
@@ -1605,9 +1616,8 @@ def saving(
         
         # Save velocity uncertainty data if selected
         if save_velocity_uncert_csv:
-            # Ensure arrays have the same length
-            min_length_uncert = min(len(vc_out["time_f"]), len(iua_out["vel_uncert"]))
-            vel_uncert_data = np.stack((vc_out["time_f"][:min_length_uncert], iua_out["vel_uncert"][:min_length_uncert]), axis=1)
+            # Use global min_length for consistency
+            vel_uncert_data = np.stack((vc_out["time_f"][:global_min_length], iua_out["vel_uncert"][:global_min_length]), axis=1)
             print(f"[{datetime.now()}] Saving velocity uncertainty data...")
             np.savetxt(
                 os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel--uncert" + ".csv"),
@@ -1682,14 +1692,12 @@ def saving(
         # Save velocity smooth with uncertainty data if selected (this is the key file for SPADE)
         if save_velocity_smooth_uncert_csv:
             try:
-                # Ensure arrays have the same length
-                min_length = min(len(vc_out["time_f"]), len(vc_out["velocity_f_smooth"]), len(iua_out["vel_uncert"]))
-                
+                # Use global min_length for consistency
                 vel_smooth_with_uncert = np.stack(
                     (
-                        vc_out["time_f"][:min_length],
-                        vc_out["velocity_f_smooth"][:min_length],
-                        iua_out["vel_uncert"][:min_length],  # Uncertainty
+                        vc_out["time_f"][:global_min_length],
+                        vc_out["velocity_f_smooth"][:global_min_length],
+                        iua_out["vel_uncert"][:global_min_length],  # Uncertainty
                     ),
                     axis=1,
                 )
