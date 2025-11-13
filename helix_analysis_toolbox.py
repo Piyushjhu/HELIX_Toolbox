@@ -2160,13 +2160,30 @@ class PostProcessingWorker(QObject):
             align_threshold = current_params.get('align_velocity_threshold_ms', 30.0)
             zoom_ns = int(current_params.get('zoom_window_ns', 1000))
             
-            # Track materials and colors for legend
-            material_colors = {}
-            file_material_map = {}
+            # Determine color coding mode
+            use_material_colors = current_params.get('use_material_colors', True)
+            color_by_waveplate = current_params.get('color_by_waveplate', False)
+            color_by_laser_energy = current_params.get('color_by_laser_energy', False)
             
-            # First pass: collect all unique materials to assign colors consistently
-            self.progress.emit("Scanning materials...")
-            unique_materials = set()
+            # Track grouping parameter and colors for legend
+            group_colors = {}
+            file_group_map = {}
+            color_label = "Material"  # Default label
+            
+            # Determine which parameter to use for grouping
+            if color_by_waveplate:
+                color_param = 'Waveplate_Angle (Degrees)'
+                color_label = "Waveplate Angle (°)"
+            elif color_by_laser_energy:
+                color_param = 'Laser_Target_Energy (mJ)'
+                color_label = "Laser Energy (mJ)"
+            else:
+                color_param = 'Sample material'
+                color_label = "Material"
+            
+            # First pass: collect all unique values of the grouping parameter
+            self.progress.emit(f"Scanning {color_param}...")
+            unique_values = set()
             for i, file_path in enumerate(sorted(files)):
                 try:
                     filename = os.path.basename(file_path)
@@ -2178,11 +2195,11 @@ class PostProcessingWorker(QObject):
                             base_name = base_name[:-len(suffix)]
                             break
                     
-                    material = "Unknown"
+                    group_value = "Unknown"
                     if param_data:
                         # Try exact match first
                         if base_name in param_data:
-                            material = param_data[base_name].get('Sample material', 'Unknown')
+                            group_value = param_data[base_name].get(color_param, 'Unknown')
                         else:
                             # Try date-shot pattern matching (YYYYMMDD--NNNNN)
                             import re
@@ -2191,23 +2208,26 @@ class PostProcessingWorker(QObject):
                                 date_shot = date_shot_pattern.group(1)
                                 for key in param_data.keys():
                                     if date_shot in str(key):
-                                        material = param_data[key].get('Sample material', 'Unknown')
+                                        group_value = param_data[key].get(color_param, 'Unknown')
                                         break
                         
-                        if isinstance(material, str):
-                            material = material.strip()
+                        # Convert to string and clean up
+                        if isinstance(group_value, (int, float)):
+                            group_value = str(group_value)
+                        elif isinstance(group_value, str):
+                            group_value = group_value.strip()
                     
-                    unique_materials.add(material)
+                    unique_values.add(group_value)
                 except Exception:
                     pass
             
-            # Assign distinct colors to each material
-            unique_materials_sorted = sorted(list(unique_materials))
+            # Assign distinct colors to each unique value
+            unique_values_sorted = sorted(list(unique_values))
             cmap = plt.get_cmap('tab20')
-            for i, material in enumerate(unique_materials_sorted):
-                material_colors[material] = cmap(i / max(len(unique_materials_sorted), 1))
+            for i, value in enumerate(unique_values_sorted):
+                group_colors[value] = cmap(i / max(len(unique_values_sorted), 1))
             
-            self.progress.emit(f"Found {len(unique_materials_sorted)} unique materials")
+            self.progress.emit(f"Found {len(unique_values_sorted)} unique {color_label} values: {unique_values_sorted[:10]}")
             
             for i, file_path in enumerate(sorted(files)):
                 try:
@@ -2261,7 +2281,7 @@ class PostProcessingWorker(QObject):
                         t0 = time_clean[t0_idx]
                         time_clean = time_clean - t0
                     
-                    # Extract material from parameter file
+                    # Extract grouping parameter value from parameter file
                     filename = os.path.basename(file_path)
                     base_name = os.path.splitext(filename)[0]
                     
@@ -2272,13 +2292,13 @@ class PostProcessingWorker(QObject):
                             base_name = base_name[:-len(suffix)]
                             break
                     
-                    material = "Unknown"
+                    group_value = "Unknown"
                     
-                    # Try to get material from param_data
+                    # Try to get grouping parameter value from param_data
                     if param_data:
                         # Try exact match first
                         if base_name in param_data:
-                            material = param_data[base_name].get('Sample material', 'Unknown')
+                            group_value = param_data[base_name].get(color_param, 'Unknown')
                         else:
                             # Try date-shot pattern matching (YYYYMMDD--NNNNN)
                             import re
@@ -2287,25 +2307,28 @@ class PostProcessingWorker(QObject):
                                 date_shot = date_shot_pattern.group(1)
                                 for key in param_data.keys():
                                     if date_shot in str(key):
-                                        material = param_data[key].get('Sample material', 'Unknown')
+                                        group_value = param_data[key].get(color_param, 'Unknown')
                                         break
                         
-                        if isinstance(material, str):
-                            material = material.strip()
+                        # Convert to string and clean up
+                        if isinstance(group_value, (int, float)):
+                            group_value = str(group_value)
+                        elif isinstance(group_value, str):
+                            group_value = group_value.strip()
                         
-                        if material == "Unknown":
+                        if group_value == "Unknown":
                             # Debug: show first few mismatches
                             if i < 5:
                                 self.progress.emit(f"  No match for: {base_name}")
                             elif i == 5:
                                 self.progress.emit(f"  ... (more non-matching files)")
                     
-                    # Assign color based on material
-                    if material not in material_colors:
-                        material_colors[material] = colors[len(material_colors) % len(colors)]
+                    # Assign color based on grouping parameter value
+                    if group_value not in group_colors:
+                        group_colors[group_value] = colors[len(group_colors) % len(colors)]
                     
-                    color = material_colors[material]
-                    file_material_map[i] = material
+                    color = group_colors[group_value]
+                    file_group_map[i] = group_value
                     
                     ax1.plot(time_clean, velocity_clean, color=color, alpha=0.7, linewidth=1)
                     # Optional uncertainty bands
@@ -2319,7 +2342,7 @@ class PostProcessingWorker(QObject):
                     # Bottom zoom window
                     mask_zoom = time_clean <= zoom_ns
                     if np.any(mask_zoom):
-                        ax2.plot(time_clean[mask_zoom], velocity_clean[mask_zoom], color=color, alpha=0.7, linewidth=1, label=material if material not in [file_material_map.get(j) for j in range(i)] else "")
+                        ax2.plot(time_clean[mask_zoom], velocity_clean[mask_zoom], color=color, alpha=0.7, linewidth=1, label=group_value if group_value not in [file_group_map.get(j) for j in range(i)] else "")
                         if current_params.get('include_uncert_bands', True) and uncert_clean is not None:
                             alpha = float(current_params.get('uncert_alpha', 0.2))
                             ax2.fill_between(time_clean[mask_zoom],
@@ -2336,7 +2359,7 @@ class PostProcessingWorker(QObject):
             # Labels and axis limits
             ax1.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax1.set_ylabel('Velocity (m/s)', fontsize=12)
-            ax1.set_title(f'All Velocity Traces (Aligned - Full Length) - {traces_plotted} traces', fontsize=14)
+            ax1.set_title(f'All Velocity Traces (Aligned - Full Length, Color by {color_label}) - {traces_plotted} traces', fontsize=14)
             ax1.grid(True, alpha=0.3)
             
             ax2.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
@@ -2370,11 +2393,11 @@ class PostProcessingWorker(QObject):
                 ax2.set_xlim(0, zoom_ns)
                 ax2.set_title(f'Zoomed Velocity Traces (First {zoom_ns} ns)', fontsize=14)
             
-            # Add legend for materials
-            if material_colors:
-                legend_patches = [mpatches.Patch(color=material_colors[mat], label=mat) for mat in sorted(material_colors.keys())]
-                ax1.legend(handles=legend_patches, loc='upper right', title='Material')
-                ax2.legend(handles=legend_patches, loc='upper right', title='Material')
+            # Add legend for grouping parameter
+            if group_colors:
+                legend_patches = [mpatches.Patch(color=group_colors[val], label=val) for val in sorted(group_colors.keys())]
+                ax1.legend(handles=legend_patches, loc='upper right', title=color_label, fontsize=9, title_fontsize=10)
+                ax2.legend(handles=legend_patches, loc='upper right', title=color_label, fontsize=9, title_fontsize=10)
             
             plt.tight_layout()
             
@@ -2386,12 +2409,13 @@ class PostProcessingWorker(QObject):
             
             self.progress.emit(f"✓ Saved: {plot_path}")
             self.progress.emit(f"✓ Plotted {traces_plotted} traces")
-            if material_colors:
-                self.progress.emit(f"✓ Materials: {', '.join(sorted(material_colors.keys()))}")
+            if group_colors:
+                self.progress.emit(f"✓ {color_label} values: {', '.join(sorted(group_colors.keys()))}")
             
-            # Generate per-material subplots
-            self.progress.emit("Generating per-material subplot plot...")
-            self._generate_material_subplots(files, param_data, spade_out, current_params, material_colors, align_threshold)
+            # Generate per-material subplots (if using material colors)
+            if current_params.get('use_material_colors', True):
+                self.progress.emit("Generating per-material subplot plot...")
+                self._generate_material_subplots(files, param_data, spade_out, current_params, group_colors, align_threshold)
             
         except Exception as e:
             self.progress.emit(f"❌ Error: {str(e)}")
@@ -3389,22 +3413,33 @@ class HELIXAnalysisToolbox(QMainWindow):
 
         self.pp_use_material_colors = QCheckBox("Color by Sample material (if available)")
         self.pp_use_material_colors.setChecked(True)
+        self.pp_use_material_colors.stateChanged.connect(self.pp_on_material_color_changed)
         opt_layout.addWidget(self.pp_use_material_colors, 1, 0, 1, 2)
 
-        opt_layout.addWidget(QLabel("Zoom Window (ns):"), 2, 0)
+        self.pp_color_by_waveplate = QCheckBox("Color by Waveplate Angle (if available)")
+        self.pp_color_by_waveplate.setChecked(False)
+        self.pp_color_by_waveplate.stateChanged.connect(self.pp_on_waveplate_color_changed)
+        opt_layout.addWidget(self.pp_color_by_waveplate, 2, 0, 1, 2)
+
+        self.pp_color_by_laser_energy = QCheckBox("Color by Laser Target Energy (if available)")
+        self.pp_color_by_laser_energy.setChecked(False)
+        self.pp_color_by_laser_energy.stateChanged.connect(self.pp_on_laser_energy_color_changed)
+        opt_layout.addWidget(self.pp_color_by_laser_energy, 3, 0, 1, 2)
+
+        opt_layout.addWidget(QLabel("Zoom Window (ns):"), 4, 0)
         self.pp_zoom_ns = QSpinBox()
         self.pp_zoom_ns.setRange(10, 10000)
         self.pp_zoom_ns.setValue(1000)
-        opt_layout.addWidget(self.pp_zoom_ns, 2, 1)
+        opt_layout.addWidget(self.pp_zoom_ns, 4, 1)
 
-        opt_layout.addWidget(QLabel("Alignment Threshold (m/s):"), 3, 0)
+        opt_layout.addWidget(QLabel("Alignment Threshold (m/s):"), 5, 0)
         self.pp_align_threshold = QDoubleSpinBox()
         self.pp_align_threshold.setRange(0.0, 1000.0)
         self.pp_align_threshold.setDecimals(2)
         self.pp_align_threshold.setValue(30.0)
         self.pp_align_threshold.setSuffix(" m/s")
         self.pp_align_threshold.setToolTip("Align traces to first velocity ≥ threshold (t=0)")
-        opt_layout.addWidget(self.pp_align_threshold, 3, 1)
+        opt_layout.addWidget(self.pp_align_threshold, 5, 1)
 
         # Axis limits
         axis_group = QGroupBox("Axis Limits")
@@ -3498,6 +3533,36 @@ class HELIXAnalysisToolbox(QMainWindow):
         layout.addStretch()
         self.tab_widget.addTab(tab, "Post-Processing")
 
+    def pp_on_material_color_changed(self, state):
+        """Handle material color checkbox - uncheck others if this is checked"""
+        if state == 2:  # Qt.Checked
+            self.pp_color_by_waveplate.blockSignals(True)
+            self.pp_color_by_laser_energy.blockSignals(True)
+            self.pp_color_by_waveplate.setChecked(False)
+            self.pp_color_by_laser_energy.setChecked(False)
+            self.pp_color_by_waveplate.blockSignals(False)
+            self.pp_color_by_laser_energy.blockSignals(False)
+
+    def pp_on_waveplate_color_changed(self, state):
+        """Handle waveplate angle color checkbox - uncheck others if this is checked"""
+        if state == 2:  # Qt.Checked
+            self.pp_use_material_colors.blockSignals(True)
+            self.pp_color_by_laser_energy.blockSignals(True)
+            self.pp_use_material_colors.setChecked(False)
+            self.pp_color_by_laser_energy.setChecked(False)
+            self.pp_use_material_colors.blockSignals(False)
+            self.pp_color_by_laser_energy.blockSignals(False)
+
+    def pp_on_laser_energy_color_changed(self, state):
+        """Handle laser energy color checkbox - uncheck others if this is checked"""
+        if state == 2:  # Qt.Checked
+            self.pp_use_material_colors.blockSignals(True)
+            self.pp_color_by_waveplate.blockSignals(True)
+            self.pp_use_material_colors.setChecked(False)
+            self.pp_color_by_waveplate.setChecked(False)
+            self.pp_use_material_colors.blockSignals(False)
+            self.pp_color_by_waveplate.blockSignals(False)
+
     def pp_select_output_dir(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select ALPSS Output Directory")
         if dir_path:
@@ -3532,6 +3597,11 @@ class HELIXAnalysisToolbox(QMainWindow):
         
         self.spade_params['zoom_window_ns'] = self.pp_zoom_ns.value()
         self.spade_params['align_velocity_threshold_ms'] = self.pp_align_threshold.value()
+        
+        # Color coding options
+        self.spade_params['use_material_colors'] = self.pp_use_material_colors.isChecked()
+        self.spade_params['color_by_waveplate'] = self.pp_color_by_waveplate.isChecked()
+        self.spade_params['color_by_laser_energy'] = self.pp_color_by_laser_energy.isChecked()
 
         # Debug: Log applied parameters
         self.progress_text.appendPlainText(f"[POST-PROCESSING] Parameters applied:")
