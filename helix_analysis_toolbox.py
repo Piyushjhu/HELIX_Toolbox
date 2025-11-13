@@ -2222,8 +2222,21 @@ class PostProcessingWorker(QObject):
                     pass
             
             # Assign distinct colors to each unique value
-            unique_values_sorted = sorted(list(unique_values))
-            cmap = plt.get_cmap('tab20')
+            # Sort numerically for laser energy, alphabetically for others
+            if color_by_laser_energy:
+                # Convert to float for numeric sorting, handle 'Unknown'
+                def safe_float(val):
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return float('inf')  # Put non-numeric values at the end
+                unique_values_sorted = sorted(list(unique_values), key=safe_float)
+                # Use viridis colormap for laser energy
+                cmap = plt.get_cmap('viridis')
+            else:
+                unique_values_sorted = sorted(list(unique_values))
+                cmap = plt.get_cmap('tab20')
+            
             for i, value in enumerate(unique_values_sorted):
                 group_colors[value] = cmap(i / max(len(unique_values_sorted), 1))
             
@@ -2399,9 +2412,9 @@ class PostProcessingWorker(QObject):
                 ax2.set_xlim(0, zoom_ns)
                 ax2.set_title(f'Zoomed Velocity Traces (First {zoom_ns} ns)', fontsize=14)
             
-            # Add legend for grouping parameter
+            # Add legend for grouping parameter (using the already sorted order)
             if group_colors:
-                legend_patches = [mpatches.Patch(color=group_colors[val], label=val) for val in sorted(group_colors.keys())]
+                legend_patches = [mpatches.Patch(color=group_colors[val], label=val) for val in unique_values_sorted]
                 ax1.legend(handles=legend_patches, loc='upper right', title=color_label, fontsize=9, title_fontsize=10)
                 ax2.legend(handles=legend_patches, loc='upper right', title=color_label, fontsize=9, title_fontsize=10)
             
