@@ -2665,14 +2665,19 @@ class PostProcessingWorker(QObject):
                     else:
                         time_aligned = time_clean
                     
-                    # Calculate mean velocity in 250-300 ns window
+                    # Calculate mean velocity in 250-300 ns window (default)
                     mask_window = (time_aligned >= 250) & (time_aligned <= 300)
                     if np.sum(mask_window) > 0:
                         mean_velocity = np.mean(velocity_clean[mask_window])
                     else:
-                        # Fallback: use nearest available data
-                        self.progress.emit(f"  Warning: No data in 250-300ns window for {os.path.basename(file_path)}")
-                        continue
+                        # Fallback: try 300-320 ns window
+                        mask_window = (time_aligned >= 300) & (time_aligned <= 320)
+                        if np.sum(mask_window) > 0:
+                            mean_velocity = np.mean(velocity_clean[mask_window])
+                            self.progress.emit(f"  Note: Using 300-320ns window for {os.path.basename(file_path)}")
+                        else:
+                            self.progress.emit(f"  Warning: No data in 250-300ns or 300-320ns window for {os.path.basename(file_path)}")
+                            continue
                     
                     # Get laser energy and waveplate angle from parameter file
                     filename = os.path.basename(file_path)
