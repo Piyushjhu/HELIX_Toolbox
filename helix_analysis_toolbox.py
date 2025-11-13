@@ -2615,14 +2615,15 @@ class PostProcessingWorker(QObject):
             self.progress.emit(f"⚠ Error generating material subplots: {str(e)[:80]}")
     
     def _generate_energy_vs_velocity_plot(self, files, param_data, spade_out, current_params):
-        """Generate laser energy vs impact velocity plot (mean velocity 250-300 ns)"""
+        """Generate laser energy vs impact velocity scatter plot colored by waveplate angle"""
         try:
             import pandas as pd
             import numpy as np
             import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
             
-            # Collect data: laser energy -> list of velocities
-            energy_velocity_data = {}
+            # Collect data: list of (energy, velocity, waveplate_angle) tuples
+            data_points = []
             align_threshold = current_params.get('align_velocity_threshold_ms', 30.0)
             
             self.progress.emit("Processing files for laser energy vs velocity...")
@@ -2673,7 +2674,7 @@ class PostProcessingWorker(QObject):
                         self.progress.emit(f"  Warning: No data in 250-300ns window for {os.path.basename(file_path)}")
                         continue
                     
-                    # Get laser energy from parameter file
+                    # Get laser energy and waveplate angle from parameter file
                     filename = os.path.basename(file_path)
                     base_name = os.path.splitext(filename)[0]
                     
@@ -2684,10 +2685,13 @@ class PostProcessingWorker(QObject):
                             break
                     
                     laser_energy = None
+                    waveplate_angle = None
+                    
                     if param_data:
                         # Try exact match first
                         if base_name in param_data:
                             laser_energy = param_data[base_name].get('Laser_Target_Energy (mJ)', None)
+                            waveplate_angle = param_data[base_name].get('Waveplate_Angle (Degrees)', None)
                         else:
                             # Try date-shot pattern matching
                             import re
@@ -2697,64 +2701,66 @@ class PostProcessingWorker(QObject):
                                 for key in param_data.keys():
                                     if date_shot in str(key):
                                         laser_energy = param_data[key].get('Laser_Target_Energy (mJ)', None)
+                                        waveplate_angle = param_data[key].get('Waveplate_Angle (Degrees)', None)
                                         break
                     
-                    if laser_energy is not None:
+                    if laser_energy is not None and waveplate_angle is not None:
                         try:
                             energy_float = float(laser_energy)
-                            if energy_float not in energy_velocity_data:
-                                energy_velocity_data[energy_float] = []
-                            energy_velocity_data[energy_float].append(mean_velocity)
+                            angle_float = float(waveplate_angle)
+                            data_points.append((energy_float, mean_velocity, angle_float))
                         except (ValueError, TypeError):
-                            self.progress.emit(f"  Warning: Invalid laser energy value for {base_name}")
+                            self.progress.emit(f"  Warning: Invalid energy/angle value for {base_name}")
                     else:
-                        self.progress.emit(f"  Warning: No laser energy found for {base_name}")
+                        if laser_energy is None:
+                            self.progress.emit(f"  Warning: No laser energy found for {base_name}")
+                        if waveplate_angle is None:
+                            self.progress.emit(f"  Warning: No waveplate angle found for {base_name}")
                 
                 except Exception as e:
                     self.progress.emit(f"  Error processing {os.path.basename(file_path)}: {str(e)[:50]}")
                     continue
             
-            if not energy_velocity_data:
+            if not data_points:
                 self.progress.emit("⚠ No valid laser energy vs velocity data found")
                 return
             
-            # Calculate mean and std for each energy
-            energies = sorted(energy_velocity_data.keys())
-            mean_velocities = []
-            std_velocities = []
+            # Extract unique waveplate angles and assign colors
+            unique_angles = sorted(list(set([dp[2] for dp in data_points])))
+            self.progress.emit(f"Found {len(data_points)} data points with {len(unique_angles)} unique waveplate angles")
             
-            for energy in energies:
-                velocities = energy_velocity_data[energy]
-                mean_velocities.append(np.mean(velocities))
-                std_velocities.append(np.std(velocities) if len(velocities) > 1 else 0)
-            
-            self.progress.emit(f"Found {len(energies)} unique laser energy values")
+            # Use tab10 colormap for distinct colors
+            cmap = plt.get_cmap('tab10')
+            angle_colors = {}
+            for i, angle in enumerate(unique_angles):
+                angle_colors[angle] = cmap(i / max(len(unique_angles), 1))
             
             # Create plot
             fig, ax = plt.subplots(figsize=(10, 7))
             
-            # Plot with error bars
-            ax.errorbar(energies, mean_velocities, yerr=std_velocities, 
-                       fmt='o-', markersize=8, linewidth=2, capsize=5,
-                       color='#1f77b4', ecolor='#1f77b4', alpha=0.7)
-            
-            # Add individual data points
-            for energy in energies:
-                velocities = energy_velocity_data[energy]
-                # Add slight jitter to x for visibility when multiple points
-                x_jitter = energy + np.random.normal(0, energy*0.01, len(velocities))
-                ax.scatter(x_jitter, velocities, alpha=0.3, color='gray', s=30)
+            # Plot each data point colored by waveplate angle
+            for energy, velocity, angle in data_points:
+                ax.scatter(energy, velocity, 
+                          color=angle_colors[angle], 
+                          s=100, alpha=0.7, edgecolors='black', linewidth=0.5)
             
             ax.set_xlabel('Laser Target Energy (mJ)', fontsize=12, fontweight='bold')
             ax.set_ylabel('Flyer Impact Velocity (m/s)', fontsize=12, fontweight='bold')
-            ax.set_title('Laser Energy vs Flyer Impact Velocity\n(Mean velocity at 250-300 ns)', fontsize=14, fontweight='bold')
+            ax.set_title('Laser Energy vs Flyer Impact Velocity\n(Color-coded by Waveplate Angle)', fontsize=14, fontweight='bold')
             ax.grid(True, alpha=0.3, linestyle='--')
             
+            # Create legend for waveplate angles
+            legend_patches = [mpatches.Patch(color=angle_colors[angle], label=f'{angle}°') 
+                            for angle in unique_angles]
+            ax.legend(handles=legend_patches, title='Waveplate Angle', 
+                     loc='best', fontsize=10, title_fontsize=11, framealpha=0.9)
+            
             # Add text box with statistics
-            textstr = f'Data points: {sum(len(v) for v in energy_velocity_data.values())}\n'
-            textstr += f'Energy range: {min(energies):.1f} - {max(energies):.1f} mJ'
+            textstr = f'Total points: {len(data_points)}\n'
+            textstr += f'Energy range: {min(dp[0] for dp in data_points):.1f} - {max(dp[0] for dp in data_points):.1f} mJ\n'
+            textstr += f'Velocity range: {min(dp[1] for dp in data_points):.1f} - {max(dp[1] for dp in data_points):.1f} m/s'
             props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-            ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+            ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=9,
                    verticalalignment='top', bbox=props)
             
             plt.tight_layout()
@@ -2765,7 +2771,7 @@ class PostProcessingWorker(QObject):
             plt.close(fig)
             
             self.progress.emit(f"✓ Saved: {plot_path}")
-            self.progress.emit(f"✓ Plotted {len(energies)} energy levels with {sum(len(v) for v in energy_velocity_data.values())} total measurements")
+            self.progress.emit(f"✓ Plotted {len(data_points)} data points across {len(unique_angles)} waveplate angles")
             
         except Exception as e:
             self.progress.emit(f"⚠ Error generating energy vs velocity plot: {str(e)[:80]}")
