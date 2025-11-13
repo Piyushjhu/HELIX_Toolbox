@@ -1293,14 +1293,21 @@ class AnalysisThread(QThread):
 
             # Apply axis limits from SPADE params if not auto
             try:
-                if not self.spade_params.get('auto_calculate_limits', True):
+                auto_calc = self.spade_params.get('auto_calculate_limits', True)
+                self.progress_signal.emit(f"Combined plot - auto_calculate_limits: {auto_calc}")
+                
+                if not auto_calc:
                     x_min = float(self.spade_params.get('x_min_main', 0))
                     x_max = float(self.spade_params.get('x_max_main', 100))
                     y_min = float(self.spade_params.get('y_min_main', 0))
                     y_max = float(self.spade_params.get('y_max_main', 600))
                     ax.set_xlim(x_min, x_max)
                     ax.set_ylim(y_min, y_max)
-            except Exception:
+                    self.progress_signal.emit(f"Applied axis limits: X({x_min}-{x_max}), Y({y_min}-{y_max})")
+                else:
+                    self.progress_signal.emit("Using auto-calculated axis limits")
+            except Exception as e:
+                self.progress_signal.emit(f"Error applying axis limits: {str(e)}")
                 pass
             
             # Create legend with material colors

@@ -1690,7 +1690,6 @@ def saving(
                         vc_out["time_f"][:min_length],
                         vc_out["velocity_f_smooth"][:min_length],
                         iua_out["vel_uncert"][:min_length],  # Uncertainty
-                        vc_out["velocity_f_smooth"][:min_length] + iua_out["vel_uncert"][:min_length],  # Velocity + Uncertainty
                     ),
                     axis=1,
                 )
@@ -1699,7 +1698,7 @@ def saving(
                     os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel-smooth-with-uncert" + ".csv"),
                     vel_smooth_with_uncert,
                     delimiter=",",
-                    header="Time_s,Velocity_Smooth_m_s,Velocity_Uncertainty_m_s,Velocity_Plus_Uncertainty_m_s",
+                    header="Time_s,Velocity_Smooth_m_s,Velocity_Uncertainty_m_s",
                     comments=""
                 )
                 print(f"[{datetime.now()}] Saved vel_smooth_with_uncert.")
