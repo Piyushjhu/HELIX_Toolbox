@@ -1544,11 +1544,20 @@ class AnalysisThread(QThread):
 
         for idx, row in spall_df.iterrows():
             filename = row.get('Filename', '')
-            if not filename:
+            if not filename or filename == 'data' or not isinstance(filename, str):
+                # Skip invalid filenames
+                if filename:
+                    self.progress_signal.emit(f"Skipping invalid filename: {repr(filename)}")
                 continue
 
             # Get file base name for parameter matching
-            base_name = os.path.splitext(filename)[0]
+            # Handle cases where filename might be a full path or just a name
+            base_name = os.path.splitext(os.path.basename(str(filename)))[0]
+            
+            # Skip if base_name is still invalid
+            if not base_name or base_name == 'data':
+                self.progress_signal.emit(f"Skipping invalid base_name from filename: {repr(filename)}")
+                continue
 
             # Get parameter data if available using helper function
             param_info = self.get_param_data_for_file(base_name)
@@ -1822,8 +1831,24 @@ class AnalysisThread(QThread):
                 # Compute mean and std dev
                 velocity_cols = [
     col for col in merged.columns if col != 'Time']
-                merged['Mean Velocity (m/s)'] = merged[velocity_cols].mean(axis=1)
-                merged['Std Dev Velocity (m/s)'] = merged[velocity_cols].std(axis=1)
+                
+                # Convert velocity columns to numeric, coercing errors to NaN
+                for col in velocity_cols:
+                    merged[col] = pd.to_numeric(merged[col], errors='coerce')
+                
+                # Filter to only numeric columns (exclude any that became all NaN)
+                numeric_velocity_cols = [col for col in velocity_cols 
+                                        if merged[col].dtype in ['float64', 'int64'] 
+                                        and not merged[col].isna().all()]
+                
+                if numeric_velocity_cols:
+                    merged['Mean Velocity (m/s)'] = merged[numeric_velocity_cols].mean(axis=1)
+                    merged['Std Dev Velocity (m/s)'] = merged[numeric_velocity_cols].std(axis=1)
+                else:
+                    # No valid numeric columns found
+                    merged['Mean Velocity (m/s)'] = np.nan
+                    merged['Std Dev Velocity (m/s)'] = np.nan
+                    self.progress_signal.emit("Warning: No valid numeric velocity columns found for mean calculation")
 
                 # Create a properly named file that matches SPADE's expected pattern
                 # Use a generic name that will work with the plotting function
