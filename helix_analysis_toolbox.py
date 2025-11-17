@@ -489,15 +489,27 @@ class AnalysisThread(QThread):
                             else:
                                 spade_params_with_skip['param_data'] = None
 
+                            # Create subfolder for individual spall plots if plot_individual is enabled
+                            plot_individual_enabled = self.spade_params.get('plot_individual', False)
+                            if plot_individual_enabled and spall_analysis_enabled:
+                                spall_plots_dir = os.path.join(spade_output_dir, 'spall_plots')
+                                os.makedirs(spall_plots_dir, exist_ok=True)
+                                self.progress_signal.emit(f"Individual spall plots will be saved to: {spall_plots_dir}")
+                            else:
+                                spall_plots_dir = spade_output_dir
+
                             try:
+                                # Use spall_plots_dir for individual plots, but keep summary in main folder
+                                # We'll modify SPADE's plot path construction by using a custom output_folder
+                                # for plots only when plot_individual is True
                                 process_velocity_files(
                                     input_folder=self.output_dir,
                                     # Use ALPSS smoothed data with uncertainty
                                     file_pattern="*--vel-smooth-with-uncert.csv",
-                                    output_folder=spade_output_dir,
+                                    output_folder=spall_plots_dir if plot_individual_enabled and spall_analysis_enabled else spade_output_dir,
                                     summary_table_name=os.path.join(
-                                        spade_output_dir, "spall_summary.csv"),
-                                    plot_individual=False,
+                                        spade_output_dir, "spall_summary.csv"),  # Always save summary in main folder
+                                    plot_individual=plot_individual_enabled and spall_analysis_enabled,
                                     **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                                 )
 
@@ -577,14 +589,24 @@ class AnalysisThread(QThread):
                         else:
                             spade_params_with_skip['param_data'] = None
 
+                        # Create subfolder for individual spall plots if plot_individual is enabled
+                        plot_individual_enabled = self.spade_params.get('plot_individual', False)
+                        spall_analysis_enabled = self.spade_params.get('spall_analysis_enabled', False)
+                        if plot_individual_enabled and spall_analysis_enabled:
+                            spall_plots_dir = os.path.join(spade_output_dir, 'spall_plots')
+                            os.makedirs(spall_plots_dir, exist_ok=True)
+                            self.progress_signal.emit(f"Individual spall plots will be saved to: {spall_plots_dir}")
+                        else:
+                            spall_plots_dir = spade_output_dir
+
                         try:
                             process_velocity_files(
                                 input_folder=input_dir,
                                 file_pattern=file_pattern,
-                                output_folder=spade_output_dir,
+                                output_folder=spall_plots_dir if plot_individual_enabled and spall_analysis_enabled else spade_output_dir,
                                 summary_table_name=os.path.join(
-                                    spade_output_dir, "spall_summary.csv"),
-                                plot_individual=False,
+                                    spade_output_dir, "spall_summary.csv"),  # Always save summary in main folder
+                                plot_individual=plot_individual_enabled and spall_analysis_enabled,
                                 files_list=self.spade_input_files,
                                 **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
                             )
@@ -1249,9 +1271,18 @@ class AnalysisThread(QThread):
         
         plt.tight_layout()
         
-        # Save plot in SPADE_analysis folder
+        # Create HEL_plots subfolder if plot_individual is enabled
+        plot_individual_enabled = self.spade_params.get('plot_individual', False)
+        if plot_individual_enabled:
+            hel_plots_dir = os.path.join(spade_output_dir, 'HEL_plots')
+            os.makedirs(hel_plots_dir, exist_ok=True)
+            plot_dir = hel_plots_dir
+        else:
+            plot_dir = spade_output_dir
+        
+        # Save plot in appropriate folder
         plot_filename = f'{base_name}--hel_detection.png'
-        plot_path = os.path.join(spade_output_dir, plot_filename)
+        plot_path = os.path.join(plot_dir, plot_filename)
         fig.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
         
@@ -5116,9 +5147,9 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.plot_individual = QCheckBox("Generate Individual Plots")
         self.plot_individual.setChecked(True)
         self.plot_individual.setToolTip("Generate individual plots for each file:\n"
-                                       "• Spall analysis: spall detection plots\n"
-                                       "• HEL detection: HEL window plots with peak/valley markers\n"
-                                       "Plots saved in SPADE_analysis folder")
+                                       "• Spall analysis: spall detection plots saved in 'spall_plots' subfolder\n"
+                                       "• HEL detection: HEL window plots with peak/valley markers saved in 'HEL_plots' subfolder\n"
+                                       "Plots organized in separate subfolders within SPADE_analysis for easy review")
         output_layout.addWidget(self.plot_individual, 0, 0)
         
         self.save_summary = QCheckBox("Save Summary Table")
