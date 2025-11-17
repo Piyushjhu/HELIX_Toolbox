@@ -157,6 +157,7 @@ def _plot_analysis_results(data_dict, lines_info, intersections, output_path, ax
     x_trace = data_dict.get('x_shifted_full', data_dict.get('x_shifted', pd.Series(dtype=float)))
     y_trace = data_dict.get('y_original_full', data_dict.get('y_original', pd.Series(dtype=float)))
     y_smooth = data_dict.get('y_smooth', pd.Series(dtype=float))
+    x_shifted = data_dict.get('x_shifted', pd.Series(dtype=float))  # Post-t0 data only
     uncertainty = data_dict.get('uncertainty', pd.Series(dtype=float))
     filename = data_dict.get('filename', 'Unknown Filename')
     base_filename = os.path.splitext(filename)[0]
@@ -168,14 +169,44 @@ def _plot_analysis_results(data_dict, lines_info, intersections, output_path, ax
     logger.debug(f"    Generating model plot for {base_filename}")
     fig, ax = plt.subplots(figsize=(10, 6))
     try:
-        # Plot uncertainty bands if available
+        # Plot uncertainty bands if available - handle length mismatches
         if not uncertainty.empty and not uncertainty.isna().all():
-            ax.fill_between(x_trace, y_trace - uncertainty, y_trace + uncertainty, 
-                          alpha=0.3, color='lightblue', label='Uncertainty')
+            # Check if uncertainty matches full trace or post-t0 only
+            if len(uncertainty) == len(x_trace):
+                ax.fill_between(x_trace, y_trace - uncertainty, y_trace + uncertainty, 
+                              alpha=0.3, color='lightblue', label='Uncertainty')
+            elif len(uncertainty) == len(x_shifted) and not x_shifted.empty:
+                # Uncertainty is post-t0 only, create full-length array
+                uncertainty_full = pd.Series(index=x_trace.index, dtype=float)
+                # Map uncertainty to matching time points
+                uncertainty_values = uncertainty.values
+                if len(uncertainty_values) > 0:
+                    # Find matching indices
+                    uncertainty_full.loc[x_shifted.index[:len(uncertainty_values)]] = uncertainty_values
+                    if not uncertainty_full.isna().all():
+                        ax.fill_between(x_trace, y_trace - uncertainty_full.fillna(0), 
+                                      y_trace + uncertainty_full.fillna(0), 
+                                      alpha=0.3, color='lightblue', label='Uncertainty')
         
         ax.plot(x_trace, y_trace, label='Original Data', color='grey', alpha=0.6, lw=1.0)
+        
+        # Plot smoothed data - ensure arrays match in length
         if not y_smooth.empty:
-            ax.plot(x_trace, y_smooth, label='Smoothed Data', color='black', alpha=0.8, lw=1.0, ls=':')
+            # Check if y_smooth matches x_trace (full) or x_shifted (post-t0)
+            if len(y_smooth) == len(x_trace):
+                # Already full-length, use directly
+                ax.plot(x_trace, y_smooth, label='Smoothed Data', color='black', alpha=0.8, lw=1.0, ls=':')
+            elif len(y_smooth) == len(x_shifted) and not x_shifted.empty:
+                # y_smooth is post-t0 only, plot against x_shifted
+                ax.plot(x_shifted, y_smooth, label='Smoothed Data', color='black', alpha=0.8, lw=1.0, ls=':')
+            else:
+                # Length mismatch - try to plot what we can (use minimum length)
+                min_len = min(len(x_trace), len(y_smooth))
+                if min_len > 0:
+                    ax.plot(x_trace.iloc[:min_len], y_smooth.iloc[:min_len], 
+                          label='Smoothed Data', color='black', alpha=0.8, lw=1.0, ls=':')
+                else:
+                    logger.warning(f"    Cannot plot smoothed data for {base_filename}: length mismatch (x={len(x_trace)}, y_smooth={len(y_smooth)})")
 
         if lines_info:
             colors = ['blue', 'green', 'red', 'purple', 'brown']
