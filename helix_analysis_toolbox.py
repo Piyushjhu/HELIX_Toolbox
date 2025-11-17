@@ -489,26 +489,34 @@ class AnalysisThread(QThread):
                             else:
                                 spade_params_with_skip['param_data'] = None
 
-                            process_velocity_files(
-                                input_folder=self.output_dir,
-                                # Use ALPSS smoothed data with uncertainty
-                                file_pattern="*--vel-smooth-with-uncert.csv",
-                                output_folder=spade_output_dir,
-                                summary_table_name=os.path.join(
-                                    spade_output_dir, "spall_summary.csv"),
-                                plot_individual=False,
-                                **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
-                            )
+                            try:
+                                process_velocity_files(
+                                    input_folder=self.output_dir,
+                                    # Use ALPSS smoothed data with uncertainty
+                                    file_pattern="*--vel-smooth-with-uncert.csv",
+                                    output_folder=spade_output_dir,
+                                    summary_table_name=os.path.join(
+                                        spade_output_dir, "spall_summary.csv"),
+                                    plot_individual=False,
+                                    **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
+                                )
 
-                            # Update progress after completion
-                            for i in range(len(vel_files)):
+                                # Update progress after completion
+                                for i in range(len(vel_files)):
+                                    self.progress_signal.emit(
+                                        f"SPADE Processing file {i+1}/{len(vel_files)}: Completed")
+
+                                spade_end_time = time.time()
+                                spade_time = spade_end_time - spade_start_time
                                 self.progress_signal.emit(
-                                    f"SPADE Processing file {i+1}/{len(vel_files)}: Completed")
-
-                            spade_end_time = time.time()
-                            spade_time = spade_end_time - spade_start_time
-                            self.progress_signal.emit(
-                                f"Completed SPADE analysis for {len(vel_files)} files in {spade_time:.2f} seconds")
+                                    f"Completed SPADE analysis for {len(vel_files)} files in {spade_time:.2f} seconds")
+                            except Exception as e:
+                                import traceback
+                                error_msg = f"SPADE analysis failed: {str(e)}"
+                                self.progress_signal.emit(f"❌ {error_msg}")
+                                self.progress_signal.emit(f"Error details: {traceback.format_exc()}")
+                                # Continue execution - don't abort the entire analysis
+                                self.progress_signal.emit("⚠️ Continuing with other analysis tasks...")
                         elif vel_files and not spall_analysis_enabled:
                             self.progress_signal.emit(
                                 f"Found {len(vel_files)} velocity files but spall analysis is disabled - skipping SPADE analysis")
@@ -569,24 +577,34 @@ class AnalysisThread(QThread):
                         else:
                             spade_params_with_skip['param_data'] = None
 
-                        process_velocity_files(
-                            input_folder=input_dir,
-                            file_pattern=file_pattern,
-                            output_folder=spade_output_dir,
-                            summary_table_name=os.path.join(
-                                spade_output_dir, "spall_summary.csv"),
-                            plot_individual=False,
-                            files_list=self.spade_input_files,
-                            **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
-                        )
+                        try:
+                            process_velocity_files(
+                                input_folder=input_dir,
+                                file_pattern=file_pattern,
+                                output_folder=spade_output_dir,
+                                summary_table_name=os.path.join(
+                                    spade_output_dir, "spall_summary.csv"),
+                                plot_individual=False,
+                                files_list=self.spade_input_files,
+                                **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
+                            )
 
-                        # Update progress after completion
-                        for i in range(len(self.spade_input_files)):
-                            self.progress_signal.emit(
-                                f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: Completed")
+                            # Update progress after completion
+                            for i in range(len(self.spade_input_files)):
+                                self.progress_signal.emit(
+                                    f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: Completed")
 
-                        spade_end_time = time.time()
-                        spade_time = spade_end_time - spade_start_time
+                            spade_end_time = time.time()
+                            spade_time = spade_end_time - spade_start_time
+                        except Exception as e:
+                            import traceback
+                            error_msg = f"SPADE analysis failed: {str(e)}"
+                            self.progress_signal.emit(f"❌ {error_msg}")
+                            self.progress_signal.emit(f"Error details: {traceback.format_exc()}")
+                            # Continue execution - don't abort the entire analysis
+                            self.progress_signal.emit("⚠️ Continuing with other analysis tasks...")
+                            spade_end_time = time.time()
+                            spade_time = spade_end_time - spade_start_time
                         self.progress_signal.emit(
                             f"Completed SPADE analysis for {len(self.spade_input_files)} files in {spade_time:.2f} seconds")
                     else:
