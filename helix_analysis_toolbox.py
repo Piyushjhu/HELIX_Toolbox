@@ -641,8 +641,14 @@ class AnalysisThread(QThread):
                 f"Total processing time: {total_time:.2f} seconds")
             self.finished_signal.emit(True, "Analysis completed successfully")
         except Exception as e:
-            self.progress_signal.emit(f"Error during analysis: {str(e)}")
-            self.finished_signal.emit(False, f"Analysis failed: {str(e)}")
+            import traceback
+            error_msg = str(e)
+            # Avoid duplicate "Analysis failed:" prefix
+            if error_msg.startswith("Analysis failed:"):
+                error_msg = error_msg.replace("Analysis failed:", "").strip()
+            self.progress_signal.emit(f"Error during analysis: {error_msg}")
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+            self.finished_signal.emit(False, error_msg)
 
     def generate_velocity_shots_summary(self, spade_output_dir):
         """Generate velocity shots summary CSV with impact velocity calculations and combined velocity plot"""
@@ -6661,27 +6667,42 @@ Output Files:
         # Update the correct progress bar
         if "ALPSS" in message and "Processing file" in message:
             try:
-                current, total = message.split("Processing file ")[1].split("/")
-                current = int(current)
-                self.alpss_progress_bar.setValue(current)
-                QApplication.processEvents()  # Force immediate update
-            except:
+                parts = message.split("Processing file ")[1].split("/")
+                if len(parts) >= 2:
+                    current = int(parts[0])
+                    # Extract total - handle cases like "21" or "21: Starting..."
+                    total_str = parts[1].split()[0] if parts[1].split() else parts[1]
+                    total = int(total_str) if total_str.isdigit() else 100  # Default to 100 if can't parse
+                    self.alpss_progress_bar.setMaximum(total)
+                    self.alpss_progress_bar.setValue(current)
+                    QApplication.processEvents()  # Force immediate update
+            except (ValueError, IndexError, AttributeError):
                 pass
         elif "SPADE" in message and "Processing file" in message:
             try:
-                current, total = message.split("Processing file ")[1].split("/")
-                current = int(current)
-                self.spade_progress_bar.setValue(current)
-                QApplication.processEvents()  # Force immediate update
-            except:
+                parts = message.split("Processing file ")[1].split("/")
+                if len(parts) >= 2:
+                    current = int(parts[0])
+                    # Extract total - handle cases like "21" or "21: Starting..."
+                    total_str = parts[1].split()[0] if parts[1].split() else parts[1]
+                    total = int(total_str) if total_str.isdigit() else 100  # Default to 100 if can't parse
+                    self.spade_progress_bar.setMaximum(total)
+                    self.spade_progress_bar.setValue(current)
+                    QApplication.processEvents()  # Force immediate update
+            except (ValueError, IndexError, AttributeError):
                 pass
         elif "Processing file" in message:
             try:
-                current, total = message.split("Processing file ")[1].split("/")
-                current = int(current)
-                self.spade_progress_bar.setValue(current)
-                QApplication.processEvents()  # Force immediate update
-            except:
+                parts = message.split("Processing file ")[1].split("/")
+                if len(parts) >= 2:
+                    current = int(parts[0])
+                    # Extract total - handle cases like "21" or "21: Starting..."
+                    total_str = parts[1].split()[0] if parts[1].split() else parts[1]
+                    total = int(total_str) if total_str.isdigit() else 100  # Default to 100 if can't parse
+                    self.spade_progress_bar.setMaximum(total)
+                    self.spade_progress_bar.setValue(current)
+                    QApplication.processEvents()  # Force immediate update
+            except (ValueError, IndexError, AttributeError):
                 pass
                 
     def analysis_finished(self, success, message):
