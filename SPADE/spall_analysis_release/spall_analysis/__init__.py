@@ -47,6 +47,7 @@ from .plotting import (
     plot_velocity_comparison,
     plot_spall_vs_strain_rate,
     plot_spall_vs_shock_stress,
+    plot_shock_stress_vs_laser_energy,
     plot_wilkerson_comparison,
     plot_spall_vs_strain_rate_multi_wilkerson,
     plot_combined_mean_traces,

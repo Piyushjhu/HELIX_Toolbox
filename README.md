@@ -9,16 +9,38 @@
 
 ---
 
-**Latest Updates:**
-- **NEW:** Configuration file support for ALPSS and SPADE parameters - Save/load parameter sets for reproducible analysis
-- Enhanced post-processing with laser energy vs. impact velocity plots
-- Improved noise fraction-based data filtering with consistent CSV output lengths
-- User-configurable alignment thresholds for velocity trace analysis
-- Fixed CSS styling for improved GUI checkbox appearance
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Features](#features)
+3. [Installation](#installation)
+4. [Usage](#usage)
+5. [Command-Line Interface (CLI)](#command-line-interface-cli)
+6. [Configuration Files](#configuration-files)
+7. [Post-Processing Mode](#post-processing-mode)
+8. [Physical Parameter Calculations](#physical-parameter-calculations)
+9. [Output Files](#output-files)
+10. [HEL Detection](#hel-detection)
+11. [MAD Filter](#mad-filter)
+12. [Troubleshooting](#troubleshooting)
+13. [Credits](#credits)
+14. [Citation](#citation)
+
+---
 
 ## Overview
 
 HELIX Toolbox is a comprehensive graphical user interface (GUI) that combines ALPSS (Automated Laser Photonic Doppler Velocimetry Signal Processing) and SPADE (Spall Analysis Toolkit) for single point PDV (Photonic Doppler Velocimetry) data analysis. This tool provides an integrated workflow from raw PDV signals to complete spall strength analysis with uncertainty quantification.
+
+**Latest Updates:**
+- Configuration file support for ALPSS and SPADE parameters
+- Enhanced post-processing with selective plot generation
+- HEL (Hugoniot Elastic Limit) detection with strain rate calculation
+- MAD (Median Absolute Deviation) statistical outlier filtering
+- Command-line interface for batch processing
+- Comprehensive diagnostic tools
+
+---
 
 ## Features
 
@@ -30,8 +52,8 @@ HELIX Toolbox is a comprehensive graphical user interface (GUI) that combines AL
 
 ### 📊 **Comprehensive Analysis Pipeline**
 - **ALPSS Integration**: Raw signal processing to velocity traces
-- **SPADE Integration**: Spall strength and strain rate analysis
-- **Combined Mode**: Full pipeline from raw data to spall analysis
+- **SPADE Integration**: Spall strength, strain rate, and HEL analysis
+- **Combined Mode**: Full pipeline from raw data to complete analysis
 - **Individual Modes**: Run ALPSS or SPADE independently
 
 ### 🎛️ **Advanced Processing Options**
@@ -39,19 +61,24 @@ HELIX Toolbox is a comprehensive graphical user interface (GUI) that combines AL
 - **Smoothing Parameters**: Configurable signal smoothing
 - **Peak Detection**: Automated feature detection with user controls
 - **Uncertainty Propagation**: Complete error analysis throughout pipeline
+- **MAD Filter**: Statistical outlier removal for peak velocities
+- **HEL Detection**: Gradient-based Hugoniot Elastic Limit detection
 
 ### 📈 **Rich Output Generation**
 - Velocity traces with uncertainty bands
 - Spall strength vs. strain rate plots
-- Spall strength vs. shock stress analysis
+- Shock stress analysis plots
+- HEL vs. peak velocity and strain rate plots
+- Row/column spatial analysis heatmaps
 - Enhanced summary tables with all uncertainties
-- Individual and combined analysis plots
 
 ### 🖥️ **Cross-Platform Compatibility**
 - **Windows**: Native Windows GUI with Explorer integration
 - **macOS**: Optimized for macOS with native file dialogs
 - **Linux**: Full Linux support with X11 integration
 - **Unified Interface**: Same features across all platforms
+
+---
 
 ## Installation
 
@@ -88,47 +115,179 @@ pip install -r requirements.txt
 python helix_analysis_toolbox.py
 ```
 
-### Platform-Specific Installation
+### Environment Setup (Recommended)
 
-- **[Windows Installation Guide](supplementary/docs_archive/docs/WINDOWS_INSTALLATION.md)** - Detailed Windows setup and troubleshooting
-- **macOS**: Install Xcode Command Line Tools if needed
-- **Linux**: Install system dependencies: `sudo apt-get install python3-dev python3-pip`
+Create an isolated Python environment to avoid dependency conflicts. This is highly recommended to prevent conflicts with other Python packages.
 
-## Environment Setup (recommended)
+#### Option A: Python venv (Recommended)
 
-Create an isolated Python environment to avoid dependency conflicts.
+**Step 1: Create Virtual Environment**
 
-### Option A: Python venv (recommended)
+**Windows (PowerShell)**
+```powershell
+# Navigate to HELIX Toolbox directory
+cd path\to\HELIX_Toolbox_v_2
 
-#### Windows (PowerShell or CMD)
+# Create virtual environment
+py -3 -m venv helix_toolbox_env
+
+# Or if py command doesn't work, try:
+python -m venv helix_toolbox_env
+```
+
+**Windows (Command Prompt / CMD)**
 ```cmd
-py -3 -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+# Navigate to HELIX Toolbox directory
+cd path\to\HELIX_Toolbox_v_2
+
+# Create virtual environment
+py -3 -m venv helix_toolbox_env
+
+# Or if py command doesn't work, try:
+python -m venv helix_toolbox_env
 ```
 
-#### macOS/Linux (bash/zsh)
+**macOS/Linux (Terminal)**
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# Navigate to HELIX Toolbox directory
+cd path/to/HELIX_Toolbox_v_2
+
+# Create virtual environment
+python3 -m venv helix_toolbox_env
+```
+
+**Step 2: Activate Virtual Environment**
+
+**Windows (PowerShell)**
+```powershell
+# Activate the virtual environment
+.\helix_toolbox_env\Scripts\Activate.ps1
+
+# If you get an execution policy error, run this first:
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+**Windows (Command Prompt / CMD)**
+```cmd
+# Activate the virtual environment
+helix_toolbox_env\Scripts\activate.bat
+```
+
+**macOS/Linux (Terminal)**
+```bash
+# Activate the virtual environment
+source helix_toolbox_env/bin/activate
+```
+
+**Step 3: Install Dependencies**
+
+Once activated, you should see `(helix_toolbox_env)` at the beginning of your command prompt. Then install dependencies:
+
+**Windows (PowerShell or CMD)**
+```cmd
+# Upgrade pip
 python -m pip install --upgrade pip
+
+# Install requirements
 pip install -r requirements.txt
 ```
 
-Deactivate with:
+**macOS/Linux (Terminal)**
+```bash
+# Upgrade pip
+python -m pip install --upgrade pip
+
+# Install requirements
+pip install -r requirements.txt
+```
+
+**Step 4: Verify Installation**
+
+**Windows (PowerShell or CMD)**
+```cmd
+# Check Python version (should show Python 3.7+)
+python --version
+
+# Check if packages are installed
+pip list
+```
+
+**macOS/Linux (Terminal)**
+```bash
+# Check Python version (should show Python 3.7+)
+python --version
+
+# Check if packages are installed
+pip list
+```
+
+**Deactivate Virtual Environment**
+
+When you're done working, deactivate the environment:
+
+**Windows (PowerShell or CMD)**
+```cmd
+deactivate
+```
+
+**macOS/Linux (Terminal)**
 ```bash
 deactivate
 ```
 
-### Option B: Conda
+**Note:** After deactivating, you'll need to reactivate the environment each time you open a new terminal session to use HELIX Toolbox.
+
+#### Option B: Conda
+
+**Step 1: Create Conda Environment**
+
+**Windows (Anaconda Prompt or PowerShell)**
+```cmd
+conda create -n helix_toolbox python=3.10 -y
+```
+
+**macOS/Linux (Terminal)**
 ```bash
 conda create -n helix_toolbox python=3.10 -y
+```
+
+**Step 2: Activate Conda Environment**
+
+**Windows (Anaconda Prompt or PowerShell)**
+```cmd
 conda activate helix_toolbox
+```
+
+**macOS/Linux (Terminal)**
+```bash
+conda activate helix_toolbox
+```
+
+**Step 3: Install Dependencies**
+
+**Windows (Anaconda Prompt or PowerShell)**
+```cmd
 pip install -r requirements.txt
 ```
 
-### System packages (if needed)
+**macOS/Linux (Terminal)**
+```bash
+pip install -r requirements.txt
+```
+
+**Deactivate Conda Environment**
+
+**Windows (Anaconda Prompt or PowerShell)**
+```cmd
+conda deactivate
+```
+
+**macOS/Linux (Terminal)**
+```bash
+conda deactivate
+```
+
+### System Packages (if needed)
 - macOS: `brew install qt5`
 - Ubuntu/Debian: `sudo apt-get install -y libgl1 libglib2.0-0 libx11-6 libxext6 libxrender1 libxtst6 libxi6`
 
@@ -137,27 +296,266 @@ Headless environments may require:
 export QT_QPA_PLATFORM=offscreen
 ```
 
+---
+
 ## Usage
 
-### 1. **File Selection**
-- Choose single file or batch processing mode
-- Select input PDV data files (CSV format)
-- Set output directory for results
+### GUI Mode
 
-### 2. **Analysis Mode**
-- **ALPSS Only**: Process raw PDV data to velocity traces
-- **SPADE Only**: Analyze existing velocity files
-- **Combined**: Full pipeline from raw data to spall analysis
+1. **File Selection**
+   - Choose single file or batch processing mode
+   - Select input PDV data files (CSV format)
+   - Set output directory for results
 
-### 3. **Parameter Configuration**
-- **ALPSS Parameters**: Signal processing, filtering, and smoothing options
-- **SPADE Parameters**: Material properties and analysis models
-- **Advanced Options**: Gaussian notch filter, uncertainty multipliers
+2. **Analysis Mode**
+   - **ALPSS Only**: Process raw PDV data to velocity traces
+   - **SPADE Only**: Analyze existing velocity files
+   - **Combined**: Full pipeline from raw data to spall analysis
 
-### 4. **Run Analysis**
-- Monitor real-time progress
-- View generated plots and results
-- Access comprehensive output files
+3. **Parameter Configuration**
+   - **ALPSS Parameters**: Signal processing, filtering, and smoothing options
+   - **SPADE Parameters**: Material properties and analysis models
+   - **Advanced Options**: Gaussian notch filter, uncertainty multipliers
+
+4. **Run Analysis**
+   - Monitor real-time progress
+   - View generated plots and results
+   - Access comprehensive output files
+
+---
+
+## Command-Line Interface (CLI)
+
+The `helix_cli_runner.py` script allows you to run HELIX Toolbox analysis from the command line without the GUI, which is much faster for batch processing.
+
+### Basic Requirements
+
+1. **Config Files**: You have two options:
+   - **Master Config (Recommended)**: Single `helix_master_config.json` file containing all settings
+   - **Separate Configs**: Individual `alpss_config_default.json` and `spade_config_default.json` files
+
+2. **Python Environment**: Make sure you have all dependencies installed
+
+### Quick Start Examples
+
+#### Example 1: Using Master Config File (Simplest - Recommended)
+
+Edit `helix_master_config.json` with your paths and settings, then:
+
+```bash
+python3 helix_cli_runner.py --config ./helix_master_config.json
+```
+
+#### Example 2: Override Config File Settings
+
+You can override any setting from the command line:
+
+```bash
+python3 helix_cli_runner.py \
+    --config ./helix_master_config.json \
+    --input-dir /different/path/to/files \
+    --output-dir /different/output/path
+```
+
+#### Example 3: ALPSS Only
+
+```bash
+python3 helix_cli_runner.py \
+    --config ./helix_master_config.json \
+    --analysis-mode alpss_only
+```
+
+#### Example 4: SPADE Only (Using Existing ALPSS Outputs)
+
+Edit `helix_master_config.json` to set:
+- `"analysis_mode": "spade_only"`
+- `"spade_mode": "manual"`
+- `"spade_input_dir": "/path/to/alpss/outputs"`
+
+Then run:
+```bash
+python3 helix_cli_runner.py --config ./helix_master_config.json
+```
+
+### Input Selection (Choose One Method)
+
+**Method 1: Explicit file list**
+```bash
+--input-files file1.csv file2.csv file3.csv
+```
+
+**Method 2: Directory + pattern (recommended for batch processing)**
+```bash
+--input-dir /path/to/files --input-pattern "C1--*.csv"
+```
+
+### Command-Line Arguments
+
+**Master Config Mode** (when using `--config`):
+- `--config`: Path to master config file (required)
+- All other arguments are optional and override config file values
+
+**Separate Configs Mode** (when using `--alpss-config` and `--spade-config`):
+- `--alpss-config`: Path to ALPSS JSON config file
+- `--spade-config`: Path to SPADE JSON config file
+- `--output-dir`: Directory where all outputs will be saved
+- `--input-dir`: Directory containing PDV files
+- `--input-pattern`: Glob pattern to match files (default: `*.csv`)
+- `--input-files`: Space-separated list of specific files
+- `--param-folder`: Directory containing experiment metadata (CSV/Excel files)
+- `--analysis-mode`: `both`, `alpss_only`, or `spade_only`
+- `--spade-mode`: `auto` (use ALPSS outputs) or `manual` (provide SPADE inputs explicitly)
+
+### Performance Tips
+
+1. **Use directory + pattern** instead of listing individual files for large batches
+2. **Disable plot saving** in config files if you only need CSV outputs (faster)
+3. **Use `alpss_only` mode** first, then run SPADE separately if you need to iterate on SPADE parameters
+4. **Run in background** for long batches:
+   ```bash
+   nohup python3 helix_cli_runner.py [args] > run.log 2>&1 &
+   ```
+
+---
+
+## Configuration Files
+
+The HELIX Toolbox supports loading analysis parameters from configuration files (JSON format). This feature allows you to:
+- **Save time**: Reuse the same parameter sets across multiple analysis sessions
+- **Ensure consistency**: Use identical parameters for reproducible results
+- **Easy sharing**: Share configuration files with collaborators
+- **Version control**: Track parameter changes over time
+
+### Master Config File Structure
+
+The master config file (`helix_master_config.json`) contains three main sections:
+
+1. **`cli_settings`**: Command-line arguments and file paths
+2. **`alpss_config`**: All ALPSS processing parameters
+3. **`spade_config`**: All SPADE processing parameters
+4. **`post_processing_config`**: Post-processing plot generation settings
+5. **`material_properties`**: Material-specific properties (density, wave speeds, etc.)
+
+### Example Master Config File
+
+```json
+{
+    "cli_settings": {
+        "input_dir": "/path/to/pdv/files",
+        "input_files": null,
+        "input_pattern": "*.csv",
+        "output_dir": "/path/to/output",
+        "param_folder": "/path/to/parameter/folder",
+        "analysis_mode": "both",
+        "spade_mode": "auto"
+    },
+    "alpss_config": {
+        "save_data": "yes",
+        "display_plots": "no",
+        "save_all_plots": "no",
+        "spall_calculation": "no",
+        "header_lines": 5,
+        "time_to_take": 1e-05,
+        "use_notch_filter": true,
+        "carrier_freq": 1500000000.0,
+        "smoothing_window_size": 51
+    },
+    "spade_config": {
+        "experiment_velocity_shots": true,
+        "experiment_spall_analysis": false,
+        "experiment_hel_detection": true,
+        "align_velocity_threshold_ms": 30.0,
+        "minimum_HEL_velocity_expected": 15.0,
+        "hel_detection_min_points": 3,
+        "mad_filter_enabled": true,
+        "mad_filter_threshold": 2.0,
+        "skip_unknown_material_traces": true
+    },
+    "material_properties": {
+        "Cu": {
+            "density": 8960.0,
+            "bulk_wave_speed": 3940.0,
+            "C_L": 4760.0
+        }
+    }
+}
+```
+
+### Using Configuration Files in GUI
+
+1. **Saving Current Settings**: Click "Save Current Settings to Config" button
+2. **Loading Settings**: Select "Use Config File" radio button, browse and load config file
+3. **Mixing Modes**: You can use ALPSS config file + Manual SPADE parameters (or vice versa)
+
+### Key SPADE Config Parameters
+
+- `experiment_velocity_shots`: Enable velocity shots analysis
+- `experiment_spall_analysis`: Enable spall strength analysis
+- `experiment_hel_detection`: Enable HEL detection
+- `align_velocity_threshold_ms`: Velocity threshold for trace alignment (m/s)
+- `minimum_HEL_velocity_expected`: Minimum HEL velocity to accept (m/s)
+- `hel_detection_min_points`: Minimum consecutive points for HEL detection
+- `mad_filter_enabled`: Enable MAD outlier filter
+- `mad_filter_threshold`: MAD filter threshold (typically 2.0-3.5)
+- `skip_unknown_material_traces`: Skip traces with unknown material
+
+---
+
+## Post-Processing Mode
+
+Post-processing mode allows you to generate plots from existing SPADE analysis results **without rerunning the entire analysis**. This is useful when you want to:
+- Regenerate plots with different settings
+- Create new plots that weren't generated initially
+- Quickly update plots after modifying config settings
+
+### Configuration
+
+In `helix_master_config.json`, set:
+
+```json
+{
+    "post_processing_config": {
+        "enabled": true,
+        "spade_output_dir": "/path/to/your/spade/output",
+        "plots": {
+            "hel_vs_peak_velocity": true,
+            "hel_vs_hel_strain_rate": true,
+            "flyer_row_column_peak_velocity_heatmap": true,
+            "flyer_row_column_pair_peak_velocity": true,
+            "flyer_row_column_pair_peak_velocity_by_material_laser_energy": true,
+            "peak_velocity_pattern_analysis": true,
+            "shock_stress_vs_laser_energy": true,
+            "shock_stress_vs_waveplate_angle": true,
+            "shock_stress_vs_peak_velocity": true,
+            "row_column_vs_peak_shock_stress": true,
+            "laser_energy_vs_waveplate_angle": true
+        }
+    }
+}
+```
+
+**Important:** The `spade_output_dir` must contain `velocity_shots_summary.csv` (generated by SPADE analysis).
+
+### Running Post-Processing
+
+```bash
+python helix_cli_runner.py --config helix_master_config.json
+```
+
+The CLI runner will:
+1. Detect `post_processing_config.enabled = true`
+2. **Skip** ALPSS and SPADE analysis
+3. Read existing `velocity_shots_summary.csv`
+4. Generate only the plots you've enabled
+5. Save plots to the `spade_output_dir`
+
+### Important Notes
+
+- **HEL Plots**: Require `experiment_hel_detection: true` and HEL data in summary CSV
+- **Row/Column Plots**: Require `Flyer_Row` and `Flyer_Column` columns from parameter files
+- **Other Config Sections**: Still used (e.g., `skip_unknown_material_traces`, material properties)
+
+---
 
 ## Physical Parameter Calculations
 
@@ -165,7 +563,7 @@ export QT_QPA_PLATFORM=offscreen
 
 **Method**: Phase unwrapping and differentiation of PDV signal
 
-The free surface velocity is extracted from the PDV (Photonic Doppler Velocimetry) signal using the fundamental relationship:
+The free surface velocity is extracted from the PDV signal using:
 
 ```
 v(t) = (λ/2) × f_Doppler(t)
@@ -177,22 +575,18 @@ Where:
 - `f_Doppler(t)` = instantaneous Doppler shift frequency (Hz)
 
 **Process**:
-1. **Signal Demodulation**: Extract In-phase (I) and Quadrature (Q) components via IQ analysis
-2. **Phase Calculation**: `φ(t) = arctan2(Q, I)`
-3. **Phase Unwrapping**: Remove 2π discontinuities
-4. **Frequency Extraction**: `f(t) = (1/2π) × dφ/dt`
-5. **Velocity Conversion**: `v(t) = (λ/2) × f(t)`
-6. **Smoothing**: Apply Gaussian window for noise reduction
+1. Signal demodulation: Extract In-phase (I) and Quadrature (Q) components via IQ analysis
+2. Phase calculation: `φ(t) = arctan2(Q, I)`
+3. Phase unwrapping: Remove 2π discontinuities
+4. Frequency extraction: `f(t) = (1/2π) × dφ/dt`
+5. Velocity conversion: `v(t) = (λ/2) × f(t)`
+6. Smoothing: Apply Gaussian window for noise reduction
 
 **Implementation**: `velocity_calculation()` in `ALPSS/alpss_main.py`
-
----
 
 ### 2. Velocity Uncertainty Calculation
 
 **Method**: Instantaneous noise analysis with time-frequency uncertainty principle
-
-The velocity uncertainty accounts for signal-to-noise ratio and temporal resolution:
 
 ```
 Δv(t) = (λ/2) × Δf(t)
@@ -206,30 +600,15 @@ Where the frequency uncertainty is:
 
 **Parameters**:
 - `η(t)` = instantaneous noise fraction = `std(noise) / [A(t)/2]`
-- `A(t)` = instantaneous signal amplitude (from envelope detection)
+- `A(t)` = instantaneous signal amplitude
 - `f_s` = sampling frequency (Hz)
 - `τ` = characteristic time = FWHM of Gaussian smoothing window (s)
 
-**Process**:
-1. **Noise Estimation**: Fit sinusoid to pre-event signal, calculate residuals
-2. **Envelope Detection**: Extract upper and lower signal envelopes
-3. **Instantaneous Amplitude**: `A(t)` = envelope_max - envelope_min
-4. **Noise Fraction**: `η(t) = std(noise) / [A(t)/2]`
-5. **Characteristic Time**: Calculate FWHM of smoothing window
-6. **Frequency Uncertainty**: Apply uncertainty formula
-7. **Velocity Uncertainty**: Convert using `Δv = (λ/2) × Δf`
-
 **Reference**: [Fratanduono et al., Review of Scientific Instruments 91, 051501 (2020)](https://doi.org/10.1063/12.0000870)
-
-**Implementation**: `instantaneous_uncertainty_analysis()` in `ALPSS/alpss_main.py`
-
----
 
 ### 3. Spall Strength Calculation
 
 **Method**: Acoustic approximation from pullback velocity
-
-Spall strength is calculated from the velocity pullback using the acoustic approximation:
 
 ```
 σ_spall = (1/2) × ρ₀ × c_b × Δv_pullback
@@ -241,266 +620,266 @@ Where:
 - `c_b` = bulk sound speed (m/s)
 - `Δv_pullback` = velocity pullback magnitude = |v_peak - v_min| (m/s)
 
-**Process**:
-1. **Peak Detection**: Find maximum velocity (peak) after shock arrival
-2. **Minimum Detection**: Find minimum velocity (valley) after peak
-3. **Pullback Calculation**: `Δv = |v_peak - v_min|`
-4. **Material Properties**: Get ρ₀ and c_b from database or user input
-5. **Spall Strength**: Apply formula, convert Pa → GPa (÷10⁹)
-
 **Uncertainty Propagation**:
 ```
 Δσ_spall = (1/2) × ρ₀ × c_b × √(Δv²_peak + Δv²_min)
 ```
 
-**Implementation**: `calculate_spall_strength()` in `SPADE/spall_analysis_release/spall_analysis/data_processing.py`
+### 4. Shock Stress Calculation
 
----
-
-### 4. Strain Rate Calculation
-
-**Method**: Time derivative of velocity during pullback
-
-The strain rate during spalling is estimated from the rate of velocity change:
+**Method**: Hugoniot Equation of State (EOS)
 
 ```
-ε̇ = (1/c_b) × |dv/dt|_pullback
+U = c + S × u_p
+σ_shock = ρ × U × u_p
 ```
 
 Where:
-- `ε̇` = strain rate (s⁻¹)
-- `c_b` = bulk sound speed (m/s)
-- `|dv/dt|` = velocity change rate during pullback (m/s²)
-
-**Process**:
-1. **Identify Pullback Region**: Time between peak and minimum velocity
-2. **Linear Fit**: Fit line to velocity vs. time in pullback region
-3. **Velocity Rate**: Extract slope `dv/dt`
-4. **Strain Rate**: `ε̇ = |dv/dt| / c_b`
-
-**Alternative Method** (if linear fit fails):
-```
-ε̇ ≈ Δv_pullback / (c_b × Δt_pullback)
-```
-
-**Implementation**: `calculate_strain_rate()` in SPADE data processing module
-
----
+- `U` = shock velocity (m/s)
+- `c` = bulk wave speed (m/s)
+- `S` = material-specific parameter
+- `u_p` = particle velocity = `u_fs / 2` (m/s)
+- `u_fs` = free surface velocity (peak velocity from trace) (m/s)
+- `σ_shock` = shock stress (GPa)
+- `ρ` = material density (kg/m³)
 
 ### 5. HEL (Hugoniot Elastic Limit) Calculation
 
-**Method**: Peak-valley analysis with material properties
+**Method**: Gradient-based detection of low-slope plateaus
 
 The HEL strength is determined from the elastic wave amplitude:
 
 ```
-σ_HEL = (1/2) × ρ₀ × c_b × (v_peak - v_valley)
+σ_HEL = (1/2) × ρ₀ × c_b × |free_surface_velocity| / 1e9
 ```
 
 Where:
 - `σ_HEL` = Hugoniot Elastic Limit (GPa)
-- `v_peak` = first peak velocity in elastic wave (m/s)
-- `v_valley` = first valley velocity after peak (m/s)
+- `free_surface_velocity` = mean velocity of HEL plateau segment (m/s)
 - `ρ₀` = material density (kg/m³)
-- `c_b` = bulk sound speed (m/s)
+- `c_b` = bulk wave speed (m/s)
 
-**Process**:
-1. **Elastic Wave Detection**: Identify oscillations in early-time velocity
-2. **Peak Finding**: Detect first maximum with prominence threshold
-3. **Valley Finding**: Detect first minimum after peak
-4. **Material Lookup**: Get ρ₀ and c_b from `material_properties.py` database
-5. **HEL Calculation**: Apply formula, convert to GPa
-
-**Uncertainty Propagation**:
+**Elastic Shock Strain Rate**:
 ```
-Δσ_HEL = (1/2) × ρ₀ × c_b × √(Δv²_peak + Δv²_valley)
-```
-
-**Implementation**: `generate_velocity_shots_summary()` in `helix_analysis_toolbox.py` (lines ~810-840)
-
----
-
-### 6. Shock Stress Calculation
-
-**Method**: Impedance matching with flyer impact velocity
-
-Shock stress is calculated from the impact conditions:
-
-```
-σ_shock = (1/2) × ρ₀ × c_b × v_impact
-```
-
-Or using the measured free surface velocity:
-
-```
-σ_shock = (1/2) × ρ₀ × c_b × (2 × v_fs)
+ε̇_elastic = (1 / (2 × C_L)) × (dU / dt)
 ```
 
 Where:
-- `σ_shock` = shock stress (GPa)
-- `v_impact` = flyer impact velocity (m/s)
-- `v_fs` = free surface velocity (m/s)
-- Factor of 2 accounts for free surface approximation
+- `C_L` = longitudinal wave velocity (m/s)
+- `dU` = change in free surface velocity (U_hel - U_0)
+- `dt` = time duration (t_hel - t_0)
 
-**Implementation**: User-provided impact velocity or extracted from peak velocity
-
----
-
-### 7. Peak Velocity and Time Parameters
-
-**Peak Velocity** (`v_peak`):
-- Maximum velocity in the velocity trace
-- Detected using `scipy.signal.find_peaks()` with prominence threshold
-- Represents the maximum particle velocity reached during loading
-
-**Pullback Velocity** (`v_min`):
-- Minimum velocity after the peak
-- Indicates onset of tension/spall damage
-- Used for spall strength calculation
-
-**Recompression Velocity** (`v_rc`):
-- Velocity increase after minimum (if present)
-- Indicates shock wave reflection and recompression
-- Used for damage evolution analysis
-
-**Time Parameters**:
-- `t_10%`: Time when velocity reaches 10% of peak
-- `t_peak`: Time of maximum velocity
-- `t_min`: Time of minimum velocity (pullback)
-- `t_rc`: Time of recompression (if detected)
-- `Δt_pullback`: Duration of pullback = `t_min - t_peak`
-
-**Implementation**: `spall_analysis()` and peak detection routines in ALPSS
-
----
-
-### 8. Material Properties Database
-
-**Source**: `material_properties.py`
-
-The toolbox includes a comprehensive database of material properties:
-
-**Properties Stored**:
-- `density` (ρ₀): Initial density (kg/m³)
-- `bulk_wave_speed` (c_b): Longitudinal sound speed (m/s)
-
-**Supported Materials** (48 materials):
-- **Metals**: Cu, Al, Fe, Ti, Ni, Ta, W, Au, Ag, Pb, Mg, Zn
-- **Polymers**: PMMA, Polycarbonate, Teflon, Polyethylene
-- **Ceramics**: Sapphire, Silicon, SiC, Glass, Fused Silica
-- **Others**: Diamond, Graphite, Water
-
-**Usage**:
-```python
-from material_properties import get_material_properties
-props = get_material_properties('Copper')
-# Returns: {'density': 8960, 'bulk_wave_speed': 3940, 'material_found': True}
-```
-
-**Fallback**: If material not found, uses Copper properties as default or user-specified values
-
----
-
-### 9. Noise Fraction
-
-**Method**: Ratio of noise to signal amplitude
-
-```
-η(t) = std(noise) / [A(t)/2]
-```
-
-Where:
-- `noise` = residuals from sinusoidal fit to pre-event signal
-- `A(t)` = instantaneous signal amplitude
-
-**Purpose**: 
-- Quantifies signal quality at each time point
-- Used in velocity uncertainty calculation
-- Helps identify regions of poor signal quality
-
-**Output**: Saved in `*--noise--frac.csv`
-
----
-
-### Summary Table of Calculations
+### 6. Summary Table of Calculations
 
 | Parameter | Formula | Units | Uncertainty Method |
 |-----------|---------|-------|-------------------|
 | Velocity | v = (λ/2) × f | m/s | Time-frequency uncertainty |
 | Spall Strength | σ = (1/2) × ρ × c × Δv | GPa | Propagate velocity uncertainties |
 | Strain Rate | ε̇ = \|dv/dt\|/c | s⁻¹ | Linear fit residuals |
-| HEL | σ_HEL = (1/2) × ρ × c × Δv_elastic | GPa | Peak-valley uncertainties |
-| Shock Stress | σ = (1/2) × ρ × c × v_impact | GPa | Impact velocity uncertainty |
-| Noise Fraction | η = std(noise)/(A/2) | - | Statistical (std) |
-
-**References**:
-- ALPSS methodology: Diamond et al. (methodology paper if available)
-- Uncertainty quantification: [Fratanduono et al., RSI 91, 051501 (2020)](https://doi.org/10.1063/12.0000870)
-- Spall strength theory: Antoun et al., "Spall Fracture" (2003)
+| HEL | σ_HEL = (1/2) × ρ × c × \|v_hel\| | GPa | Velocity uncertainty at HEL |
+| Shock Stress | σ = ρ × U × u_p | GPa | EOS with particle velocity |
+| Elastic Strain Rate | ε̇ = (1/(2×C_L)) × (dU/dt) | s⁻¹ | Time derivative |
 
 ---
 
 ## Output Files
 
-### ALPSS Outputs
-- `*--velocity.csv`: Raw velocity data (Time_s, Velocity_m_s)
-- `*--velocity--smooth.csv`: Smoothed velocity data (Time_s, Velocity_Smooth_m_s)
-- `*--vel--uncert.csv`: Velocity uncertainty data (Time_s, Velocity_Uncertainty_m_s)
-- `*--vel-smooth-with-uncert.csv`: Smoothed velocity with uncertainty (Time_s, Velocity_Smooth_m_s, Velocity_Uncertainty_m_s, Velocity_Plus_Uncertainty_m_s)
-- `*--noise--frac.csv`: Noise fraction data (Time_s, Noise_Fraction)
-- `*--voltage.csv`: Filtered voltage signal (Time_s, Voltage_Real_V, Voltage_Imag_V)
-- `*--results.csv`: Analysis results with uncertainties
-- `*--plots.png`: Individual analysis plots
+### ALPSS Output Files
 
-**See [CSV_FILE_FORMATS.md](CSV_FILE_FORMATS.md) for detailed column descriptions**
+| File | Description | Columns |
+|------|-------------|---------|
+| `*--velocity.csv` | Raw velocity data | `Time_s`, `Velocity_m_s` |
+| `*--velocity--smooth.csv` | Smoothed velocity data | `Time_s`, `Velocity_Smooth_m_s` |
+| `*--vel--uncert.csv` | Velocity uncertainty | `Time_s`, `Velocity_Uncertainty_m_s` |
+| `*--vel-smooth-with-uncert.csv` ⭐ | Smoothed velocity with uncertainty (main file for SPADE) | `Time_s`, `Velocity_Smooth_m_s`, `Velocity_Uncertainty_m_s`, `Velocity_Plus_Uncertainty_m_s` |
+| `*--noise--frac.csv` | Noise fraction data | `Time_s`, `Noise_Fraction` |
+| `*--voltage.csv` | Filtered voltage signal | `Time_s`, `Voltage_Real_V`, `Voltage_Imag_V` |
+| `*--results.csv` | Analysis results summary | Various parameters and results |
+| `*--inputs.csv` | Input parameters | Parameter names and values |
 
-### SPADE Outputs
-- `enhanced_spall_summary.csv`: Complete results with ALPSS data (supersedes the older `spall_summary.csv`)
-- `spall_vs_strain_rate.png`: Spall strength vs strain rate plot
-- `spall_vs_shock_stress.png`: Spall strength vs shock stress plot
-- `all_smoothed_velocity_traces.png`: Combined velocity traces
+### SPADE Output Files
 
-## Key Parameters
+| File | Description |
+|------|-------------|
+| `velocity_shots_summary.csv` | Complete velocity shots analysis summary (main output) |
+| `spall_summary.csv` | Spall analysis summary (if spall analysis enabled) |
+| `all_velocity_traces.png` | Combined velocity traces plot |
+| `shock_stress_vs_laser_energy_by_material.png` | Shock stress vs laser energy |
+| `shock_stress_vs_waveplate_angle_by_material.png` | Shock stress vs waveplate angle |
+| `shock_stress_vs_peak_velocity_by_material.png` | Shock stress vs peak velocity |
+| `hel_vs_peak_velocity_by_material.png` | HEL vs peak velocity (if HEL enabled) |
+| `hel_vs_hel_strain_rate_by_material.png` | HEL vs HEL strain rate (if HEL enabled) |
+| `flyer_row_column_peak_velocity_heatmap.png` | Row/column heatmap of peak velocity |
+| `flyer_row_column_pair_peak_velocity.png` | Row/column pair scatter plot |
+| `flyer_row_column_pair_peak_velocity_by_material_laser_energy.png` | Row/column by material with laser energy color coding |
+| `peak_velocity_pattern_analysis.png` | Pattern analysis (laser energy and location effects) |
+| `laser_energy_vs_waveplate_angle.png` | Laser energy vs waveplate angle |
+| `row_column_vs_peak_shock_stress.png` | Row/column vs shock stress plots |
 
-### Gaussian Notch Filter
-- **Enable**: Remove carrier frequency (recommended for strong signals)
-- **Disable**: When signal is weak or carrier/signal frequencies are close
-- **Effects**: May introduce ringing or phase distortion if misused
+### ALPSS Plot Files (if enabled)
 
-### Peak Detection
-- **PB Neighbors**: Must be ≥ 1 (scipy requirement for pullback detection)
-- **RC Neighbors**: Must be ≥ 1 (scipy requirement for recompression detection)
+When `save_all_plots: "subfolder"` is enabled, ALPSS creates a subfolder `{filename}_plots/` containing:
+- `--velocity_with_uncertainty.png`: Velocity with uncertainty bands
+- `--iq_analysis.png`: IQ signal components and magnitude
+- `--IQ_start_time_detection.png`: IQ start time detection
+- `--velocity_comparison.png`: Raw vs smoothed velocity
+- `--imported_spectrogram.png`: Original signal spectrogram
+- `--noise_analysis.png`: Noise analysis (2 panels)
+- `--peak_detection.png`: Peak detection results
+- And more (see config for full list)
 
-### Smoothing
-- **ALPSS Smoothing**: Applied to raw velocity data
-- **SPADE Smoothing**: Automatically skipped in combined mode (uses ALPSS smoothed data)
+---
 
-## Platform-Specific Features
+## HEL Detection
 
-### Windows
-- **Native Explorer Integration**: "Open Output Directory" opens Windows Explorer
-- **Segoe UI Font**: Native Windows styling
-- **Batch File Launcher**: Easy one-click startup
-- **High DPI Support**: Optimized for modern displays
+HEL (Hugoniot Elastic Limit) detection uses a gradient-based method to identify low-slope plateaus in velocity-time data.
 
-### macOS
-- **Native Finder Integration**: File dialogs use macOS Finder
-- **Dark Mode Support**: Automatic theme switching
-- **Retina Display**: High-resolution graphics support
+### Detection Method
 
-### Linux
-- **X11 Integration**: Native Linux desktop integration
-- **Package Manager Support**: Easy installation via pip
-- **Terminal Friendly**: Full command-line interface
+1. **Gradient Calculation**: `gradient = d(velocity)/d(time)` using `np.gradient()`
+2. **Angle Conversion**: `angle = arctan(|gradient|)` in degrees
+3. **Low-Slope Segment Detection**: Find consecutive points where `angle < angle_threshold_deg`
+4. **Minimum Segment Length**: At least `hel_detection_min_points` consecutive points (default: 3, configurable)
+5. **HEL Plateau Velocity**: Mean velocity of the low-slope segment
+6. **HEL Strength**: `σ_HEL = 0.5 × ρ × c_b × |free_surface_velocity| / 1e9` (GPa)
 
-## Documentation
+### Constraints
 
-Additional documentation files are available:
+- **Minimum HEL Velocity**: `minimum_HEL_velocity_expected` (default: 15.0 m/s, configurable)
+  - If detected HEL velocity is below this, HEL is rejected
+- **Relative Uncertainty Filter**: Points with `relative_uncertainty >= 1.0` are excluded
+- **HEL Analysis Window**: Configurable via `hel_start_time_ns` and `hel_end_time_ns`
+- **Negative Strain Rate**: HEL detections with negative strain rate are rejected
 
-- **[CONFIG_FILE_GUIDE.md](CONFIG_FILE_GUIDE.md)**: Complete guide to using configuration files for parameter management
-- **[CSV_FILE_FORMATS.md](CSV_FILE_FORMATS.md)**: Detailed specifications of all output CSV file formats
-- **[POST_PROCESSING_GUIDE.md](POST_PROCESSING_GUIDE.md)**: Guide to post-processing and visualization options
-- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)**: Quick reference guide for common operations
+### Elastic Shock Strain Rate
+
+Calculated as:
+```
+ε̇_elastic = (1 / (2 × C_L)) × (dU / dt)
+```
+
+Where:
+- `C_L` = longitudinal wave velocity (from material properties)
+- `dU = U_hel - U_0` (change in free surface velocity)
+- `dt = t_hel - t_0` (time duration)
+
+### Configuration
+
+In `spade_config`:
+```json
+{
+    "experiment_hel_detection": true,
+    "minimum_HEL_velocity_expected": 15.0,
+    "hel_detection_min_points": 3,
+    "hel_angle_threshold_deg": 45.0,
+    "hel_start_time_ns": 0.0,
+    "hel_end_time_ns": null
+}
+```
+
+### Output
+
+HEL values are stored in `velocity_shots_summary.csv`:
+- `hel_strength_gpa`: HEL strength (GPa)
+- `hel_velocity_ms`: HEL free surface velocity (m/s)
+- `hel_strain_rate_s^-1`: Elastic shock strain rate (1/s)
+- `hel_ok`: Boolean indicating if HEL was successfully detected
+- `hel_consecutive_points`: Number of consecutive points in HEL segment
+- `hel_segment_time_ns`: Time duration of HEL segment (ns)
+
+**Key Constraints:**
+- Minimum HEL velocity: `minimum_HEL_velocity_expected` (default: 15.0 m/s)
+- Minimum consecutive points: `hel_detection_min_points` (default: 3)
+- Relative uncertainty filter: Points with `relative_uncertainty >= 1.0` are excluded
+- Negative strain rate: HEL detections with negative strain rate are rejected
+
+---
+
+## MAD Filter
+
+The MAD (Median Absolute Deviation) filter is a statistical outlier removal method applied to peak velocities.
+
+### Method
+
+1. **Group Data**: Group by material and laser energy brackets (±30 mJ from mean)
+2. **Calculate MAD**: For each group, calculate median and MAD
+3. **Asymmetric MAD**: Use `MAD_lower` for values below median
+4. **Modified Z-Score**: `M_i = 0.6745 × |value - median| / MAD_lower`
+5. **Filter**: Remove points where `M_i >= threshold`
+
+### Configuration
+
+In `spade_config`:
+```json
+{
+    "mad_filter_enabled": true,
+    "mad_filter_threshold": 2.0
+}
+```
+
+**Threshold Guidelines**:
+- `2.0`: More aggressive (removes more outliers)
+- `2.5`: Moderate
+- `3.0`: Standard (removes extreme outliers)
+- `3.5`: Conservative (removes only very extreme outliers)
+
+### Application
+
+- Applied **per material** and **per laser energy bracket**
+- Only affects peak velocity values
+- Filtered traces are excluded from plots and analysis
+- Filtered trace basenames are logged
+
+The MAD filter is applied per material and per laser energy bracket (±30 mJ from mean).
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+**Error: "No PDV input files found"**
+- Check that `--input-dir` exists and contains files matching `--input-pattern`
+- Or use `--input-files` to specify files explicitly
+
+**Error: "Failed to load config"**
+- Verify config file paths are correct
+- Check that config files are valid JSON
+
+**Error: "ModuleNotFoundError"**
+- Install missing dependencies: `pip install pandas numpy matplotlib scipy PyQt5 openpyxl`
+
+**Error: "velocity_shots_summary.csv not found" (Post-processing)**
+- Check that `spade_output_dir` points to the correct directory
+- Verify the file exists: `ls /path/to/spade/output/velocity_shots_summary.csv`
+
+**HEL Detection Not Working**
+- Ensure `experiment_hel_detection: true` in config
+- Check that `minimum_HEL_velocity_expected` is not too high
+- Verify sufficient data points in HEL analysis window
+
+**MAD Filter Not Removing Data**
+- Check that `mad_filter_enabled: true` in config
+- Try lowering `mad_filter_threshold` (e.g., 2.0 instead of 3.0)
+- Verify data is grouped correctly by material and laser energy
+
+**Plots Not Generating**
+- Check that required columns exist in `velocity_shots_summary.csv`
+- For HEL plots, ensure HEL detection was enabled during SPADE analysis
+- For row/column plots, ensure parameter files contain `Flyer_Row` and `Flyer_Column`
+
+**Progress Not Showing (CLI)**
+- The script prints progress to stdout in real-time
+- For background runs, redirect to a log file: `> run.log 2>&1`
+
+### Diagnostic Tools
+
+- `diagnose_high_laser_energy.py`: Find files with laser energy anomalies
+  ```bash
+  python diagnose_high_laser_energy.py --spade-output-dir /path/to/output
+  ```
+
+---
 
 ## Credits
 
@@ -513,6 +892,13 @@ Additional documentation files are available:
 **Author:** Piyush Wanchoo  
 **GitHub:** [@Piyushjhu](https://github.com/Piyushjhu)  
 **Description:** Spall strength and strain rate analysis toolkit
+
+### HELIX Toolbox
+**Author:** Piyush Wanchoo  
+**Institution:** Johns Hopkins University  
+**Description:** Integration and GUI for ALPSS and SPADE
+
+---
 
 ## Citation
 
@@ -527,20 +913,28 @@ If you use HELIX Toolbox in your research, please cite:
 }
 ```
 
+---
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+---
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+---
+
 ## Support
 
 For questions, issues, or feature requests, please:
-1. Check the [Documentation](docs/) folder
+1. Check this README and the technical documentation files
 2. Search existing [Issues](https://github.com/Piyushjhu/HELIX_Toolbox/issues)
 3. Create a new issue with detailed information
+
+---
 
 ## Acknowledgments
 
@@ -550,4 +944,4 @@ For questions, issues, or feature requests, please:
 
 ---
 
-**HELIX Toolbox** - Advancing single point PDV data analysis for shock physics research across all platforms. 🖥️💻📱 
+**HELIX Toolbox** - Advancing single point PDV data analysis for shock physics research across all platforms. 🖥️💻📱

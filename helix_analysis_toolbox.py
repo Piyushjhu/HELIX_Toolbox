@@ -27,7 +27,12 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
     QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QObject
 from PyQt5.QtGui import QFont, QValidator
-from SPADE.spall_analysis_release.spall_analysis import plot_combined_mean_traces, plot_spall_vs_strain_rate, plot_spall_vs_shock_stress
+from SPADE.spall_analysis_release.spall_analysis import (
+    plot_combined_mean_traces,
+    plot_spall_vs_strain_rate,
+    plot_spall_vs_shock_stress,
+    plot_shock_stress_vs_laser_energy,
+)
 from datetime import datetime
 from material_properties import get_material_properties, list_available_materials
 
@@ -134,7 +139,8 @@ class AnalysisThread(QThread):
     param_data=None,
     spade_auto_mode=True,
     spade_input_files=None,
-     analysis_mode="both"):
+     analysis_mode="both",
+     material_properties=None):
         super().__init__()
         self.alpss_params = alpss_params
         self.spade_params = spade_params
@@ -144,6 +150,13 @@ class AnalysisThread(QThread):
         self.spade_auto_mode = spade_auto_mode
         self.spade_input_files = spade_input_files
         self.analysis_mode = analysis_mode  # "alpss_only", "spade_only", or "both"
+        self.material_properties = material_properties or {}  # Material properties from config
+
+        # Initialize trace counting for summary
+        self.total_input_traces = 0
+        self.traces_plotted = 0
+        self.traces_rejected = 0
+        self.rejection_reasons = {}  # Track reasons for rejection
 
     def get_param_data_for_file(self, base_name):
         """
@@ -184,6 +197,625 @@ class AnalysisThread(QThread):
         
         return {}
 
+    def get_material_properties_from_config(self, material_name, default_density=None, default_acoustic_velocity=None):
+        """
+        Get material properties from config first, then fall back to database.
+        
+        Priority order:
+        1. Config material_properties section (if material found)
+        2. Parameter file explicit columns (Density_kg_m3, Bulk_Wave_Speed_m_s)
+        3. Material properties database (material_properties.py)
+        4. Config defaults (spade_params density/acoustic_velocity or alpss_params density/C0)
+        5. Hardcoded defaults (Copper properties)
+        
+        Args:
+            material_name: Name of the material to look up
+            default_density: Default density to use if not found (kg/m³)
+            default_acoustic_velocity: Default bulk wave speed to use if not found (m/s)
+            
+        Returns:
+            Dictionary with 'density', 'bulk_wave_speed', 'material_found', 'material_name', 'source'
+        """
+        # Clean material name
+        material_name = str(material_name).strip() if material_name else 'Unknown'
+        
+        # Get defaults from config if not provided
+        if default_density is None:
+            default_density = self.spade_params.get('density') or self.alpss_params.get('density', 8960)
+        if default_acoustic_velocity is None:
+            default_acoustic_velocity = (self.spade_params.get('acoustic_velocity') or 
+                                       self.alpss_params.get('C0') or 3950)
+        
+        # Priority 1: Check config material_properties section
+        if self.material_properties and material_name in self.material_properties:
+            config_props = self.material_properties[material_name]
+            # Default C_L to bulk_wave_speed if not specified
+            default_C_L = config_props.get('bulk_wave_speed', config_props.get('C0', default_acoustic_velocity))
+            return {
+                'density': float(config_props.get('density', default_density)),
+                'bulk_wave_speed': float(config_props.get('bulk_wave_speed', 
+                                                          config_props.get('C0', default_acoustic_velocity))),
+                'C_L': float(config_props.get('C_L', default_C_L)),
+                'material_found': True,
+                'material_name': material_name,
+                'source': 'config'
+            }
+        
+        # Try case-insensitive match in config
+        if self.material_properties:
+            for config_mat_name, config_props in self.material_properties.items():
+                if config_mat_name.lower() == material_name.lower():
+                    # Default C_L to bulk_wave_speed if not specified
+                    default_C_L = config_props.get('bulk_wave_speed', config_props.get('C0', default_acoustic_velocity))
+                    return {
+                        'density': float(config_props.get('density', default_density)),
+                        'bulk_wave_speed': float(config_props.get('bulk_wave_speed',
+                                                                  config_props.get('C0', default_acoustic_velocity))),
+                        'C_L': float(config_props.get('C_L', default_C_L)),
+                        'material_found': True,
+                        'material_name': config_mat_name,
+                        'source': 'config'
+                    }
+        
+        # Priority 2 & 3: Use database function (which also checks parameter file if passed)
+        mat_props = get_material_properties(material_name, default_density, default_acoustic_velocity)
+        mat_props['source'] = 'database' if mat_props['material_found'] else 'default'
+        # Add C_L if not present (default to bulk_wave_speed for database materials)
+        if 'C_L' not in mat_props:
+            mat_props['C_L'] = mat_props.get('bulk_wave_speed', default_acoustic_velocity)
+        return mat_props
+
+    def detect_dns_and_process_spall(self, file_path, base_name, density, acoustic_velocity, 
+                                     threshold_velocity, spall_start_time, spall_end_time,
+                                     expected_maxima_time=None, expected_minima_time=None,
+                                     maxima_search_window=20.0, minima_search_window=20.0,
+                                     analysis_model='max_min', plot_path=None, **spade_kwargs):
+        """
+        Detect DNS (Did Not Spall) and process spall analysis following Binary_metal_analysis methodology.
+        
+        This function implements the detailed spall detection methodology:
+        1. Loads and filters data
+        2. Aligns trace to shock arrival
+        3. Extracts time window
+        4. Performs DNS detection (structural checks)
+        5. Only calls SPADE for valid spall cases
+        
+        Returns:
+            dict: Results dictionary with spall strength, DNS classification, and diagnostics
+        """
+        import pandas as pd
+        from scipy.signal import find_peaks
+        from scipy.ndimage import uniform_filter1d
+        
+        results = {
+            'Filename': base_name,
+            'Spall_Strength_GPa': np.nan,
+            'Spall_Strength_Unc_GPa': np.nan,
+            'Spall_OK': False,
+            'Spall_StrainRate_s^-1': np.nan,
+            'First_Maxima_m_s': np.nan,
+            'Minima_m_s': np.nan,
+            'Second_Maxima_m_s': np.nan,
+            'Pullback_Velocity_m_s': np.nan,
+            'Pullback_Velocity_Unc_m_s': np.nan,
+            'Processing_Status': 'Failed',
+            'DNS_Classification': 'Unknown'
+        }
+        
+        try:
+            # Step 1: Load CSV and handle headers
+            try:
+                df = pd.read_csv(file_path)
+            except Exception as e:
+                results['Processing_Status'] = f'Failed: Could not load file: {str(e)}'
+                return results
+            
+            # Detect header row
+            has_header = False
+            first_row = df.iloc[0] if len(df) > 0 else None
+            if first_row is not None:
+                first_row_str = ' '.join([str(x).lower() for x in first_row.values[:3]])
+                if any(keyword in first_row_str for keyword in ['time', 'velocity', 'uncertainty']):
+                    has_header = True
+                    df = pd.read_csv(file_path, header=0)
+                else:
+                    df = pd.read_csv(file_path, header=None)
+            
+            # Extract first 3 columns
+            if len(df.columns) < 3:
+                results['Processing_Status'] = 'Failed: Insufficient columns (< 3)'
+                return results
+            
+            time_s = pd.to_numeric(df.iloc[:, 0], errors='coerce').values
+            velocity = pd.to_numeric(df.iloc[:, 1], errors='coerce').values
+            uncertainty = pd.to_numeric(df.iloc[:, 2], errors='coerce').values if len(df.columns) >= 3 else np.full_like(velocity, np.nan)
+            
+            if len(time_s) < 20:
+                results['Processing_Status'] = 'Failed: Insufficient data points (< 20)'
+                return results
+            
+            # Step 1b: Apply uncertainty filter
+            max_vel = np.nanmax(np.abs(velocity))
+            rel_unc = np.abs(uncertainty) / max(max_vel, 1e-9)
+            vel_clean = velocity.copy()
+            vel_clean[rel_unc >= 1.0] = np.nan
+            
+            # Step 2: Trace alignment to shock arrival
+            valid_mask = ~np.isnan(vel_clean)
+            if not np.any(valid_mask):
+                results['Processing_Status'] = 'Failed: No valid velocity data after filtering'
+                return results
+            
+            vel_valid = vel_clean[valid_mask]
+            time_valid = time_s[valid_mask]
+            
+            # Find first index where velocity >= threshold
+            threshold_idx = np.where(vel_valid >= threshold_velocity)[0]
+            if len(threshold_idx) == 0:
+                results['Processing_Status'] = 'Failed: No shock arrival detected (threshold not reached)'
+                return results
+            
+            t0 = time_valid[threshold_idx[0]]
+            t_aligned_ns = (time_s - t0) * 1e9
+            
+            # Step 3: Time window extraction
+            window_mask = (~np.isnan(vel_clean)) & (t_aligned_ns >= spall_start_time) & (t_aligned_ns <= spall_end_time)
+            if np.sum(window_mask) < 20:
+                results['Processing_Status'] = 'Failed: Insufficient data points in spall window (< 20)'
+                return results
+            
+            time_window = t_aligned_ns[window_mask]
+            vel_window = vel_clean[window_mask]
+            uncert_window = uncertainty[window_mask]
+            
+            # Step 4: DNS Detection - Structural Requirements
+            # 4a: Peak and valley detection (standard detection for structure validation)
+            # Note: Expected times are used in max_min calculation, not in DNS detection
+            # DNS detection checks overall structure to determine if spall signature exists
+            prominence = np.nanstd(vel_window) * 0.1
+            peaks, _ = find_peaks(vel_window, prominence=prominence)
+            valleys, _ = find_peaks(-vel_window, prominence=prominence)
+            
+            # 4b: Structural requirements for valid spall
+            dns_reason = None
+            
+            if len(peaks) == 0 or len(valleys) == 0:
+                dns_reason = "No clear peak/valley structure"
+            else:
+                first_peak_idx = peaks[0]
+                valleys_after_peak = valleys[valleys > first_peak_idx]
+                
+                if len(valleys_after_peak) == 0:
+                    dns_reason = "No pullback after initial rise"
+                else:
+                    first_valley_idx = valleys_after_peak[0]
+                    peaks_after_valley = peaks[peaks > first_valley_idx]
+                    
+                    if len(peaks_after_valley) == 0:
+                        dns_reason = "No re-acceleration after pullback"
+            
+            # 4c: DNS Classification
+            if dns_reason:
+                results['Spall_Strength_GPa'] = "DNS"
+                results['Spall_Strength_Unc_GPa'] = np.nan
+                results['Spall_OK'] = False
+                results['Processing_Status'] = f'DNS: {dns_reason}'
+                results['DNS_Classification'] = dns_reason
+                if plot_path:
+                    try:
+                        self._plot_generic_spall_analysis(
+                            plot_path, time_window, vel_window, uncert_window,
+                            peaks[0] if len(peaks) > 0 else None,
+                            valleys_after_peak[0] if 'valleys_after_peak' in locals() and len(valleys_after_peak) > 0 else None,
+                            "DNS", np.nan, base_name, analysis_model=analysis_model
+                        )
+                    except Exception as plot_error:
+                        import traceback
+                        self.progress_signal.emit(f"  Warning: Could not generate DNS plot: {str(plot_error)}")
+                        self.progress_signal.emit(traceback.format_exc())
+                return results
+            
+            # Step 5: Valid Spall Case - Extract Key Velocities
+            first_peak_idx = peaks[0]
+            first_valley_idx = valleys_after_peak[0]
+            second_peak_idx = peaks_after_valley[0]
+            
+            first_peak_vel = vel_window[first_peak_idx]
+            first_valley_vel = vel_window[first_valley_idx]
+            second_peak_vel = vel_window[second_peak_idx]
+            
+            # Compute pullback velocity uncertainty
+            peak_unc = uncert_window[first_peak_idx] if first_peak_idx < len(uncert_window) else 0
+            valley_unc = uncert_window[first_valley_idx] if first_valley_idx < len(uncert_window) else 0
+            pullback_unc = np.sqrt(peak_unc**2 + valley_unc**2) if np.isfinite(peak_unc) and np.isfinite(valley_unc) else np.nan
+            
+            # Store diagnostic velocities
+            results['First_Maxima_m_s'] = first_peak_vel
+            results['Minima_m_s'] = first_valley_vel
+            results['Second_Maxima_m_s'] = second_peak_vel
+            results['Pullback_Velocity_m_s'] = abs(first_peak_vel - first_valley_vel)
+            results['Pullback_Velocity_Unc_m_s'] = pullback_unc
+            
+            # Step 6: SPADE Analysis (only for valid spall cases)
+            # Modify max_min method if expected times are provided
+            if analysis_model == 'max_min' and (expected_maxima_time is not None or expected_minima_time is not None):
+                # Create custom max_min function that searches around expected times
+                spall_strength, spall_unc, strain_rate, peak_idx, valley_idx = self._calculate_max_min_with_time_ranges(
+                    time_window, vel_window, uncert_window, density, acoustic_velocity,
+                    expected_maxima_time, expected_minima_time,
+                    maxima_search_window, minima_search_window
+                )
+                results['Spall_Strength_GPa'] = spall_strength
+                results['Spall_Strength_Unc_GPa'] = spall_unc
+                results['Spall_StrainRate_s^-1'] = strain_rate
+                results['Spall_OK'] = True
+                results['Processing_Status'] = 'Success'
+                results['DNS_Classification'] = 'Valid Spall'
+                
+                # Generate plot if plot_path is provided
+                if plot_path:
+                    self._plot_max_min_spall_analysis(
+                        plot_path, time_window, vel_window, uncert_window,
+                        peak_idx, valley_idx, spall_strength, base_name
+                    )
+            else:
+                # Use SPADE's calculate_spall_parameters
+                spade_lines_info = None
+                spade_intersections = None
+                from SPADE.spall_analysis_release.spall_analysis.data_processing import calculate_spall_parameters
+                
+                result_dict, spade_lines_info, spade_intersections = calculate_spall_parameters(
+                    time_ns=time_window,
+                    velocity_ms=vel_window,
+                    uncertainty_ms=uncert_window,
+                    density=density,
+                    acoustic_velocity=acoustic_velocity,
+                    analysis_model=analysis_model,
+                    skip_smoothing=True,
+                    plot_path=plot_path,
+                    **{k: v for k, v in spade_kwargs.items() if k not in ['density', 'acoustic_velocity', 'analysis_model']}
+                )
+                
+                # Extract spall strength with flexible key matching
+                spall_strength = np.nan
+                for key in result_dict.keys():
+                    if 'spall' in key.lower() and 'strength' in key.lower() and 'gpa' in key.lower() and 'unc' not in key.lower() and 'err' not in key.lower():
+                        try:
+                            val = result_dict[key]
+                            if isinstance(val, str) and val.upper() == 'DNS':
+                                spall_strength = "DNS"
+                            else:
+                                spall_strength = float(val) if pd.notna(val) else np.nan
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Extract uncertainty
+                spall_unc = np.nan
+                for key in result_dict.keys():
+                    if ('unc' in key.lower() or 'err' in key.lower()) and 'spall' in key.lower() and 'gpa' in key.lower():
+                        try:
+                            spall_unc = float(result_dict[key]) if pd.notna(result_dict[key]) else np.nan
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Step 7: Uncertainty fallback calculation
+                if pd.isna(spall_unc) and np.isfinite(pullback_unc) and np.isfinite(density) and np.isfinite(acoustic_velocity):
+                    spall_unc = 0.5 * density * acoustic_velocity * pullback_unc / 1e9
+                
+                # Extract strain rate
+                strain_rate = result_dict.get('Strain Rate (s^-1)', np.nan)
+                if pd.isna(strain_rate):
+                    strain_rate = result_dict.get('Strain_Rate_s^-1', np.nan)
+                
+                # Step 8: Final classification
+                if result_dict.get('Processing Status') == 'Success':
+                    results['Spall_OK'] = True
+                    results['Processing_Status'] = 'Success'
+                else:
+                    results['Spall_OK'] = False
+                    results['Processing_Status'] = result_dict.get('Processing Status', 'Failed: SPADE analysis failed')
+                
+                results['Spall_Strength_GPa'] = spall_strength
+                results['Spall_Strength_Unc_GPa'] = spall_unc
+                results['Spall_StrainRate_s^-1'] = strain_rate
+                results['DNS_Classification'] = 'Valid Spall' if results['Spall_OK'] else 'Failed'
+                
+                # Generate plot if plot_path is provided
+                if plot_path:
+                    self.progress_signal.emit(f"  [DEBUG] Plot path provided for {base_name}: {plot_path}")
+                    try:
+                        self._plot_generic_spall_analysis(
+                            plot_path, time_window, vel_window, uncert_window,
+                            first_peak_idx, first_valley_idx,
+                            results.get('Spall_Strength_GPa', spall_strength),
+                            results.get('Spall_Strength_Unc_GPa', spall_unc),
+                            base_name,
+                            analysis_model=analysis_model,
+                            lines_info=spade_lines_info,
+                            intersections=spade_intersections
+                        )
+                        self.progress_signal.emit(f"  [DEBUG] Generated plot for {base_name}")
+                    except Exception as plot_error:
+                        import traceback
+                        self.progress_signal.emit(f"  Warning: Could not generate spall plot: {str(plot_error)}")
+                        self.progress_signal.emit(f"  [DEBUG] Plot error traceback: {traceback.format_exc()}")
+                else:
+                    self.progress_signal.emit(f"  [DEBUG] No plot_path provided for {base_name}")
+        
+        except Exception as e:
+            import traceback
+            results['Processing_Status'] = f'Failed: {str(e)}'
+            results['DNS_Classification'] = 'Error'
+            self.progress_signal.emit(f"Error in DNS detection for {base_name}: {str(e)}")
+            self.progress_signal.emit(traceback.format_exc())
+        
+        return results
+
+    def _calculate_max_min_with_time_ranges(self, time_window, vel_window, uncert_window, 
+                                           density, acoustic_velocity,
+                                           expected_maxima_time, expected_minima_time,
+                                           maxima_search_window, minima_search_window):
+        """
+        Calculate spall parameters using max_min method with expected time ranges.
+        Searches for maxima and minima around the expected times.
+        """
+        from scipy.signal import find_peaks
+        
+        # Find maxima around expected time
+        if expected_maxima_time is not None:
+            max_time_low = expected_maxima_time - maxima_search_window / 2
+            max_time_high = expected_maxima_time + maxima_search_window / 2
+            max_mask = (time_window >= max_time_low) & (time_window <= max_time_high)
+            if np.any(max_mask):
+                max_window = vel_window[max_mask]
+                max_time_window = time_window[max_mask]
+                peaks, _ = find_peaks(max_window, prominence=np.nanstd(max_window) * 0.1)
+                if len(peaks) > 0:
+                    # Use peak closest to expected time
+                    peak_times = max_time_window[peaks]
+                    closest_peak_idx = np.argmin(np.abs(peak_times - expected_maxima_time))
+                    first_peak_idx_in_window = peaks[closest_peak_idx]
+                    # Map back to full window
+                    max_indices = np.where(max_mask)[0]
+                    first_peak_idx = max_indices[first_peak_idx_in_window]
+                else:
+                    # Fallback: use maximum in window
+                    first_peak_idx = np.nanargmax(max_window)
+                    max_indices = np.where(max_mask)[0]
+                    first_peak_idx = max_indices[first_peak_idx]
+            else:
+                # Fallback to global maximum
+                first_peak_idx = np.nanargmax(vel_window)
+        else:
+            # Use standard peak finding
+            peaks, _ = find_peaks(vel_window, prominence=np.nanstd(vel_window) * 0.1)
+            if len(peaks) > 0:
+                first_peak_idx = peaks[0]
+            else:
+                first_peak_idx = np.nanargmax(vel_window)
+        
+        # Find minima after peak, around expected time if provided
+        signal_after_peak = vel_window[first_peak_idx + 1:]
+        if len(signal_after_peak) == 0:
+            raise ValueError("No signal data found after the initial peak.")
+        
+        if expected_minima_time is not None:
+            min_time_low = expected_minima_time - minima_search_window / 2
+            min_time_high = expected_minima_time + minima_search_window / 2
+            min_mask = (time_window >= min_time_low) & (time_window <= min_time_high) & (time_window > time_window[first_peak_idx])
+            if np.any(min_mask):
+                min_window = vel_window[min_mask]
+                min_time_window = time_window[min_mask]
+                valleys, _ = find_peaks(-min_window, prominence=np.nanstd(min_window) * 0.1)
+                if len(valleys) > 0:
+                    # Use valley closest to expected time
+                    valley_times = min_time_window[valleys]
+                    closest_valley_idx = np.argmin(np.abs(valley_times - expected_minima_time))
+                    first_valley_idx_in_window = valleys[closest_valley_idx]
+                    # Map back to full window
+                    min_indices = np.where(min_mask)[0]
+                    first_valley_idx = min_indices[first_valley_idx_in_window]
+                else:
+                    # Fallback: use minimum in window
+                    first_valley_idx = np.nanargmin(min_window)
+                    min_indices = np.where(min_mask)[0]
+                    first_valley_idx = min_indices[first_valley_idx]
+            else:
+                # Fallback to standard method
+                relative_idx_min = np.nanargmin(signal_after_peak)
+                first_valley_idx = first_peak_idx + 1 + relative_idx_min
+        else:
+            # Standard method: find minimum after peak
+            relative_idx_min = np.nanargmin(signal_after_peak)
+            first_valley_idx = first_peak_idx + 1 + relative_idx_min
+        
+        # Calculate spall strength
+        first_peak_vel = vel_window[first_peak_idx]
+        first_valley_vel = vel_window[first_valley_idx]
+        delta_v = abs(first_peak_vel - first_valley_vel)
+        spall_strength = 0.5 * density * acoustic_velocity * delta_v / 1e9
+        
+        # Calculate uncertainty
+        peak_unc = uncert_window[first_peak_idx] if first_peak_idx < len(uncert_window) else 0
+        valley_unc = uncert_window[first_valley_idx] if first_valley_idx < len(uncert_window) else 0
+        pullback_unc = np.sqrt(peak_unc**2 + valley_unc**2) if np.isfinite(peak_unc) and np.isfinite(valley_unc) else np.nan
+        spall_unc = 0.5 * density * acoustic_velocity * pullback_unc / 1e9 if np.isfinite(pullback_unc) else np.nan
+        
+        # Calculate strain rate
+        time_diff_s = (time_window[first_valley_idx] - time_window[first_peak_idx]) * 1e-9
+        if time_diff_s > 0:
+            strain_rate = (delta_v / time_diff_s) / (2 * acoustic_velocity)
+        else:
+            strain_rate = np.nan
+        
+        return spall_strength, spall_unc, strain_rate, first_peak_idx, first_valley_idx
+
+    def _plot_max_min_spall_analysis(self, plot_path, time_window, vel_window, uncert_window,
+                                     peak_idx, valley_idx, spall_strength, base_name):
+        """Generate plot for max_min spall analysis with expected times"""
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Plot velocity trace
+            ax.plot(time_window, vel_window, 'b-', linewidth=1.5, alpha=0.7, label='Velocity')
+            
+            # Plot uncertainty bands if available
+            if uncert_window is not None and len(uncert_window) == len(vel_window):
+                ax.fill_between(time_window, vel_window - uncert_window, vel_window + uncert_window,
+                               alpha=0.2, color='blue', label='Uncertainty')
+            
+            # Mark peak and valley
+            ax.plot(time_window[peak_idx], vel_window[peak_idx], 'ro', markersize=10, 
+                   label=f'Peak: {vel_window[peak_idx]:.1f} m/s')
+            ax.plot(time_window[valley_idx], vel_window[valley_idx], 'go', markersize=10,
+                   label=f'Valley: {vel_window[valley_idx]:.1f} m/s')
+            
+            # Draw line between peak and valley
+            ax.plot([time_window[peak_idx], time_window[valley_idx]], 
+                   [vel_window[peak_idx], vel_window[valley_idx]], 
+                   'r--', linewidth=2, alpha=0.5, label='Pullback')
+            
+            ax.set_xlabel('Time (ns)', fontsize=12)
+            ax.set_ylabel('Velocity (m/s)', fontsize=12)
+            ax.set_title(f'Spall Analysis: {base_name}\nSpall Strength: {spall_strength:.3f} GPa', 
+                        fontsize=14, fontweight='bold')
+            ax.legend(loc='best', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            self.progress_signal.emit(f"  Saved spall plot: {os.path.basename(plot_path)}")
+        except Exception as e:
+            self.progress_signal.emit(f"  Warning: Could not generate spall plot: {str(e)}")
+
+    def _plot_generic_spall_analysis(self, plot_path, time_window, vel_window, uncert_window,
+                                     peak_idx, valley_idx, spall_strength, spall_unc, base_name,
+                                     analysis_model='max_min', lines_info=None, intersections=None):
+        """Generate generic spall analysis plot for any analysis model"""
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Plot velocity trace
+            ax.plot(time_window, vel_window, 'b-', linewidth=1.5, alpha=0.7, label='Velocity')
+            
+            # Plot uncertainty bands if available
+            if uncert_window is not None and len(uncert_window) == len(vel_window):
+                ax.fill_between(time_window, vel_window - uncert_window, vel_window + uncert_window,
+                               alpha=0.2, color='blue', label='Uncertainty')
+            
+            # Mark peak and valley (max_min diagnostics)
+            if peak_idx is not None and peak_idx < len(time_window):
+                ax.plot(time_window[peak_idx], vel_window[peak_idx], 'ro', markersize=10, 
+                       label=f'Peak: {vel_window[peak_idx]:.1f} m/s')
+            if valley_idx is not None and valley_idx < len(time_window):
+                ax.plot(time_window[valley_idx], vel_window[valley_idx], 'go', markersize=10,
+                       label=f'Valley: {vel_window[valley_idx]:.1f} m/s')
+            
+            # Draw line between peak and valley if both exist
+            if (peak_idx is not None and valley_idx is not None and 
+                peak_idx < len(time_window) and valley_idx < len(time_window)):
+                ax.plot([time_window[peak_idx], time_window[valley_idx]], 
+                       [vel_window[peak_idx], vel_window[valley_idx]], 
+                       'r--', linewidth=2, alpha=0.5, label='Pullback')
+
+            # Overlay hybrid 5-segment fit if requested
+            if analysis_model == 'hybrid_5_segment' and lines_info and intersections:
+                self._overlay_hybrid_segments(ax, time_window, lines_info, intersections)
+            
+            # Format title with uncertainty if available
+            strength_val = None
+            try:
+                if spall_strength is not None and not isinstance(spall_strength, str):
+                    strength_val = float(spall_strength)
+                elif isinstance(spall_strength, str):
+                    strength_val = float(spall_strength)
+            except (TypeError, ValueError):
+                strength_val = None
+            
+            if strength_val is not None and np.isfinite(strength_val):
+                if spall_unc is not None and not np.isnan(spall_unc) and spall_unc > 0:
+                    title = (
+                        f'Spall Analysis: {base_name}\n'
+                        f'Spall Strength: {strength_val:.3f} ± {spall_unc:.3f} GPa'
+                    )
+                else:
+                    title = (
+                        f'Spall Analysis: {base_name}\n'
+                        f'Spall Strength: {strength_val:.3f} GPa'
+                    )
+            else:
+                strength_label = str(spall_strength) if spall_strength is not None else "Unknown"
+                title = (
+                    f'Spall Analysis: {base_name}\n'
+                    f'Spall Strength: {strength_label}'
+                )
+            
+            ax.set_xlabel('Time (ns)', fontsize=12)
+            ax.set_ylabel('Velocity (m/s)', fontsize=12)
+            ax.set_title(title, fontsize=14, fontweight='bold')
+            ax.legend(loc='best', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            self.progress_signal.emit(f"  Saved spall plot: {os.path.basename(plot_path)}")
+        except Exception as e:
+            self.progress_signal.emit(f"  Warning: Could not generate spall plot: {str(e)}")
+
+    def _overlay_hybrid_segments(self, ax, time_window, lines_info, intersections):
+        """Overlay 5-segment hybrid model lines and key points on the velocity plot."""
+        import numpy as np
+        
+        if not lines_info:
+            return
+        
+        t_min = float(np.min(time_window)) if len(time_window) > 0 else 0.0
+        t_max = float(np.max(time_window)) if len(time_window) > 0 else 0.0
+        
+        # Build boundary times using intersections (P1..P4)
+        boundary_times = [t_min]
+        for point in intersections or []:
+            if point and len(point) >= 2 and not any(pd.isna(coord) for coord in point):
+                boundary_times.append(float(point[0]))
+        boundary_times.append(t_max)
+        
+        # Ensure we have exactly len(lines)+1 boundaries
+        while len(boundary_times) <= len(lines_info):
+            boundary_times.append(boundary_times[-1] + 1.0)
+        if len(boundary_times) > len(lines_info) + 1:
+            boundary_times = boundary_times[:len(lines_info) + 1]
+        
+        colors = ['#FF8C00', '#B22222', '#228B22', '#1E90FF', '#8A2BE2']
+        colors = (colors * ((len(lines_info) // len(colors)) + 1))[:len(lines_info)]
+        
+        for idx, ((m, c), color) in enumerate(zip(lines_info, colors)):
+            t_start = boundary_times[idx]
+            t_end = boundary_times[idx + 1]
+            if t_end <= t_start:
+                continue
+            t_vals = np.linspace(t_start, t_end, 100)
+            y_vals = m * t_vals + c
+            ax.plot(t_vals, y_vals, '--', linewidth=1.2, color=color, label=f'Segment {idx + 1}')
+        
+        # Mark intersection points
+        if intersections:
+            for idx, point in enumerate(intersections, start=1):
+                if not point or any(pd.isna(coord) for coord in point):
+                    continue
+                ax.plot(point[0], point[1], marker='X', color='black', markersize=7)
+                ax.text(point[0], point[1], f"P{idx}", fontsize=9, color='black',
+                        ha='left', va='bottom')
+
     def run(self):
         try:
             # Add memory management
@@ -210,6 +842,12 @@ class AnalysisThread(QThread):
 
             # Initialize successful_files list for both ALPSS and SPADE modes
             self.successful_files = []
+            
+            # Track total input files for summary
+            if self.input_files:
+                self.total_input_traces = len(self.input_files)
+            else:
+                self.total_input_traces = 0
 
             # Process ALPSS files if provided and not SPADE-only mode
             if self.analysis_mode != "spade_only" and self.input_files:
@@ -259,19 +897,21 @@ class AnalysisThread(QThread):
 
                     # Pass image selection parameters to ALPSS
                     alpss_params['save_velocity_plot'] = self.alpss_params.get(
-                        'save_velocity_plot', True)
+                        'save_velocity_plot', False)
                     alpss_params['save_stft_plot'] = self.alpss_params.get(
-                        'save_stft_plot', True)
+                        'save_stft_plot', False)
                     alpss_params['save_filtered_plot'] = self.alpss_params.get(
-                        'save_filtered_plot', True)
+                        'save_filtered_plot', False)
                     alpss_params['save_phase_plot'] = self.alpss_params.get(
-                        'save_phase_plot', True)
+                        'save_phase_plot', False)
                     alpss_params['save_amplitude_plot'] = self.alpss_params.get(
-                        'save_amplitude_plot', True)
+                        'save_amplitude_plot', False)
+                    alpss_params['save_iq_start_time_plot'] = self.alpss_params.get(
+                        'save_iq_start_time_plot', False)
                     alpss_params['save_peak_detection_plot'] = self.alpss_params.get(
-                        'save_peak_detection_plot', True)
+                        'save_peak_detection_plot', False)
                     alpss_params['save_uncertainty_plot'] = self.alpss_params.get(
-                        'save_uncertainty_plot', True)
+                        'save_uncertainty_plot', False)
                     
                     # Handle smart selection for combined mode
                     smart_selection_enabled = self.alpss_params.get('smart_selection_enabled', False)
@@ -491,44 +1131,144 @@ class AnalysisThread(QThread):
 
                             # Create subfolder for individual spall plots if plot_individual is enabled
                             plot_individual_enabled = self.spade_params.get('plot_individual', False)
+                            self.progress_signal.emit(f"Debug: plot_individual_enabled = {plot_individual_enabled}, spall_analysis_enabled = {spall_analysis_enabled}")
                             if plot_individual_enabled and spall_analysis_enabled:
                                 spall_plots_dir = os.path.join(spade_output_dir, 'spall_plots')
                                 os.makedirs(spall_plots_dir, exist_ok=True)
                                 self.progress_signal.emit(f"Individual spall plots will be saved to: {spall_plots_dir}")
                             else:
                                 spall_plots_dir = spade_output_dir
+                                if not plot_individual_enabled:
+                                    self.progress_signal.emit(f"⚠ Individual spall plots disabled (plot_individual = {plot_individual_enabled})")
+                                if not spall_analysis_enabled:
+                                    self.progress_signal.emit(f"⚠ Individual spall plots disabled (spall_analysis_enabled = {spall_analysis_enabled})")
 
                             try:
-                                # Use spall_plots_dir for individual plots, but keep summary in main folder
-                                # We'll modify SPADE's plot path construction by using a custom output_folder
-                                # for plots only when plot_individual is True
-                                process_velocity_files(
-                                    input_folder=self.output_dir,
-                                    # Use ALPSS smoothed data with uncertainty
-                                    file_pattern="*--vel-smooth-with-uncert.csv",
-                                    output_folder=spall_plots_dir if plot_individual_enabled and spall_analysis_enabled else spade_output_dir,
-                                    summary_table_name=os.path.join(
-                                        spade_output_dir, "spall_summary.csv"),  # Always save summary in main folder
-                                    plot_individual=plot_individual_enabled and spall_analysis_enabled,
-                                    **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
-                                )
-
-                                # Update progress after completion
-                                for i in range(len(vel_files)):
-                                    self.progress_signal.emit(
-                                        f"SPADE Processing file {i+1}/{len(vel_files)}: Completed")
-
-                                spade_end_time = time.time()
-                                spade_time = spade_end_time - spade_start_time
-                                self.progress_signal.emit(
-                                    f"Completed SPADE analysis for {len(vel_files)} files in {spade_time:.2f} seconds")
+                                # Process files with DNS detection
+                                results_list = []
+                                
+                                # Get spall detection parameters
+                                threshold_velocity = self.spade_params.get('threshold_velocity_ms', 30.0)
+                                spall_start_time = self.spade_params.get('spall_start_time_ns', 10.0)
+                                spall_end_time = self.spade_params.get('spall_end_time_ns', 100.0)
+                                expected_maxima_time = self.spade_params.get('expected_maxima_time_ns')
+                                expected_minima_time = self.spade_params.get('expected_minima_time_ns')
+                                maxima_search_window = self.spade_params.get('maxima_search_window_ns', 20.0)
+                                minima_search_window = self.spade_params.get('minima_search_window_ns', 20.0)
+                                analysis_model = self.spade_params.get('analysis_model', 'max_min')
+                                
+                                # Get material properties for each file
+                                default_density = self.spade_params.get('density', 8960)
+                                default_acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
+                                
+                                for i, vel_file in enumerate(vel_files):
+                                    self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(vel_files)}: {os.path.basename(vel_file)}")
+                                    
+                                    # Get base name for material lookup
+                                    base_name = os.path.splitext(os.path.basename(vel_file))[0]
+                                    # Remove suffix if present
+                                    for suffix in ['--vel-smooth-with-uncert', '--vel-smooth', '--velocity', '--vel']:
+                                        if base_name.endswith(suffix):
+                                            base_name = base_name[:-len(suffix)]
+                                            break
+                                    
+                                    # Get material properties
+                                    sample_material = 'Unknown'
+                                    matched_param = self.get_param_data_for_file(base_name)
+                                    if matched_param:
+                                        sample_material = matched_param.get('Sample material', 'Unknown')
+                                    
+                                    mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)
+                                    density = matched_param.get('Density_kg_m3', mat_props['density']) if matched_param else mat_props['density']
+                                    acoustic_velocity = matched_param.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed']) if matched_param else mat_props['bulk_wave_speed']
+                                    
+                                    # Process with DNS detection
+                                    # Generate plot path if individual plots are enabled
+                                    individual_plot_path = None
+                                    if plot_individual_enabled and spall_analysis_enabled:
+                                        individual_plot_path = os.path.join(spall_plots_dir, f"{base_name}_spall_analysis.png")
+                                        self.progress_signal.emit(f"  Will save individual spall plot to: {os.path.basename(individual_plot_path)}")
+                                    
+                                    result = self.detect_dns_and_process_spall(
+                                        file_path=vel_file,
+                                        base_name=base_name,
+                                        density=density,
+                                        acoustic_velocity=acoustic_velocity,
+                                        threshold_velocity=threshold_velocity,
+                                        spall_start_time=spall_start_time,
+                                        spall_end_time=spall_end_time,
+                                        expected_maxima_time=expected_maxima_time,
+                                        expected_minima_time=expected_minima_time,
+                                        maxima_search_window=maxima_search_window,
+                                        minima_search_window=minima_search_window,
+                                        analysis_model=analysis_model,
+                                        plot_path=individual_plot_path,
+                                        **{k: v for k, v in spade_params_with_skip.items() if k not in ['plot_individual', 'density', 'acoustic_velocity', 'analysis_model']}
+                                    )
+                                    
+                                    # Add material info
+                                    result['Material'] = sample_material
+                                    result['Density_kg_m3'] = density
+                                    result['Acoustic_Velocity_m_s'] = acoustic_velocity
+                                    
+                                    results_list.append(result)
+                                
+                                # Save summary
+                                if results_list:
+                                    summary_df = pd.DataFrame(results_list)
+                                    summary_path = os.path.join(spade_output_dir, "spall_summary.csv")
+                                    summary_df.to_csv(summary_path, index=False)
+                                    self.progress_signal.emit(f"Saved spall summary with {len(results_list)} entries to: {summary_path}")
+                                    
+                                    # Print detailed summary statistics
+                                    valid_spall_mask = summary_df['Spall_Strength_GPa'].apply(
+                                        lambda x: isinstance(x, (int, float)) and pd.notna(x) and not pd.isna(x)
+                                    )
+                                    valid_spall = valid_spall_mask.sum()
+                                    dns_count = (summary_df['Spall_Strength_GPa'] == "DNS").sum()
+                                    failed_count = len(results_list) - valid_spall - dns_count
+                                    
+                                    self.progress_signal.emit(f"")
+                                    self.progress_signal.emit(f"=== Spall Analysis Summary ===")
+                                    self.progress_signal.emit(f"Total shots processed: {len(results_list)}")
+                                    self.progress_signal.emit(f"Valid spall (numeric strength): {valid_spall} ({100*valid_spall/len(results_list):.1f}%)")
+                                    self.progress_signal.emit(f"DNS (Did Not Spall): {dns_count} ({100*dns_count/len(results_list):.1f}%)")
+                                    self.progress_signal.emit(f"Failed/Error: {failed_count} ({100*failed_count/len(results_list):.1f}%)")
+                                    
+                                    # Statistics for valid spall cases
+                                    if valid_spall > 0:
+                                        valid_df = summary_df[valid_spall_mask]
+                                        strength_values = pd.to_numeric(valid_df['Spall_Strength_GPa'], errors='coerce')
+                                        strength_values = strength_values[strength_values.notna()]
+                                        
+                                        if len(strength_values) > 0:
+                                            self.progress_signal.emit(f"")
+                                            self.progress_signal.emit(f"Valid Spall Statistics:")
+                                            self.progress_signal.emit(f"  Mean strength: {strength_values.mean():.3f} GPa")
+                                            self.progress_signal.emit(f"  Std strength: {strength_values.std():.3f} GPa")
+                                            self.progress_signal.emit(f"  Min strength: {strength_values.min():.3f} GPa")
+                                            self.progress_signal.emit(f"  Max strength: {strength_values.max():.3f} GPa")
+                                            
+                                            # Strain rate statistics if available
+                                            strain_rates = pd.to_numeric(valid_df['Spall_StrainRate_s^-1'], errors='coerce')
+                                            strain_rates = strain_rates[strain_rates.notna()]
+                                            if len(strain_rates) > 0:
+                                                self.progress_signal.emit(f"  Mean strain rate: {strain_rates.mean():.2e} s^-1")
+                                                self.progress_signal.emit(f"  Std strain rate: {strain_rates.std():.2e} s^-1")
                             except Exception as e:
                                 import traceback
-                                error_msg = f"SPADE analysis failed: {str(e)}"
-                                self.progress_signal.emit(f"❌ {error_msg}")
-                                self.progress_signal.emit(f"Error details: {traceback.format_exc()}")
-                                # Continue execution - don't abort the entire analysis
-                                self.progress_signal.emit("⚠️ Continuing with other analysis tasks...")
+                                self.progress_signal.emit(f"Error during SPADE spall analysis: {str(e)}")
+                                self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+                            # Update progress after completion
+                            for i in range(len(vel_files)):
+                                self.progress_signal.emit(
+                                    f"SPADE Processing file {i+1}/{len(vel_files)}: Completed")
+
+                            spade_end_time = time.time()
+                            spade_time = spade_end_time - spade_start_time
+                            self.progress_signal.emit(
+                                f"Completed SPADE analysis for {len(vel_files)} files in {spade_time:.2f} seconds")
                         elif vel_files and not spall_analysis_enabled:
                             self.progress_signal.emit(
                                 f"Found {len(vel_files)} velocity files but spall analysis is disabled - skipping SPADE analysis")
@@ -566,6 +1306,7 @@ class AnalysisThread(QThread):
                             file_pattern = "*--vel-smooth-with-uncert.csv"
 
                         # Start SPADE processing
+                        spade_start_time = time.time()
                         self.progress_signal.emit(
                             f"SPADE Processing file 1/{len(self.spade_input_files)}: Starting SPADE analysis...")
 
@@ -592,41 +1333,147 @@ class AnalysisThread(QThread):
                         # Create subfolder for individual spall plots if plot_individual is enabled
                         plot_individual_enabled = self.spade_params.get('plot_individual', False)
                         spall_analysis_enabled = self.spade_params.get('spall_analysis_enabled', False)
-                        if plot_individual_enabled and spall_analysis_enabled:
-                            spall_plots_dir = os.path.join(spade_output_dir, 'spall_plots')
-                            os.makedirs(spall_plots_dir, exist_ok=True)
-                            self.progress_signal.emit(f"Individual spall plots will be saved to: {spall_plots_dir}")
+                        self.progress_signal.emit(f"Debug: plot_individual_enabled = {plot_individual_enabled}, spall_analysis_enabled = {spall_analysis_enabled}")
+                        
+                        # Only run spall analysis if enabled
+                        if spall_analysis_enabled:
+                            if plot_individual_enabled:
+                                spall_plots_dir = os.path.join(spade_output_dir, 'spall_plots')
+                                os.makedirs(spall_plots_dir, exist_ok=True)
+                                self.progress_signal.emit(f"Individual spall plots will be saved to: {spall_plots_dir}")
+                            else:
+                                spall_plots_dir = spade_output_dir
+                                self.progress_signal.emit(f"⚠ Individual spall plots disabled (plot_individual = {plot_individual_enabled})")
+
+                            try:
+                                # Process files with DNS detection (same as automatic mode)
+                                results_list = []
+                                
+                                # Get spall detection parameters
+                                threshold_velocity = self.spade_params.get('threshold_velocity_ms', 30.0)
+                                spall_start_time = self.spade_params.get('spall_start_time_ns', 10.0)
+                                spall_end_time = self.spade_params.get('spall_end_time_ns', 100.0)
+                                expected_maxima_time = self.spade_params.get('expected_maxima_time_ns')
+                                expected_minima_time = self.spade_params.get('expected_minima_time_ns')
+                                maxima_search_window = self.spade_params.get('maxima_search_window_ns', 20.0)
+                                minima_search_window = self.spade_params.get('minima_search_window_ns', 20.0)
+                                analysis_model = self.spade_params.get('analysis_model', 'max_min')
+                                
+                                # Get material properties for each file
+                                default_density = self.spade_params.get('density', 8960)
+                                default_acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
+                                
+                                for i, vel_file in enumerate(self.spade_input_files):
+                                    self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: {os.path.basename(vel_file)}")
+                                    
+                                    # Get base name for material lookup
+                                    base_name = os.path.splitext(os.path.basename(vel_file))[0]
+                                    # Remove suffix if present
+                                    for suffix in ['--vel-smooth-with-uncert', '--vel-smooth', '--velocity', '--vel']:
+                                        if base_name.endswith(suffix):
+                                            base_name = base_name[:-len(suffix)]
+                                            break
+                                    
+                                    # Get material properties
+                                    sample_material = 'Unknown'
+                                    matched_param = self.get_param_data_for_file(base_name)
+                                    if matched_param:
+                                        sample_material = matched_param.get('Sample material', 'Unknown')
+                                    
+                                    mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)
+                                    density = matched_param.get('Density_kg_m3', mat_props['density']) if matched_param else mat_props['density']
+                                    acoustic_velocity = matched_param.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed']) if matched_param else mat_props['bulk_wave_speed']
+                                    
+                                    # Process with DNS detection
+                                    # Generate plot path if individual plots are enabled
+                                    individual_plot_path = None
+                                    if plot_individual_enabled and spall_analysis_enabled:
+                                        individual_plot_path = os.path.join(spall_plots_dir, f"{base_name}_spall_analysis.png")
+                                        self.progress_signal.emit(f"  Will save individual spall plot to: {os.path.basename(individual_plot_path)}")
+                                    
+                                    result = self.detect_dns_and_process_spall(
+                                        file_path=vel_file,
+                                        base_name=base_name,
+                                        density=density,
+                                        acoustic_velocity=acoustic_velocity,
+                                        threshold_velocity=threshold_velocity,
+                                        spall_start_time=spall_start_time,
+                                        spall_end_time=spall_end_time,
+                                        expected_maxima_time=expected_maxima_time,
+                                        expected_minima_time=expected_minima_time,
+                                        maxima_search_window=maxima_search_window,
+                                        minima_search_window=minima_search_window,
+                                        analysis_model=analysis_model,
+                                        plot_path=individual_plot_path,
+                                        **{k: v for k, v in spade_params_with_skip.items() if k not in ['plot_individual', 'density', 'acoustic_velocity', 'analysis_model']}
+                                    )
+                                    
+                                    # Add material info
+                                    result['Material'] = sample_material
+                                    result['Density_kg_m3'] = density
+                                    result['Acoustic_Velocity_m_s'] = acoustic_velocity
+                                    
+                                    results_list.append(result)
+                                
+                                # Save summary
+                                if results_list:
+                                    summary_df = pd.DataFrame(results_list)
+                                    summary_path = os.path.join(spade_output_dir, "spall_summary.csv")
+                                    summary_df.to_csv(summary_path, index=False)
+                                    self.progress_signal.emit(f"Saved spall summary with {len(results_list)} entries to: {summary_path}")
+                                    
+                                    # Print detailed summary statistics
+                                    valid_spall_mask = summary_df['Spall_Strength_GPa'].apply(
+                                        lambda x: isinstance(x, (int, float)) and pd.notna(x) and not pd.isna(x)
+                                    )
+                                    valid_spall = valid_spall_mask.sum()
+                                    dns_count = (summary_df['Spall_Strength_GPa'] == "DNS").sum()
+                                    failed_count = len(results_list) - valid_spall - dns_count
+                                    
+                                    self.progress_signal.emit(f"")
+                                    self.progress_signal.emit(f"=== Spall Analysis Summary ===")
+                                    self.progress_signal.emit(f"Total shots processed: {len(results_list)}")
+                                    self.progress_signal.emit(f"Valid spall (numeric strength): {valid_spall} ({100*valid_spall/len(results_list):.1f}%)")
+                                    self.progress_signal.emit(f"DNS (Did Not Spall): {dns_count} ({100*dns_count/len(results_list):.1f}%)")
+                                    self.progress_signal.emit(f"Failed/Error: {failed_count} ({100*failed_count/len(results_list):.1f}%)")
+                                    
+                                    # Statistics for valid spall cases
+                                    if valid_spall > 0:
+                                        valid_df = summary_df[valid_spall_mask]
+                                        strength_values = pd.to_numeric(valid_df['Spall_Strength_GPa'], errors='coerce')
+                                        strength_values = strength_values[strength_values.notna()]
+                                        
+                                        if len(strength_values) > 0:
+                                            self.progress_signal.emit(f"")
+                                            self.progress_signal.emit(f"Valid Spall Statistics:")
+                                            self.progress_signal.emit(f"  Mean strength: {strength_values.mean():.3f} GPa")
+                                            self.progress_signal.emit(f"  Std strength: {strength_values.std():.3f} GPa")
+                                            self.progress_signal.emit(f"  Min strength: {strength_values.min():.3f} GPa")
+                                            self.progress_signal.emit(f"  Max strength: {strength_values.max():.3f} GPa")
+                                            
+                                            # Strain rate statistics if available
+                                            strain_rates = pd.to_numeric(valid_df['Spall_StrainRate_s^-1'], errors='coerce')
+                                            strain_rates = strain_rates[strain_rates.notna()]
+                                            if len(strain_rates) > 0:
+                                                self.progress_signal.emit(f"  Mean strain rate: {strain_rates.mean():.2e} s^-1")
+                                                self.progress_signal.emit(f"  Std strain rate: {strain_rates.std():.2e} s^-1")
+                            except Exception as e:
+                                import traceback
+                                self.progress_signal.emit(f"Error during SPADE spall analysis (manual mode): {str(e)}")
+                                self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+                                
+                                self.progress_signal.emit(f"")
                         else:
-                            spall_plots_dir = spade_output_dir
+                            # Spall analysis is disabled
+                            self.progress_signal.emit(f"⚠ Spall analysis is disabled (experiment_spall_analysis = false) - skipping spall analysis")
 
-                        try:
-                            process_velocity_files(
-                                input_folder=input_dir,
-                                file_pattern=file_pattern,
-                                output_folder=spall_plots_dir if plot_individual_enabled and spall_analysis_enabled else spade_output_dir,
-                                summary_table_name=os.path.join(
-                                    spade_output_dir, "spall_summary.csv"),  # Always save summary in main folder
-                                plot_individual=plot_individual_enabled and spall_analysis_enabled,
-                                files_list=self.spade_input_files,
-                                **{k: v for k, v in spade_params_with_skip.items() if k != 'plot_individual'}
-                            )
+                        # Update progress after completion
+                        for i in range(len(self.spade_input_files)):
+                            self.progress_signal.emit(
+                                f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: Completed")
 
-                            # Update progress after completion
-                            for i in range(len(self.spade_input_files)):
-                                self.progress_signal.emit(
-                                    f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: Completed")
-
-                            spade_end_time = time.time()
-                            spade_time = spade_end_time - spade_start_time
-                        except Exception as e:
-                            import traceback
-                            error_msg = f"SPADE analysis failed: {str(e)}"
-                            self.progress_signal.emit(f"❌ {error_msg}")
-                            self.progress_signal.emit(f"Error details: {traceback.format_exc()}")
-                            # Continue execution - don't abort the entire analysis
-                            self.progress_signal.emit("⚠️ Continuing with other analysis tasks...")
-                            spade_end_time = time.time()
-                            spade_time = spade_end_time - spade_start_time
+                        spade_end_time = time.time()
+                        spade_time = spade_end_time - spade_start_time
                         self.progress_signal.emit(
                             f"Completed SPADE analysis for {len(self.spade_input_files)} files in {spade_time:.2f} seconds")
                     else:
@@ -661,6 +1508,23 @@ class AnalysisThread(QThread):
             self.progress_signal.emit("All analysis completed successfully!")
             self.progress_signal.emit(
                 f"Total processing time: {total_time:.2f} seconds")
+            
+            # Print summary of trace analysis
+            self.progress_signal.emit("")
+            self.progress_signal.emit("=" * 70)
+            self.progress_signal.emit("ANALYSIS SUMMARY")
+            self.progress_signal.emit("=" * 70)
+            self.progress_signal.emit(f"Total input traces: {self.total_input_traces}")
+            self.progress_signal.emit(f"Traces plotted: {self.traces_plotted}")
+            self.progress_signal.emit(f"Traces rejected: {self.traces_rejected}")
+            if self.rejection_reasons:
+                self.progress_signal.emit("")
+                self.progress_signal.emit("Rejection reasons:")
+                for reason, count in sorted(self.rejection_reasons.items(), key=lambda x: x[1], reverse=True):
+                    self.progress_signal.emit(f"  - {reason}: {count}")
+            self.progress_signal.emit(f"Total analysis run time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
+            self.progress_signal.emit("=" * 70)
+            
             self.finished_signal.emit(True, "Analysis completed successfully")
         except Exception as e:
             import traceback
@@ -677,18 +1541,26 @@ class AnalysisThread(QThread):
         self.progress_signal.emit("Generating velocity shots summary...")
         
         # In SPADE-only mode, use the provided spade_input_files
-        # In combined/automatic mode, use files from output_dir
+        # In combined/automatic mode, use only files that were just processed (from successful_files)
         if self.analysis_mode == "spade_only" and self.spade_input_files:
             velocity_files = [f for f in self.spade_input_files if os.path.exists(f)]
             self.progress_signal.emit(f"SPADE-only mode: Using {len(velocity_files)} provided input files")
         else:
-            # Find all velocity files with uncertainty data (which include noise information)
-            velocity_files = glob.glob(
-        os.path.join(
-            self.output_dir,
-             '*--vel-smooth-with-uncert.csv'))
+            # Use only files that were just processed by ALPSS (not all files in output_dir)
+            velocity_files = []
+            if hasattr(self, 'successful_files') and self.successful_files:
+                for input_file in self.successful_files:
+                    base_name = os.path.splitext(os.path.basename(input_file))[0]
+                    vel_file = os.path.join(self.output_dir, f"{base_name}--vel-smooth-with-uncert.csv")
+                    if os.path.exists(vel_file) and os.path.getsize(vel_file) > 0:
+                        velocity_files.append(vel_file)
+                self.progress_signal.emit(f"Using {len(velocity_files)} files from current ALPSS processing run")
+            else:
+                # Fallback: if successful_files not available, use glob but warn
+                self.progress_signal.emit("Warning: Using all files in output directory (successful_files not available)")
+                velocity_files = glob.glob(os.path.join(self.output_dir, '*--vel-smooth-with-uncert.csv'))
+        
         # Filter out empty files
-
         valid_velocity_files = []
         for file_path in velocity_files:
             if os.path.getsize(file_path) > 0:
@@ -717,6 +1589,7 @@ class AnalysisThread(QThread):
 
         velocity_shots_data = []
         velocity_plot_data = []  # For combined velocity plot
+        unaligned_entries = []
 
         for file_path in velocity_files:
             try:
@@ -780,12 +1653,16 @@ class AnalysisThread(QThread):
                         f"Warning: Could not find velocity threshold {velocity_threshold} m/s for {os.path.basename(file_path)}")
                     # Use original time data
                     time_aligned = time_data
+                    aligned_ok = False
+                    alignment_reason = f"velocity never reached threshold {velocity_threshold} m/s"
                 else:
                     # Align time data to t=0 at velocity threshold
                     t0 = time_data[t0_idx]
                     time_aligned = time_data - t0
                     self.progress_signal.emit(
                         f"Aligned trace: t=0 at {t0:.2f} ns when velocity reached {velocity_threshold} m/s")
+                    aligned_ok = True
+                    alignment_reason = ""
 
                 # Calculate mean velocity using aligned time and filtered data
                 # First, determine the actual time range of the data
@@ -832,10 +1709,15 @@ class AnalysisThread(QThread):
                         self.progress_signal.emit(f"Error: No velocity data available for {os.path.basename(file_path)}")
 
                 # Get file base name
-                base_name = os.path.splitext(
-    os.path.basename(file_path))[0].replace(
-        '--vel-smooth-with-uncert', '')
+                base_name = os.path.splitext(os.path.basename(file_path))[0].replace(
+                    '--vel-smooth-with-uncert', ''
+                )
 
+                # Track maximum observed velocity for diagnostics
+                if np.any(~np.isnan(velocity_filtered)):
+                    max_velocity_observed = float(np.nanmax(velocity_filtered))
+                else:
+                    max_velocity_observed = np.nan
                 # Get parameter data if available using helper function
                 param_info = self.get_param_data_for_file(base_name)
                 if not param_info:
@@ -855,85 +1737,282 @@ class AnalysisThread(QThread):
                 hel_uncertainty = np.nan
                 free_surface_velocity = np.nan
                 hel_ok = False
+                hel_time_detection = np.nan  # Time at HEL detection point (ns)
+                C_L = np.nan  # Longitudinal wave velocity (will be set from material properties)
+                hel_consecutive_points = 0  # Number of consecutive points in HEL segment
+                hel_segment_time_ns = np.nan  # Time duration of HEL segment (ns)
                 
-                if self.spade_params.get('hel_detection_enabled', False):
+                hel_detection_enabled = (self.spade_params.get('hel_detection_enabled', False) or 
+                                        self.spade_params.get('experiment_hel_detection', False))
+                if hel_detection_enabled:
                     try:
-                        hel_start = self.spade_params.get('hel_start_time_ns', 0.0)
-                        hel_end = self.spade_params.get('hel_end_time_ns', 12.0)
+                        from scipy.ndimage import uniform_filter1d
                         
-                        # Crop to HEL analysis window (relative to aligned time)
-                        hel_mask = (time_aligned >= hel_start) & (time_aligned <= hel_end)
-                        if np.sum(hel_mask) > 10:  # Need at least 10 points
-                            hel_time = time_aligned[hel_mask]
-                            hel_velocity = velocity_filtered[hel_mask]
-                            hel_uncertainty_data = uncertainty_data[hel_mask]
+                        hel_start = self.spade_params.get('hel_start_time_ns', 0.0)
+                        hel_end = self.spade_params.get('hel_end_time_ns', None)
+                        angle_thresh_deg = self.spade_params.get('hel_angle_threshold_deg', 45.0)
+                        min_hel_velocity = self.spade_params.get('minimum_HEL_velocity_expected', 10.0)
+                        hel_detection_min_points = self.spade_params.get('hel_detection_min_points', 3)
+                        
+                        # Step 1: Load data and filter by relative uncertainty
+                        valid_mask = ~np.isnan(velocity_filtered)
+                        if np.sum(valid_mask) > 5:
+                            hel_time_all = time_aligned[valid_mask]
+                            hel_velocity_all = velocity_filtered[valid_mask]
+                            hel_unc_all = uncertainty_data[valid_mask]
                             
-                            # Remove NaN values
-                            valid_hel = ~np.isnan(hel_velocity)
-                            if np.sum(valid_hel) > 5:
-                                hel_time_clean = hel_time[valid_hel]
-                                hel_velocity_clean = hel_velocity[valid_hel]
-                                hel_unc_clean = hel_uncertainty_data[valid_hel]
+                            # Filter by relative uncertainty: |uncertainty| / max(|velocity|, 1e-9) >= 1 -> NaN
+                            max_vel = np.max(np.abs(hel_velocity_all))
+                            rel_unc = np.abs(hel_unc_all) / max(max_vel, 1e-9)
+                            noise_mask = rel_unc < 1.0
+                            if np.sum(noise_mask) < 10:
+                                noise_mask = valid_mask  # Fallback if too many points filtered
+                            
+                            hel_time_clean = hel_time_all[noise_mask]
+                            hel_velocity_clean = hel_velocity_all[noise_mask]
+                            hel_unc_clean = hel_unc_all[noise_mask]
                                 
-                                # Find peaks and valleys in HEL window
-                                from scipy.signal import find_peaks
-                                peaks, _ = find_peaks(hel_velocity_clean, prominence=np.std(hel_velocity_clean)*0.1)
-                                valleys, _ = find_peaks(-hel_velocity_clean, prominence=np.std(hel_velocity_clean)*0.1)
+                            # Step 2: Build mask for HEL window
+                            search_mask = hel_time_clean >= hel_start
+                            if hel_end is not None and hel_end > hel_start:
+                                search_mask &= (hel_time_clean <= hel_end)
+                            if np.sum(search_mask) < 10:
+                                search_mask = np.ones_like(hel_time_clean, dtype=bool)
+                            
+                            hel_time_window = hel_time_clean[search_mask]
+                            hel_velocity_window = hel_velocity_clean[search_mask]
+                            hel_unc_window = hel_unc_clean[search_mask]
+                            
+                            if len(hel_time_window) < 10:
+                                self.progress_signal.emit(f"HEL: Insufficient data points in window for {base_name}")
+                                hel_ok = False
+                            else:
+                                # Step 3: Compute gradients and convert to angles
+                                gradient = np.gradient(hel_velocity_window, hel_time_window)
                                 
-                                if len(peaks) > 0 and len(valleys) > 0:
-                                    # Calculate elastic response (difference between peaks and valleys)
-                                    first_peak_vel = hel_velocity_clean[peaks[0]] if peaks[0] < len(hel_velocity_clean) else np.nan
-                                    first_valley_vel = hel_velocity_clean[valleys[0]] if valleys[0] < len(hel_velocity_clean) else np.nan
+                                # Smooth gradient with small uniform filter
+                                window_size = max(3, min(5, len(gradient) // 3))
+                                if window_size % 2 == 0:
+                                    window_size += 1  # Make odd
+                                gradient_smooth = uniform_filter1d(gradient, size=window_size, mode='nearest')
+                                
+                                # Convert gradients to angles (degrees)
+                                angles_deg = np.degrees(np.arctan(np.abs(gradient_smooth)))
+                                
+                                # Step 4: Find consecutive low-slope segments (|angle| < angle_thresh_deg, ≥hel_detection_min_points points)
+                                low_slope_mask = angles_deg < angle_thresh_deg
+                                
+                                # Find consecutive segments
+                                hel_segment_start = None
+                                hel_segment_end = None
+                                
+                                # Calculate time spacing for reference (min_points consecutive points = (min_points-1) intervals)
+                                if len(hel_time_window) > 1:
+                                    time_diffs = np.diff(hel_time_window)
+                                    mean_dt = np.mean(time_diffs)
+                                    min_points_time = (hel_detection_min_points - 1) * mean_dt  # min_points consecutive points = (min_points-1) intervals
+                                    self.progress_signal.emit(
+                                        f"   HEL time spacing: {mean_dt:.3f} ns/point, "
+                                        f"{hel_detection_min_points} consecutive points = {min_points_time:.3f} ns")
+                                
+                                # Group consecutive True values
+                                in_segment = False
+                                segment_start = None
+                                for i, is_low in enumerate(low_slope_mask):
+                                    if is_low and not in_segment:
+                                        segment_start = i
+                                        in_segment = True
+                                    elif not is_low and in_segment:
+                                        segment_length = i - segment_start
+                                        if segment_length >= hel_detection_min_points:  # At least min_points
+                                            if hel_segment_start is None:  # First valid segment
+                                                hel_segment_start = segment_start
+                                                hel_segment_end = i - 1
+                                        in_segment = False
+                                        segment_start = None
+                                
+                                # Handle segment that extends to end of array
+                                if in_segment and segment_start is not None:
+                                    segment_length = len(low_slope_mask) - segment_start
+                                    if segment_length >= hel_detection_min_points:
+                                        if hel_segment_start is None:
+                                            hel_segment_start = segment_start
+                                            hel_segment_end = len(low_slope_mask) - 1
+                                # Step 5: Use earliest segment as HEL plateau
+                                detection_used_gradient = False
+                                sample_material = param_info.get('Sample material', 'Unknown')
+                                # Get material properties from config first, then database
+                                mat_props = self.get_material_properties_from_config(sample_material)
+                                density = param_info.get('Density_kg_m3', mat_props['density'])
+                                acoustic_velocity = param_info.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed'])
+                                # Get C_L from config (longitudinal wave velocity), fallback to acoustic_velocity if not specified
+                                C_L = mat_props.get('C_L', acoustic_velocity)
+                                
+                                if mat_props['material_found']:
+                                    source = mat_props.get('source', 'unknown')
+                                    source_msg = f" (from {source})" if source != "unknown" else ""
+                                    self.progress_signal.emit(
+                                        f"Using {mat_props['material_name']} properties: ρ={density:.0f} kg/m³, c={acoustic_velocity:.0f} m/s{source_msg}")
+                                hel_plot_end = (
+                                    hel_end if hel_end is not None and hel_end > hel_start else np.max(time_aligned)
+                                )
+
+                                if hel_segment_start is not None and hel_segment_end is not None:
+                                    # Mean velocity of the HEL plateau segment
+                                    hel_segment_indices = np.arange(hel_segment_start, hel_segment_end + 1)
+                                    free_surface_velocity = np.mean(hel_velocity_window[hel_segment_indices])
                                     
-                                    if np.isfinite(first_peak_vel) and np.isfinite(first_valley_vel):
-                                        free_surface_velocity = first_peak_vel
-                                        
-                                        # HEL strength = 0.5 * density * c * (v_peak - v_valley)
-                                        # Get material properties from database based on 'Sample material' column
-                                        sample_material = param_info.get('Sample material', 'Unknown')
-                                        mat_props = get_material_properties(sample_material)
-                                        
-                                        # Use material-specific properties or parameter file overrides
-                                        density = param_info.get('Density_kg_m3', mat_props['density'])
-                                        acoustic_velocity = param_info.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed'])
-                                        
-                                        # Log which material properties are being used
-                                        if mat_props['material_found']:
-                                            self.progress_signal.emit(f"Using {mat_props['material_name']} properties: ρ={density:.0f} kg/m³, c={acoustic_velocity:.0f} m/s")
-                                        
-                                        pullback_velocity = abs(first_peak_vel - first_valley_vel)
-                                        if pullback_velocity > 0:
-                                            hel_strength = 0.5 * density * acoustic_velocity * pullback_velocity / 1e9  # Convert Pa to GPa
-                                            hel_ok = True
-                                            
-                                            # Estimate uncertainty
-                                            u_max = np.abs(hel_unc_clean[peaks[0]]) if peaks[0] < len(hel_unc_clean) else 0
-                                            u_min = np.abs(hel_unc_clean[valleys[0]]) if valleys[0] < len(hel_unc_clean) else 0
-                                            pullback_unc = np.sqrt(u_max**2 + u_min**2)
-                                            hel_uncertainty = 0.5 * density * acoustic_velocity * pullback_unc / 1e9  # GPa
-                                            
-                                            self.progress_signal.emit(f"HEL detected: {hel_strength:.3f} GPa for {base_name}")
-                                            
-                                            # Generate individual HEL detection plot if plot_individual is enabled
-                                            if self.spade_params.get('plot_individual', False):
-                                                try:
-                                                    self._plot_individual_hel_detection(
-                                                        base_name, time_aligned, velocity_filtered, 
-                                                        hel_start, hel_end, hel_time_clean, hel_velocity_clean,
-                                                        peaks, valleys, first_peak_vel, first_valley_vel,
-                                                        hel_strength, hel_uncertainty, sample_material,
-                                                        spade_output_dir
-                                                    )
-                                                except Exception as plot_error:
-                                                    self.progress_signal.emit(f"Warning: Could not create HEL plot for {base_name}: {str(plot_error)[:50]}")
+                                    # Time at HEL detection (start of HEL segment)
+                                    hel_time_detection = hel_time_window[hel_segment_start]
+                                    
+                                    # Calculate consecutive points count and segment time duration
+                                    hel_consecutive_points = len(hel_segment_indices)
+                                    hel_segment_time_ns = hel_time_window[hel_segment_end] - hel_time_window[hel_segment_start]
+                                    
+                                    # Uncertainty: interpolate at segment (use closest point to mean)
+                                    mean_idx = hel_segment_indices[np.argmin(np.abs(hel_velocity_window[hel_segment_indices] - free_surface_velocity))]
+                                    u_unc = abs(hel_unc_window[mean_idx])
+                                    
+                                    # Step 6: Check minimum HEL velocity constraint
+                                    if abs(free_surface_velocity) < min_hel_velocity:
+                                        # HEL velocity below threshold - reject this detection
+                                        hel_ok = False
+                                        hel_strength = np.nan
+                                        hel_uncertainty = np.nan
+                                        free_surface_velocity = np.nan
+                                        hel_time_detection = np.nan
+                                        self.progress_signal.emit(
+                                            f"HEL rejected for {base_name}: detected velocity {abs(free_surface_velocity):.2f} m/s "
+                                            f"is below minimum threshold of {min_hel_velocity:.1f} m/s")
                                     else:
-                                        self.progress_signal.emit(f"HEL: Invalid peak/valley velocities for {base_name}")
+                                        # Step 6: Compute HEL stress
+                                        hel_strength = 0.5 * density * acoustic_velocity * abs(free_surface_velocity) / 1e9
+                                        hel_uncertainty = 0.5 * density * acoustic_velocity * u_unc / 1e9
+                                        hel_ok = True
+                                        detection_used_gradient = True
+                                        
+                                        self.progress_signal.emit(
+                                            f"HEL detected via gradient method: {hel_strength:.3f} GPa for {base_name} "
+                                            f"(plateau at {hel_time_window[hel_segment_start]:.1f}-{hel_time_window[hel_segment_end]:.1f} ns, "
+                                            f"{hel_consecutive_points} consecutive points, {hel_segment_time_ns:.3f} ns duration)")
+
+                                        # Get U_0 and t_0 for strain rate slope calculation
+                                        if t0_idx is not None and t0_idx < len(velocity_filtered):
+                                            U_0_for_plot = velocity_filtered[t0_idx]
+                                            t_0_for_plot = time_aligned[t0_idx] if t0_idx < len(time_aligned) else 0.0
+                                        else:
+                                            valid_idx = np.where(~np.isnan(velocity_filtered))[0]
+                                            if len(valid_idx) > 0:
+                                                U_0_for_plot = velocity_filtered[valid_idx[0]]
+                                                t_0_for_plot = time_aligned[valid_idx[0]] if valid_idx[0] < len(time_aligned) else 0.0
+                                            else:
+                                                U_0_for_plot = 0.0
+                                                t_0_for_plot = 0.0
+
+                                    if hel_ok and self.spade_params.get('plot_individual', False):
+                                        try:
+                                            self._plot_individual_hel_detection(
+                                                base_name,
+                                                time_aligned,
+                                                velocity_filtered,
+                                                hel_start,
+                                                hel_end if hel_end not in [None] else np.max(time_aligned),
+                                                hel_time_window,
+                                                hel_velocity_window,
+                                                hel_strength,
+                                                hel_uncertainty,
+                                                sample_material,
+                                                spade_output_dir,
+                                                gradient=gradient_smooth,
+                                                angles_deg=angles_deg,
+                                                hel_segment_start=hel_segment_start,
+                                                hel_segment_end=hel_segment_end,
+                                                free_surface_velocity=free_surface_velocity,
+                                                angle_thresh_deg=angle_thresh_deg,
+                                                U_0=U_0_for_plot,
+                                                t_0=t_0_for_plot,
+                                                t_hel=hel_time_detection,
+                                            )
+                                        except Exception as plot_error:
+                                            self.progress_signal.emit(
+                                                f"Warning: Could not create HEL plot for {base_name}: {str(plot_error)[:50]}")
                                 else:
-                                    self.progress_signal.emit(f"HEL: Insufficient peaks/valleys in {base_name}")
-                        else:
-                            self.progress_signal.emit(f"HEL: Insufficient data points in window for {base_name}")
+                                    # No valid low-slope segment found - HEL detection failed
+                                    if not hel_ok:
+                                        self.progress_signal.emit(f"HEL: No gradient plateau detected in {base_name}")
+                                        hel_consecutive_points = 0
+                                        hel_segment_time_ns = np.nan
+                                        
+                                        # Calculate and report time spacing for reference
+                                        if len(hel_time_window) > 1:
+                                            time_diffs = np.diff(hel_time_window)
+                                            mean_dt = np.mean(time_diffs)
+                                            min_points_time = (hel_detection_min_points - 1) * mean_dt  # min_points consecutive points = (min_points-1) intervals
+                                            self.progress_signal.emit(
+                                                f"   Time spacing: {mean_dt:.3f} ns/point, "
+                                                f"{hel_detection_min_points} consecutive points = {min_points_time:.3f} ns")
                     except Exception as hel_error:
-                        self.progress_signal.emit(f"HEL detection error for {base_name}: {str(hel_error)[:50]}")
+                        import traceback
+                        self.progress_signal.emit(f"HEL detection error for {base_name}: {str(hel_error)}")
+                        self.progress_signal.emit(traceback.format_exc())
+                
+                # Calculate elastic shock strain rate if HEL was detected
+                hel_strain_rate = np.nan
+                hel_detection_enabled = (self.spade_params.get('hel_detection_enabled', False) or 
+                                        self.spade_params.get('experiment_hel_detection', False))
+                if hel_ok and hel_detection_enabled and np.isfinite(hel_time_detection):
+                    try:
+                        # Get velocity at t=0 (after alignment, t0 should be at 0 or first valid point)
+                        if t0_idx is not None and t0_idx < len(velocity_filtered):
+                            U_0 = velocity_filtered[t0_idx]
+                            t_0_ns = time_aligned[t0_idx] if t0_idx < len(time_aligned) else 0.0
+                        else:
+                            # Use first valid velocity point
+                            valid_idx = np.where(~np.isnan(velocity_filtered))[0]
+                            if len(valid_idx) > 0:
+                                U_0 = velocity_filtered[valid_idx[0]]
+                                t_0_ns = time_aligned[valid_idx[0]] if valid_idx[0] < len(time_aligned) else 0.0
+                            else:
+                                U_0 = 0.0
+                                t_0_ns = 0.0
+                        
+                        # Convert times from ns to seconds
+                        t_hel_s = hel_time_detection * 1e-9
+                        t_0_s = t_0_ns * 1e-9
+                        
+                        # Calculate strain rate using C_L from material properties
+                        if np.isfinite(C_L) and np.isfinite(free_surface_velocity) and np.isfinite(U_0) and np.isfinite(t_hel_s) and np.isfinite(t_0_s):
+                            hel_strain_rate = self.elastic_shock_strain_rate(
+                                C_L=C_L,
+                                U_hel=free_surface_velocity,
+                                U_0=U_0,
+                                t_hel=t_hel_s,
+                                t_0=t_0_s
+                            )
+                            
+                            # Check if strain rate is negative - reject HEL if so
+                            if np.isfinite(hel_strain_rate) and hel_strain_rate < 0:
+                                # Negative strain rate - reject this HEL detection
+                                hel_ok = False
+                                hel_strength = np.nan
+                                hel_uncertainty = np.nan
+                                free_surface_velocity = np.nan
+                                hel_time_detection = np.nan
+                                hel_strain_rate = np.nan
+                                self.progress_signal.emit(
+                                    f"HEL rejected for {base_name}: negative strain rate ({hel_strain_rate:.2e} s⁻¹)")
+                        else:
+                            self.progress_signal.emit(f"Warning: Invalid values for HEL strain rate calculation for {base_name} (C_L={C_L}, U_hel={free_surface_velocity}, U_0={U_0}, t_hel={t_hel_s}, t_0={t_0_s})")
+                    except Exception as strain_error:
+                        self.progress_signal.emit(f"Warning: Could not calculate HEL strain rate for {base_name}: {str(strain_error)}")
+                
+                if not aligned_ok:
+                    unaligned_entries.append({
+                        'file_name': base_name,
+                        'alignment_reason': alignment_reason,
+                        'max_velocity_ms': max_velocity_observed,
+                        'velocity_threshold_ms': velocity_threshold
+                    })
                 
                 shot_data = {
                     'file_name': base_name,
@@ -942,10 +2021,16 @@ class AnalysisThread(QThread):
                     'uncertainty_avg_ms': np.nanmean(uncertainty_data),
                     't0_ns': t0 if t0_idx is not None else np.nan,
                     'velocity_threshold_ms': velocity_threshold,
+                    'max_velocity_ms': max_velocity_observed,
+                    'aligned_ok': aligned_ok,
+                    'alignment_reason': alignment_reason,
                     'hel_strength_gpa': hel_strength,
                     'hel_uncertainty_gpa': hel_uncertainty,
+                    'hel_consecutive_points': hel_consecutive_points,
+                    'hel_segment_time_ns': hel_segment_time_ns,
                     'free_surface_velocity_ms': free_surface_velocity,
                     'hel_ok': hel_ok,
+                    'hel_strain_rate_s^-1': hel_strain_rate,
                 }
 
                 # Add ALL parameter file data as extra columns (without 'param_' prefix)
@@ -983,7 +2068,8 @@ class AnalysisThread(QThread):
             # 2) Also include any parameter keys already merged into rows
             for shot_data in velocity_shots_data:
                 for key in shot_data.keys():
-                    if key not in ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 'uncertainty_avg_ms', 't0_ns', 'velocity_threshold_ms']:
+                    if key not in ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 'uncertainty_avg_ms',
+                                   't0_ns', 'velocity_threshold_ms', 'max_velocity_ms', 'aligned_ok', 'alignment_reason']:
                         all_param_columns.add(key)
 
             # Add missing parameter columns with NaN values to each row
@@ -993,14 +2079,209 @@ class AnalysisThread(QThread):
                         shot_data[param_col] = np.nan
 
             velocity_shots_df = pd.DataFrame(velocity_shots_data)
+            total_shots = len(velocity_shots_df)
+            
+            # Apply MAD filter to remove outlier peak velocities if enabled
+            # Filter is applied per material and laser energy bracket
+            mad_filter_enabled = self.spade_params.get('mad_filter_enabled', False)
+            mad_filter_threshold = self.spade_params.get('mad_filter_threshold', 3.0)
+            
+            if mad_filter_enabled and 'max_velocity_ms' in velocity_shots_df.columns:
+                # Initialize mad_filter_keep column
+                velocity_shots_df['mad_filter_keep'] = True
+                
+                # Find material column
+                material_col = None
+                for col_name in velocity_shots_df.columns:
+                    if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                        material_col = col_name
+                        break
+                
+                if material_col is None:
+                    # Try common alternatives
+                    for col_name in ['Material', 'material', 'Sample_Material', 'Sample Material']:
+                        if col_name in velocity_shots_df.columns:
+                            material_col = col_name
+                            break
+                
+                if material_col is None:
+                    self.progress_signal.emit("⚠️  MAD filter: Material column not found, applying to entire dataset")
+                    material_col = 'Material'
+                    velocity_shots_df[material_col] = 'Unknown'
+                
+                # Find laser energy column
+                laser_energy_col = None
+                if 'Laser_Target_Energy (mJ)' in velocity_shots_df.columns:
+                    laser_energy_col = 'Laser_Target_Energy (mJ)'
+                else:
+                    possible_names = [
+                        'Laser_Target_Energy (mJ)', 'Laser Target Energy (mJ)',
+                        'Laser_Target_Energy', 'Laser Target Energy',
+                        'Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy',
+                        'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power'
+                    ]
+                    for col_name in velocity_shots_df.columns:
+                        col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                        for possible in possible_names:
+                            possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                            if col_name == possible or possible_normalized in col_normalized:
+                                laser_energy_col = col_name
+                                break
+                        if laser_energy_col:
+                            break
+                
+                if laser_energy_col is None:
+                    self.progress_signal.emit("⚠️  MAD filter: Laser energy column not found, applying per material only")
+                    # Group by material only
+                    total_outliers = 0
+                    for material in velocity_shots_df[material_col].unique():
+                        material_data = velocity_shots_df[velocity_shots_df[material_col] == material]
+                        valid_velocities = material_data['max_velocity_ms'].dropna()
+                        
+                        if len(valid_velocities) >= 2:  # Need at least 2 points for MAD
+                            keep_mask = self.mad_filter(valid_velocities.values, threshold=mad_filter_threshold)
+                            valid_indices = valid_velocities.index
+                            for idx, keep in zip(valid_indices, keep_mask):
+                                velocity_shots_df.loc[idx, 'mad_filter_keep'] = keep
+                            group_outliers = (~keep_mask).sum()
+                            total_outliers += group_outliers
+                            if group_outliers > 0:
+                                self.progress_signal.emit(f"   {material}: {group_outliers} outlier(s) identified")
+                else:
+                    # Convert laser energy to numeric
+                    velocity_shots_df[laser_energy_col] = pd.to_numeric(velocity_shots_df[laser_energy_col], errors='coerce')
+                    
+                    # Group by material, then create energy bins (±30 mJ), then apply MAD filter within each bin
+                    total_outliers = 0
+                    bins_processed = 0
+                    energy_bin_width = 30.0  # ±30 mJ bins
+                    
+                    for material in velocity_shots_df[material_col].unique():
+                        material_data = velocity_shots_df[velocity_shots_df[material_col] == material].copy()
+                        laser_energies = material_data[laser_energy_col].dropna()
+                        
+                        if len(laser_energies) == 0:
+                            continue
+                        
+                        # Create energy bins: group laser energies within ±30 mJ of bin mean
+                        # Sort energies and create bins using iterative mean-based clustering
+                        sorted_energies = sorted(laser_energies.unique())
+                        energy_bins = []
+                        
+                        # Create bins by grouping energies that are within ±30 mJ of the bin's mean
+                        # Iterate until all energies are assigned to bins
+                        remaining_energies = sorted_energies.copy()
+                        
+                        while len(remaining_energies) > 0:
+                            # Start a new bin with the smallest remaining energy
+                            current_bin = [remaining_energies.pop(0)]
+                            
+                            # Iteratively add energies that are within ±30 mJ of current bin mean
+                            # Continue until no more energies can be added
+                            changed = True
+                            while changed:
+                                changed = False
+                                bin_mean = np.mean(current_bin)
+                                
+                                # Check all remaining energies
+                                to_remove = []
+                                for energy in remaining_energies:
+                                    if abs(energy - bin_mean) <= energy_bin_width:
+                                        current_bin.append(energy)
+                                        to_remove.append(energy)
+                                        changed = True
+                                
+                                # Remove added energies from remaining list
+                                for energy in to_remove:
+                                    remaining_energies.remove(energy)
+                            
+                            # Finalize this bin
+                            energy_bins.append(current_bin)
+                        
+                        # Log bin details
+                        bin_details = []
+                        for bin_idx, bin_energies in enumerate(energy_bins):
+                            bin_mean = np.mean(bin_energies)
+                            bin_min = min(bin_energies)
+                            bin_max = max(bin_energies)
+                            bin_details.append(f"Bin {bin_idx+1}: {len(bin_energies)} energy levels, "
+                                             f"mean={bin_mean:.1f} mJ, range=[{bin_min:.1f}, {bin_max:.1f}] mJ")
+                        
+                        self.progress_signal.emit(f"   {material}: Created {len(energy_bins)} energy bin(s) from {len(sorted_energies)} unique energy levels")
+                        for detail in bin_details:
+                            self.progress_signal.emit(f"      {detail}")
+                        
+                        # Apply MAD filter within each energy bin
+                        for bin_idx, energy_bin in enumerate(energy_bins):
+                            # Get all data points within this energy bin (±30 mJ from bin mean)
+                            bin_mean = np.mean(energy_bin)
+                            bin_data = material_data[
+                                (material_data[laser_energy_col] >= bin_mean - energy_bin_width) &
+                                (material_data[laser_energy_col] <= bin_mean + energy_bin_width)
+                            ]
+                            
+                            valid_velocities = bin_data['max_velocity_ms'].dropna()
+                            
+                            if len(valid_velocities) >= 2:  # Need at least 2 points for MAD
+                                bins_processed += 1
+                                keep_mask = self.mad_filter(valid_velocities.values, threshold=mad_filter_threshold)
+                                valid_indices = valid_velocities.index
+                                for idx, keep in zip(valid_indices, keep_mask):
+                                    velocity_shots_df.loc[idx, 'mad_filter_keep'] = keep
+                                bin_outliers = (~keep_mask).sum()
+                                total_outliers += bin_outliers
+                                if bin_outliers > 0:
+                                    self.progress_signal.emit(
+                                        f"      Bin {bin_idx+1} ({bin_mean:.1f}±{energy_bin_width} mJ): {bin_outliers} outlier(s), "
+                                        f"n={len(valid_velocities)}"
+                                    )
+                    
+                    self.progress_signal.emit(f"MAD filter: Applied to {bins_processed} material+energy_bin groups")
+                    self.progress_signal.emit(f"MAD filter: {total_outliers} outlier(s) identified across all bins (threshold={mad_filter_threshold})")
+                
+                # Mark outliers in alignment status (so they're excluded from plots)
+                outliers_count = (~velocity_shots_df['mad_filter_keep']).sum()
+                if outliers_count > 0:
+                    velocity_shots_df.loc[~velocity_shots_df['mad_filter_keep'], 'aligned_ok'] = False
+                    velocity_shots_df.loc[~velocity_shots_df['mad_filter_keep'], 'alignment_reason'] = \
+                        velocity_shots_df.loc[~velocity_shots_df['mad_filter_keep'], 'alignment_reason'].apply(
+                            lambda x: f"{x}; MAD outlier" if pd.notna(x) and x != "" else "MAD outlier"
+                        )
+            else:
+                velocity_shots_df['mad_filter_keep'] = True  # Default: keep all if filter disabled
+            
+            if 'aligned_ok' in velocity_shots_df.columns:
+                unaligned_count = int((~velocity_shots_df['aligned_ok']).sum())
+            else:
+                unaligned_count = 0
+            self.progress_signal.emit(f"Alignment summary: {unaligned_count}/{total_shots} traces failed to reach the threshold")
+            if unaligned_entries:
+                unaligned_df = pd.DataFrame(unaligned_entries)
+                unaligned_path = os.path.join(spade_output_dir, 'unaligned_traces.csv')
+                unaligned_df.to_csv(unaligned_path, index=False)
+                self.progress_signal.emit(f"Saved unaligned trace list ({unaligned_count} entries) to: {unaligned_path}")
+            else:
+                self.progress_signal.emit("All processed traces reached the alignment threshold")
 
             # Reorder columns: standard columns first, then all parameter columns (sorted)
-            standard_cols = ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 'uncertainty_avg_ms', 't0_ns', 'velocity_threshold_ms']
+            standard_cols = ['file_name', 'mean_velocity_300_400ns_ms', 'time_window_used', 'uncertainty_avg_ms',
+                             't0_ns', 'velocity_threshold_ms', 'max_velocity_ms', 'aligned_ok', 'alignment_reason']
             param_cols = sorted([c for c in all_param_columns if c not in standard_cols])
             final_cols = standard_cols + param_cols
             # Include any unexpected columns at the end to avoid dropping
             remaining_cols = [c for c in velocity_shots_df.columns if c not in final_cols]
             velocity_shots_df = velocity_shots_df[final_cols + remaining_cols]
+            
+            unaligned_basenames = {entry['file_name'] for entry in unaligned_entries}
+            
+            # Add MAD-filtered traces to unaligned_basenames so they're excluded from all_velocity_traces_plot
+            if 'mad_filter_keep' in velocity_shots_df.columns:
+                mad_filtered_basenames = set(
+                    velocity_shots_df[velocity_shots_df['mad_filter_keep'] == False]['file_name'].values
+                )
+                unaligned_basenames.update(mad_filtered_basenames)
+                if len(mad_filtered_basenames) > 0:
+                    self.progress_signal.emit(f"Added {len(mad_filtered_basenames)} MAD-filtered traces to exclusion list for all_velocity_traces_plot")
             
             velocity_shots_path = os.path.join(
     spade_output_dir, 'velocity_shots_summary.csv')
@@ -1009,6 +2290,12 @@ class AnalysisThread(QThread):
                 f"Generated velocity shots summary with {len(velocity_shots_data)} shots")
             self.progress_signal.emit(f"Saved to: {velocity_shots_path}")
             self.progress_signal.emit(f"Parameter columns included: {param_cols}")
+            
+            # Generate HEL consecutive points summary report
+            hel_detection_enabled = (self.spade_params.get('hel_detection_enabled', False) or 
+                                    self.spade_params.get('experiment_hel_detection', False))
+            if hel_detection_enabled and 'hel_consecutive_points' in velocity_shots_df.columns:
+                self._generate_hel_consecutive_points_report(velocity_shots_df, spade_output_dir)
 
             # Generate combined velocity plot - DISABLED (material classification now in all_velocity_traces.png)
             # The all_velocity_traces.png plot already includes material-wise classification
@@ -1026,7 +2313,20 @@ class AnalysisThread(QThread):
                     if generate_all and os.path.exists(input_path):
                         self.progress_signal.emit(
                             f"Generating 'All Velocity Traces' aligned plot with material classification (threshold={uncertainty_threshold} m/s)")
-                        self.generate_all_velocity_traces_plot(input_path, spade_output_dir, uncertainty_threshold)
+                        self.generate_all_velocity_traces_plot(
+                            input_path,
+                            spade_output_dir,
+                            uncertainty_threshold,
+                            unaligned_basenames=unaligned_basenames
+                        )
+                        
+                        # Generate diagnostic plot for Zn traces (disabled)
+                        # self.progress_signal.emit("Generating Zn traces diagnostic plot...")
+                        # self.generate_zn_traces_diagnostic_plot(
+                        #     input_path,
+                        #     spade_output_dir,
+                        #     uncertainty_threshold
+                        # )
             except Exception as e:
                 self.progress_signal.emit(f"Warning: Failed to create comprehensive aligned velocity plot: {e}")
             
@@ -1034,10 +2334,156 @@ class AnalysisThread(QThread):
             self.create_parameter_mapping_report(velocity_shots_data, spade_output_dir)
             
             # Generate HEL vs Laser Energy plot if HEL detection was enabled
-            if self.spade_params.get('hel_detection_enabled', False):
+            hel_detection_enabled = (self.spade_params.get('hel_detection_enabled', False) or 
+                                    self.spade_params.get('experiment_hel_detection', False))
+            if hel_detection_enabled:
                 self.generate_hel_vs_laser_energy_plot(spade_output_dir)
+                # Generate HEL vs Peak Velocity plot
+                self.generate_hel_vs_peak_velocity_plot(spade_output_dir)
+                # Generate HEL vs HEL Strain Rate plot
+                self.generate_hel_vs_hel_strain_rate_plot(spade_output_dir)
+            
+            # Generate Shock Stress vs Laser Energy plot
+            self.generate_shock_stress_vs_laser_energy_plot(spade_output_dir)
+            
+            # Generate Shock Stress vs Waveplate Angle plot
+            self.generate_shock_stress_vs_waveplate_angle_plot(spade_output_dir)
+            
+            # Generate Laser Energy vs Waveplate Angle plot
+            self.generate_laser_energy_vs_waveplate_angle_plot(spade_output_dir)
+            
+            # Generate Shock Stress vs Peak Velocity plot
+            self.generate_shock_stress_vs_peak_velocity_plot(spade_output_dir)
+            
+            # Generate positional plots (row/column vs metrics)
+            self.generate_row_column_vs_peak_shock_stress_plots(spade_output_dir)
+            self.generate_row_column_vs_peak_velocity_heatmap(spade_output_dir)
+            self.generate_row_column_pair_vs_peak_velocity_plot(spade_output_dir)
+            self.generate_row_column_pair_vs_peak_velocity_by_material_plot(spade_output_dir)
+            self.generate_peak_velocity_pattern_analysis_plot(spade_output_dir)
         else:
             self.progress_signal.emit("No velocity shots data generated")
+
+    def run_post_processing(self, post_processing_config):
+        """
+        Post-processing mode: Generate plots from existing velocity_shots_summary.csv
+        without rerunning the full SPADE analysis.
+        
+        Args:
+            post_processing_config: Dictionary with 'enabled', 'spade_output_dir', and 'plots' keys
+        
+        Returns:
+            bool: True if successful, False if failed (e.g., missing files)
+        """
+        if not post_processing_config.get('enabled', False):
+            self.progress_signal.emit("Post-processing is disabled in config")
+            return False
+        
+        spade_output_dir = post_processing_config.get('spade_output_dir', self.output_dir)
+        if not os.path.exists(spade_output_dir):
+            self.progress_signal.emit("\n" + "=" * 60)
+            self.progress_signal.emit("❌ POST-PROCESSING FAILED")
+            self.progress_signal.emit("=" * 60)
+            self.progress_signal.emit(f"⚠ SPADE output directory not found: {spade_output_dir}")
+            self.progress_signal.emit("\nPlease check:")
+            self.progress_signal.emit("  1. The 'spade_output_dir' path in post_processing_config")
+            self.progress_signal.emit("  2. That the directory exists and contains velocity_shots_summary.csv")
+            self.progress_signal.emit("=" * 60)
+            return False
+        
+        velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+        if not os.path.exists(velocity_shots_path):
+            self.progress_signal.emit("\n" + "=" * 60)
+            self.progress_signal.emit("❌ POST-PROCESSING FAILED")
+            self.progress_signal.emit("=" * 60)
+            self.progress_signal.emit(f"⚠ velocity_shots_summary.csv not found in:")
+            self.progress_signal.emit(f"   {spade_output_dir}")
+            self.progress_signal.emit("\nThis file is required for post-processing.")
+            self.progress_signal.emit("\nPlease:")
+            self.progress_signal.emit("  1. Run SPADE analysis first to generate velocity_shots_summary.csv")
+            self.progress_signal.emit("  2. Or check that 'spade_output_dir' points to the correct directory")
+            self.progress_signal.emit(f"\nExpected file location: {velocity_shots_path}")
+            self.progress_signal.emit("=" * 60)
+            return False
+        
+        self.progress_signal.emit("=" * 60)
+        self.progress_signal.emit("POST-PROCESSING MODE: Generating plots from existing data")
+        self.progress_signal.emit("=" * 60)
+        self.progress_signal.emit(f"Output directory: {spade_output_dir}")
+        
+        plots_config = post_processing_config.get('plots', {})
+        
+        # Check HEL detection status for HEL plots
+        hel_detection_enabled = (self.spade_params.get('hel_detection_enabled', False) or 
+                                self.spade_params.get('experiment_hel_detection', False))
+        
+        # Generate plots based on config
+        plots_generated = 0
+        
+        if plots_config.get('hel_vs_peak_velocity', False) and hel_detection_enabled:
+            self.progress_signal.emit("\n📊 Generating HEL vs Peak Velocity plot...")
+            self.generate_hel_vs_peak_velocity_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('hel_vs_laser_energy', False) and hel_detection_enabled:
+            self.progress_signal.emit("\n📊 Generating HEL vs Laser Energy plot...")
+            self.generate_hel_vs_laser_energy_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('hel_vs_hel_strain_rate', False) and hel_detection_enabled:
+            self.progress_signal.emit("\n📊 Generating HEL vs HEL Strain Rate plot...")
+            self.generate_hel_vs_hel_strain_rate_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('shock_stress_vs_laser_energy', False):
+            self.progress_signal.emit("\n📊 Generating Shock Stress vs Laser Energy plot...")
+            self.generate_shock_stress_vs_laser_energy_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('shock_stress_vs_waveplate_angle', False):
+            self.progress_signal.emit("\n📊 Generating Shock Stress vs Waveplate Angle plot...")
+            self.generate_shock_stress_vs_waveplate_angle_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('laser_energy_vs_waveplate_angle', False):
+            self.progress_signal.emit("\n📊 Generating Laser Energy vs Waveplate Angle plot...")
+            self.generate_laser_energy_vs_waveplate_angle_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('shock_stress_vs_peak_velocity', False):
+            self.progress_signal.emit("\n📊 Generating Shock Stress vs Peak Velocity plot...")
+            self.generate_shock_stress_vs_peak_velocity_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('row_column_vs_peak_shock_stress', False):
+            self.progress_signal.emit("\n📊 Generating Row/Column vs Peak Shock Stress plots...")
+            self.generate_row_column_vs_peak_shock_stress_plots(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('flyer_row_column_peak_velocity_heatmap', False):
+            self.progress_signal.emit("\n📊 Generating Flyer Row/Column Peak Velocity Heatmap...")
+            self.generate_row_column_vs_peak_velocity_heatmap(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('flyer_row_column_pair_peak_velocity', False):
+            self.progress_signal.emit("\n📊 Generating Flyer Row/Column Pair vs Peak Velocity plot...")
+            self.generate_row_column_pair_vs_peak_velocity_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('flyer_row_column_pair_peak_velocity_by_material', False):
+            self.progress_signal.emit("\n📊 Generating Flyer Row/Column Pair vs Peak Velocity plot (by material, color-coded by laser energy)...")
+            self.generate_row_column_pair_vs_peak_velocity_by_material_plot(spade_output_dir)
+            plots_generated += 1
+        
+        if plots_config.get('peak_velocity_pattern_analysis', False):
+            self.progress_signal.emit("\n📊 Generating Peak Velocity Pattern Analysis plot...")
+            self.generate_peak_velocity_pattern_analysis_plot(spade_output_dir)
+            plots_generated += 1
+        
+        self.progress_signal.emit("\n" + "=" * 60)
+        self.progress_signal.emit(f"✅ Post-processing complete! Generated {plots_generated} plot(s)")
+        self.progress_signal.emit("=" * 60)
+        return True
 
     def create_parameter_mapping_report(self, velocity_shots_data, spade_output_dir):
         """Create a detailed report of parameter mapping for debugging"""
@@ -1062,7 +2508,8 @@ class AnalysisThread(QThread):
                 file_name = shot_data['file_name']
                 param_keys = [k for k in shot_data.keys() if k not in ['file_name', 'mean_velocity_300_400ns_ms', 
                                                                       'time_window_used', 'uncertainty_avg_ms', 
-                                                                      't0_ns', 'velocity_threshold_ms']]
+                                                                      't0_ns', 'velocity_threshold_ms',
+                                                                      'max_velocity_ms', 'aligned_ok', 'alignment_reason']]
                 report_lines.append(f"File: {file_name}")
                 report_lines.append(f"  Parameter columns: {param_keys}")
                 if param_keys:
@@ -1082,6 +2529,253 @@ class AnalysisThread(QThread):
         except Exception as e:
             self.progress_signal.emit(f"Error creating parameter mapping report: {str(e)}")
 
+    def _generate_hel_consecutive_points_report(self, velocity_shots_df, spade_output_dir):
+        """
+        Generate a summary report listing all traces with their HEL consecutive points count
+        and corresponding time duration in nanoseconds.
+        """
+        try:
+            import pandas as pd
+            
+            # Create report DataFrame with relevant columns
+            report_data = []
+            for idx, row in velocity_shots_df.iterrows():
+                report_data.append({
+                    'file_name': row.get('file_name', 'Unknown'),
+                    'hel_consecutive_points': row.get('hel_consecutive_points', 0),
+                    'hel_segment_time_ns': row.get('hel_segment_time_ns', np.nan),
+                    'hel_ok': row.get('hel_ok', False),
+                    'hel_strength_gpa': row.get('hel_strength_gpa', np.nan),
+                    'aligned_ok': row.get('aligned_ok', False)
+                })
+            
+            report_df = pd.DataFrame(report_data)
+            
+            # Sort by consecutive points (descending), then by file name
+            report_df = report_df.sort_values(
+                by=['hel_consecutive_points', 'file_name'], 
+                ascending=[False, True]
+            )
+            
+            # Save report
+            report_path = os.path.join(spade_output_dir, 'hel_consecutive_points_report.csv')
+            report_df.to_csv(report_path, index=False)
+            
+            # Print summary statistics
+            total_traces = len(report_df)
+            traces_with_hel = report_df['hel_ok'].sum()
+            traces_with_segment = (report_df['hel_consecutive_points'] > 0).sum()
+            
+            self.progress_signal.emit("\n" + "=" * 60)
+            self.progress_signal.emit("HEL Consecutive Points Summary Report")
+            self.progress_signal.emit("=" * 60)
+            self.progress_signal.emit(f"Total traces processed: {total_traces}")
+            min_points = self.spade_params.get('hel_detection_min_points', 3)
+            self.progress_signal.emit(f"Traces with HEL segment (≥{min_points} points): {traces_with_segment}")
+            self.progress_signal.emit(f"Traces with valid HEL detection: {traces_with_hel}")
+            
+            if traces_with_segment > 0:
+                valid_segments = report_df[report_df['hel_consecutive_points'] > 0]
+                self.progress_signal.emit(f"\nConsecutive Points Statistics:")
+                self.progress_signal.emit(f"  Min: {valid_segments['hel_consecutive_points'].min()}")
+                self.progress_signal.emit(f"  Max: {valid_segments['hel_consecutive_points'].max()}")
+                self.progress_signal.emit(f"  Mean: {valid_segments['hel_consecutive_points'].mean():.1f}")
+                self.progress_signal.emit(f"  Median: {valid_segments['hel_consecutive_points'].median():.1f}")
+                
+                self.progress_signal.emit(f"\nSegment Time Duration Statistics (ns):")
+                valid_times = valid_segments['hel_segment_time_ns'].dropna()
+                if len(valid_times) > 0:
+                    self.progress_signal.emit(f"  Min: {valid_times.min():.3f} ns")
+                    self.progress_signal.emit(f"  Max: {valid_times.max():.3f} ns")
+                    self.progress_signal.emit(f"  Mean: {valid_times.mean():.3f} ns")
+                    self.progress_signal.emit(f"  Median: {valid_times.median():.3f} ns")
+            
+            self.progress_signal.emit(f"\nDetailed report saved to: {report_path}")
+            self.progress_signal.emit("=" * 60)
+            
+        except Exception as e:
+            self.progress_signal.emit(f"Warning: Could not generate HEL consecutive points report: {str(e)}")
+
+    def mad_filter(self, values, threshold=3.0):
+        """
+        Asymmetric statistical outlier filter using the Median Absolute Deviation (MAD).
+        Uses MAD_lower (based on values below median) for all values.
+        Removes points whose scaled deviation exceeds `threshold`.
+        
+        Parameters:
+        -----------
+        values : array-like
+            Input values to filter
+        threshold : float, default=3.0
+            Threshold for modified z-score (typical: 3.0)
+        
+        Returns:
+        --------
+        numpy.ndarray
+            Boolean mask: True for values to keep, False for outliers
+        """
+        v = np.array(values)
+        median = np.median(v)
+        
+        # Calculate MAD_lower using only values below median
+        lower_mask = v < median
+        if np.sum(lower_mask) == 0:
+            # If no values below median, use symmetric MAD as fallback
+            abs_dev = np.abs(v - median)
+            mad = np.median(abs_dev)
+            if mad == 0:
+                return np.ones_like(v, dtype=bool)
+            modified_z = 0.6745 * abs_dev / mad
+            return modified_z < threshold
+        
+        mad_lower = np.median(np.abs(v[lower_mask] - median))
+        
+        # Avoid division by zero
+        if mad_lower == 0:
+            return np.ones_like(v, dtype=bool)
+        
+        # Calculate M_i_lower for all values using MAD_lower
+        M_i_lower = 0.6745 * np.abs(v - median) / mad_lower
+        
+        # Return mask: True for values to keep (M_i_lower < threshold)
+        return M_i_lower < threshold
+    
+    def _get_material_color_mapping(self, materials):
+        """
+        Generate consistent color mapping for materials across all plots.
+        Uses predefined colors for common materials, then colormap for others.
+        Ensures same material always gets same color.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        # Predefined colors for common materials (consistent across all plots)
+        predefined_colors = {
+            'Cu': '#1f77b4',      # Blue
+            'Copper': '#1f77b4',  # Blue
+            'Zn': '#ff7f0e',      # Orange
+            'Zinc': '#ff7f0e',    # Orange
+            'Brass': '#2ca02c',   # Green
+            'Al': '#d62728',      # Red
+            'Aluminum': '#d62728', # Red
+            'Ti': '#9467bd',      # Purple
+            'Titanium': '#9467bd', # Purple
+            'Steel': '#8c564b',   # Brown
+            'Fe': '#e377c2',      # Pink
+            'Iron': '#e377c2',    # Pink
+        }
+        
+        # Use Set3 for <=12 materials, tab20 for more
+        if len(materials) <= 12:
+            cmap = plt.get_cmap('Set3')
+        else:
+            cmap = plt.get_cmap('tab20')
+        
+        color_mapping = {}
+        predefined_used = set()
+        
+        # First, assign predefined colors
+        for material in materials:
+            material_key = str(material).strip()
+            if material_key in predefined_colors:
+                color_mapping[material] = predefined_colors[material_key]
+                predefined_used.add(material_key)
+        
+        # Then assign colors from colormap for remaining materials
+        # Use a deterministic order based on material name hash for consistency
+        remaining_materials = sorted([m for m in materials if m not in color_mapping], 
+                                     key=lambda x: hash(str(x)))
+        
+        for i, material in enumerate(remaining_materials):
+            # Use hash to get consistent index, but map to colormap range
+            material_hash = hash(str(material))
+            # Map hash to 0-1 range for colormap
+            color_idx = abs(material_hash) % 1000 / 1000.0
+            color_mapping[material] = cmap(color_idx)
+        
+        return color_mapping
+
+    def _find_parameter_column(self, df, candidate_names):
+        """
+        Find a parameter column in a dataframe by matching against candidate names.
+        Comparison is case-insensitive and ignores spaces/underscores/hyphens.
+        """
+        if df is None or df.empty:
+            return None
+        
+        normalized_columns = {
+            col: ''.join(ch for ch in col.lower() if ch.isalnum())
+            for col in df.columns
+        }
+        
+        for candidate in candidate_names:
+            normalized_candidate = ''.join(ch for ch in candidate.lower() if ch.isalnum())
+            for col, normalized in normalized_columns.items():
+                if normalized == normalized_candidate:
+                    return col
+                # Also allow candidate to be substring of column name
+                if normalized_candidate in normalized:
+                    return col
+        return None
+
+    def _convert_row_column_to_numeric(self, series):
+        """
+        Convert row/column labels (letters, numbers, or mixed) to numeric values for plotting.
+        Returns tuple (numeric_series, tick_mapping) where tick_mapping maps numeric value -> label.
+        """
+        import numpy as np
+        import pandas as pd
+        
+        if series is None or len(series) == 0:
+            return pd.Series(dtype=float), {}
+        
+        series = pd.Series(series)
+        
+        # 1) Try direct numeric conversion
+        numeric = pd.to_numeric(series, errors='coerce')
+        if numeric.notna().sum() > 0:
+            numeric_series = numeric.astype(float)
+            mapping = {}
+            for num, label in zip(numeric_series, series):
+                if pd.notna(num) and pd.notna(label):
+                    mapping[num] = str(label)
+            return numeric_series, mapping
+        
+        # 2) Try alphabetic conversion (A=1, B=2, AA=27, etc.)
+        def alpha_to_num(value):
+            if value is None or (isinstance(value, float) and np.isnan(value)):
+                return np.nan
+            value_str = str(value).strip().upper()
+            if not value_str:
+                return np.nan
+            # Keep only letters
+            letters = ''.join(ch for ch in value_str if ch.isalpha())
+            if not letters:
+                return np.nan
+            total = 0
+            for ch in letters:
+                if 'A' <= ch <= 'Z':
+                    total = total * 26 + (ord(ch) - 64)
+                else:
+                    return np.nan
+            return float(total)
+        
+        alpha_numeric = series.apply(alpha_to_num)
+        if alpha_numeric.notna().sum() > 0:
+            mapping = {}
+            for num, label in zip(alpha_numeric, series):
+                if pd.notna(num) and pd.notna(label):
+                    mapping[num] = str(label)
+            return alpha_numeric.astype(float), mapping
+        
+        # 3) Fallback: assign category codes in sorted order
+        unique_values = [val for val in series.dropna().unique() if str(val).strip()]
+        unique_values_sorted = sorted(unique_values, key=lambda x: str(x))
+        value_to_code = {val: idx + 1 for idx, val in enumerate(unique_values_sorted)}
+        numeric_series = series.map(value_to_code).astype(float)
+        mapping = {code: str(val) for val, code in value_to_code.items()}
+        return numeric_series, mapping
+
     def generate_hel_vs_laser_energy_plot(self, spade_output_dir):
         """Generate HEL vs Laser Energy plot grouped by material"""
         self.progress_signal.emit("Generating HEL vs Laser Energy plot...")
@@ -1096,38 +2790,74 @@ class AnalysisThread(QThread):
             
             if not os.path.exists(velocity_shots_path):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping HEL vs Laser Energy plot")
+                self.progress_signal.emit(f"   Expected path: {velocity_shots_path}")
                 return
             
             df = pd.read_csv(velocity_shots_path)
+            self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
+            self.progress_signal.emit(f"   Available columns: {', '.join(df.columns.tolist()[:15])}...")
             
             # Check if HEL and laser energy columns exist
             if 'hel_strength_gpa' not in df.columns:
                 self.progress_signal.emit("⚠ HEL strength not found in velocity shots - skipping HEL vs Laser Energy plot")
+                self.progress_signal.emit(f"   Available columns: {', '.join(df.columns.tolist())}")
                 return
             
-            # Look for laser energy column (various possible names)
+            # Check how many rows have HEL data
+            hel_data_count = df['hel_strength_gpa'].notna().sum()
+            self.progress_signal.emit(f"   Found {hel_data_count} rows with HEL data")
+            
+            # Look for laser energy column - prioritize 'Laser_Target_Energy (mJ)' from parameter file
             laser_energy_col = None
-            possible_names = ['Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy', 
-                            'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power']
+            energy_in_mj = False
+            
+            # First, check for exact match with 'Laser_Target_Energy (mJ)'
+            if 'Laser_Target_Energy (mJ)' in df.columns:
+                laser_energy_col = 'Laser_Target_Energy (mJ)'
+                energy_in_mj = True
+                self.progress_signal.emit("✓ Using 'Laser_Target_Energy (mJ)' from parameter file")
+            else:
+                # Fallback to other possible names
+                possible_names = [
+                    'Laser_Target_Energy (mJ)',  # Try exact match first (case-sensitive)
+                    'Laser Target Energy (mJ)',  # With space instead of underscore
+                    'Laser_Target_Energy',  # Without unit
+                    'Laser Target Energy',  # With space, without unit
+                    'Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy', 
+                    'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power'
+                ]
             for col_name in df.columns:
-                col_normalized = col_name.lower().replace('_', ' ').replace('-', ' ')
+                col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
                 for possible in possible_names:
-                    if possible.lower().replace('_', ' ').replace('-', ' ') in col_normalized:
+                    possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                    # Check for exact match first, then substring match
+                    if col_name == possible or possible_normalized in col_normalized:
                         laser_energy_col = col_name
+                        # Check if it's in mJ
+                        if "mj" in col_name.lower() or "(mj)" in col_name.lower():
+                            energy_in_mj = True
                         break
                 if laser_energy_col:
                     break
-            
             if laser_energy_col is None:
                 self.progress_signal.emit("⚠ Laser energy column not found in parameter file - skipping HEL vs Laser Energy plot")
+                self.progress_signal.emit(f"   Available columns: {', '.join(df.columns.tolist()[:10])}...")
                 return
             
             # Filter data: only rows with valid HEL and laser energy
-            valid_data = df[(df['hel_strength_gpa'].notna()) & (df[laser_energy_col].notna())]
+            valid_data = df[(df['hel_strength_gpa'].notna()) & (df[laser_energy_col].notna())].copy()
+            
+            self.progress_signal.emit(f"   Found {len(valid_data)} rows with both HEL and laser energy data")
             
             if len(valid_data) == 0:
                 self.progress_signal.emit("⚠ No valid HEL + Laser Energy data points - skipping plot")
+                hel_count = df['hel_strength_gpa'].notna().sum()
+                energy_count = df[laser_energy_col].notna().sum()
+                self.progress_signal.emit(f"   HEL data points: {hel_count}, Laser energy data points: {energy_count}")
                 return
+            
+            # Ensure laser energy is numeric (keep original units - mJ or J)
+            valid_data[laser_energy_col] = pd.to_numeric(valid_data[laser_energy_col], errors='coerce')
             
             # Get material column (should be added by parameter file)
             material_col = None
@@ -1184,8 +2914,9 @@ class AnalysisThread(QThread):
                         label=material
                     )
             
-            # Set labels and title
-            ax.set_xlabel('Laser Energy (J)', fontsize=14, fontweight='bold')
+            # Set labels and title (use correct unit based on column)
+            energy_unit = 'mJ' if energy_in_mj else 'J'
+            ax.set_xlabel(f'Laser Energy ({energy_unit})', fontsize=14, fontweight='bold')
             ax.set_ylabel('HEL Strength (GPa)', fontsize=14, fontweight='bold')
             ax.set_title('Hugoniot Elastic Limit vs Laser Energy by Material', fontsize=16, fontweight='bold')
             ax.grid(True, alpha=0.3, linestyle='--')
@@ -1205,17 +2936,2370 @@ class AnalysisThread(QThread):
             import traceback
             self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
 
+    def generate_hel_vs_peak_velocity_plot(self, spade_output_dir):
+        """Generate HEL vs Peak Velocity scatter plot grouped by material"""
+        self.progress_signal.emit("Generating HEL vs Peak Velocity plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Load velocity shots summary which contains HEL data
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping HEL vs Peak Velocity plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
+            
+            # Check if HEL and peak velocity columns exist
+            if 'hel_strength_gpa' not in df.columns:
+                self.progress_signal.emit("⚠ HEL strength not found in velocity shots - skipping HEL vs Peak Velocity plot")
+                return
+            
+            if 'max_velocity_ms' not in df.columns:
+                self.progress_signal.emit("⚠ Peak velocity (max_velocity_ms) not found - skipping HEL vs Peak Velocity plot")
+                return
+            
+            # Check how many rows have HEL data
+            hel_data_count = df['hel_strength_gpa'].notna().sum()
+            self.progress_signal.emit(f"   Found {hel_data_count} rows with HEL data")
+            
+            # Filter data: only rows with valid HEL and peak velocity
+            valid_data = df[(df['hel_strength_gpa'].notna()) & (df['max_velocity_ms'].notna())].copy()
+            
+            self.progress_signal.emit(f"   Found {len(valid_data)} rows with both HEL and peak velocity data")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid HEL + Peak Velocity data points - skipping plot")
+                return
+            
+            # Filter to only include traces that would be plotted in all_velocity_traces_plot
+            # (i.e., only accepted traces)
+            
+            # 1. Must have aligned successfully (reached threshold)
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True].copy()
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            
+            # Get material column
+            material_col = None
+            for col_name in valid_data.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            
+            if material_col is None:
+                valid_data['Material'] = 'Unknown'
+                material_col = 'Material'
+            
+            # Filter out Unknown material if configured
+            if skip_unknown:
+                before_filter = len(valid_data)
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+                after_filter = len(valid_data)
+                if before_filter != after_filter:
+                    self.progress_signal.emit(f"   After Unknown material filter: {after_filter} traces (removed {before_filter - after_filter} Unknown)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No traces remaining after filtering - skipping plot")
+                return
+            
+            # Ensure numeric
+            valid_data['max_velocity_ms'] = pd.to_numeric(valid_data['max_velocity_ms'], errors='coerce')
+            valid_data['hel_strength_gpa'] = pd.to_numeric(valid_data['hel_strength_gpa'], errors='coerce')
+            
+            # Remove any rows that became NaN after conversion
+            valid_data = valid_data[(valid_data['max_velocity_ms'].notna()) & (valid_data['hel_strength_gpa'].notna())].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after numeric conversion - skipping plot")
+                return
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Get unique materials and assign colors (consistent across all plots)
+            materials = valid_data[material_col].unique()
+            colors = self._get_material_color_mapping(materials)
+            
+            # Plot data grouped by material (scatter plot)
+            markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'X', 'd']
+            legend_handles = []
+            legend_labels = []
+            
+            for i, material in enumerate(materials):
+                material_data = valid_data[valid_data[material_col] == material]
+                
+                # Skip if no data points for this material
+                if len(material_data) == 0:
+                    continue
+                
+                # Get marker for this material
+                marker = markers[i % len(markers)]
+                color = colors[material]
+                
+                # Count data points for this material
+                n_points = len(material_data)
+                
+                # Plot scatter with error bars if HEL uncertainty is available
+                if 'hel_uncertainty_gpa' in material_data.columns:
+                    errorbar_handle = ax.errorbar(
+                        material_data['max_velocity_ms'],
+                        material_data['hel_strength_gpa'],
+                        yerr=material_data['hel_uncertainty_gpa'],
+                        fmt=marker,
+                        color=color,
+                        markersize=10,
+                        linewidth=0,
+                        elinewidth=1.5,
+                        capsize=4,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})"
+                    )
+                    # errorbar returns a container, use the first element (line) for legend
+                    legend_handles.append(errorbar_handle[0])
+                else:
+                    scatter_handle = ax.scatter(
+                        material_data['max_velocity_ms'],
+                        material_data['hel_strength_gpa'],
+                        marker=marker,
+                        c=[color],
+                        s=100,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})",
+                        edgecolors='black',
+                        linewidths=0.5
+                    )
+                    legend_handles.append(scatter_handle)
+                
+                legend_labels.append(f"{material} (n={n_points})")
+                
+                # Add linear regression line if we have at least 2 points
+                if len(material_data) >= 2:
+                    x_vals = material_data['max_velocity_ms'].values.astype(float)
+                    y_vals = material_data['hel_strength_gpa'].values.astype(float)
+                    
+                    # Only attempt fit if x range is non-zero
+                    if np.nanmax(x_vals) - np.nanmin(x_vals) > 1e-6:
+                        slope, intercept = np.polyfit(x_vals, y_vals, 1)
+                        x_fit = np.linspace(np.nanmin(x_vals), np.nanmax(x_vals), 100)
+                        y_fit = slope * x_fit + intercept
+                        ax.plot(
+                            x_fit,
+                            y_fit,
+                            color=color,
+                            linewidth=2,
+                            alpha=0.85,
+                            linestyle='-',
+                        )
+            
+            # Set labels and title
+            ax.set_xlabel('Peak Velocity (m/s)', fontsize=14, fontweight='bold')
+            ax.set_ylabel('HEL Strength (GPa)', fontsize=14, fontweight='bold')
+            ax.set_title('Hugoniot Elastic Limit vs Peak Velocity by Material', fontsize=16, fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            ax.legend(legend_handles, legend_labels, title='Material', loc='best', fontsize=11)
+            
+            # Tight layout and save
+            plt.tight_layout()
+            plot_path = os.path.join(spade_output_dir, 'hel_vs_peak_velocity_by_material.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated HEL vs Peak Velocity plot: {plot_path}")
+            self.progress_signal.emit(f"   Plotted {len(valid_data)} data points from {len(materials)} material(s)")
+            
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating HEL vs Peak Velocity plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_hel_vs_hel_strain_rate_plot(self, spade_output_dir):
+        """Generate HEL vs HEL Strain Rate scatter plot grouped by material"""
+        self.progress_signal.emit("Generating HEL vs HEL Strain Rate plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Load velocity shots summary which contains HEL data
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping HEL vs HEL Strain Rate plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
+            
+            # Check if HEL and strain rate columns exist
+            if 'hel_strength_gpa' not in df.columns:
+                self.progress_signal.emit("⚠ HEL strength not found in velocity shots - skipping HEL vs HEL Strain Rate plot")
+                return
+            
+            if 'hel_strain_rate_s^-1' not in df.columns:
+                self.progress_signal.emit("⚠ HEL strain rate not found in velocity shots - skipping HEL vs HEL Strain Rate plot")
+                return
+            
+            # Check how many rows have HEL data
+            hel_data_count = df['hel_strength_gpa'].notna().sum()
+            strain_rate_count = df['hel_strain_rate_s^-1'].notna().sum()
+            self.progress_signal.emit(f"   Found {hel_data_count} rows with HEL data, {strain_rate_count} rows with strain rate data")
+            
+            # Filter data: only rows with valid HEL and strain rate
+            valid_data = df[(df['hel_strength_gpa'].notna()) & (df['hel_strain_rate_s^-1'].notna())].copy()
+            
+            self.progress_signal.emit(f"   Found {len(valid_data)} rows with both HEL and strain rate data")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid HEL + Strain Rate data points - skipping plot")
+                return
+            
+            # Filter to only include traces that would be plotted in all_velocity_traces_plot
+            # (i.e., only accepted traces)
+            
+            # 1. Must have aligned successfully (reached threshold)
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True].copy()
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            
+            # Get material column
+            material_col = None
+            for col_name in valid_data.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            
+            if material_col is None:
+                valid_data['Material'] = 'Unknown'
+                material_col = 'Material'
+            
+            # Filter out Unknown material if configured
+            if skip_unknown:
+                before_filter = len(valid_data)
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+                after_filter = len(valid_data)
+                if before_filter != after_filter:
+                    self.progress_signal.emit(f"   After Unknown material filter: {after_filter} traces (removed {before_filter - after_filter} Unknown)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No traces remaining after filtering - skipping plot")
+                return
+            
+            # Ensure numeric
+            valid_data['hel_strength_gpa'] = pd.to_numeric(valid_data['hel_strength_gpa'], errors='coerce')
+            valid_data['hel_strain_rate_s^-1'] = pd.to_numeric(valid_data['hel_strain_rate_s^-1'], errors='coerce')
+            
+            # Remove any rows that became NaN after conversion
+            valid_data = valid_data[(valid_data['hel_strength_gpa'].notna()) & (valid_data['hel_strain_rate_s^-1'].notna())].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after numeric conversion - skipping plot")
+                return
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Get unique materials and assign colors (consistent across all plots)
+            materials = valid_data[material_col].unique()
+            colors = self._get_material_color_mapping(materials)
+            
+            # Plot data grouped by material (scatter plot)
+            markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'X', 'd']
+            legend_handles = []
+            legend_labels = []
+            
+            for i, material in enumerate(materials):
+                material_data = valid_data[valid_data[material_col] == material]
+                
+                # Skip if no data points for this material
+                if len(material_data) == 0:
+                    continue
+                
+                # Get marker for this material
+                marker = markers[i % len(markers)]
+                color = colors[material]
+                
+                # Count data points for this material
+                n_points = len(material_data)
+                
+                # Plot scatter
+                scatter_handle = ax.scatter(
+                    material_data['hel_strain_rate_s^-1'],
+                    material_data['hel_strength_gpa'],
+                    marker=marker,
+                    c=[color],
+                    s=100,
+                    alpha=0.7,
+                    label=f"{material} (n={n_points})",
+                    edgecolors='black',
+                    linewidths=0.5
+                )
+                legend_handles.append(scatter_handle)
+                legend_labels.append(f"{material} (n={n_points})")
+            
+            ax.set_xlabel('HEL Strain Rate (s⁻¹)', fontsize=14, fontweight='bold')
+            ax.set_ylabel('HEL Strength (GPa)', fontsize=14, fontweight='bold')
+            ax.set_title('HEL vs HEL Strain Rate', fontsize=16, fontweight='bold')
+            ax.grid(True, linestyle='--', alpha=0.3)
+            
+            # Format x-axis in scientific notation
+            from matplotlib.ticker import ScalarFormatter
+            ax.xaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+            ax.ticklabel_format(style='scientific', axis='x', scilimits=(0,0))
+            
+            if legend_handles:
+                ax.legend(legend_handles, legend_labels, loc='best', fontsize=10, title='Material')
+            
+            plt.tight_layout()
+            plot_path = os.path.join(spade_output_dir, 'hel_vs_hel_strain_rate.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated HEL vs HEL Strain Rate plot: {plot_path}")
+            self.progress_signal.emit(f"   Plotted {len(valid_data)} data points from {len(materials)} material(s)")
+        
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating HEL vs HEL Strain Rate plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_shock_stress_vs_laser_energy_plot(self, spade_output_dir):
+        """Generate Shock Stress vs Laser Energy scatter plot grouped by material"""
+        self.progress_signal.emit("Generating Shock Stress vs Laser Energy plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Load velocity shots summary
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Shock Stress vs Laser Energy plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
+            
+            # Look for laser energy column
+            laser_energy_col = None
+            energy_in_mj = False
+            
+            # Check for laser energy column (same logic as HEL plot)
+            if 'Laser_Target_Energy (mJ)' in df.columns:
+                laser_energy_col = 'Laser_Target_Energy (mJ)'
+                energy_in_mj = True
+            else:
+                possible_names = [
+                    'Laser_Target_Energy (mJ)', 'Laser Target Energy (mJ)',
+                    'Laser_Target_Energy', 'Laser Target Energy',
+                    'Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy',
+                    'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power'
+                ]
+                for col_name in df.columns:
+                    col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                    for possible in possible_names:
+                        possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                        if col_name == possible or possible_normalized in col_normalized:
+                            laser_energy_col = col_name
+                            if "mj" in col_name.lower() or "(mj)" in col_name.lower():
+                                energy_in_mj = True
+                            break
+                    if laser_energy_col:
+                        break
+            
+            if laser_energy_col is None:
+                self.progress_signal.emit("⚠ Laser energy column not found - skipping Shock Stress vs Laser Energy plot")
+                return
+            
+            # Get or calculate shock stress
+            shock_stress_col = None
+            shock_stress_unc_col = None
+            
+            # First, try to get from ALPSS results (if available)
+            if 'ALPSS_Peak_Shock_Stress_GPa' in df.columns:
+                shock_stress_col = 'ALPSS_Peak_Shock_Stress_GPa'
+                shock_stress_unc_col = 'ALPSS_Peak_Shock_Stress_Uncertainty_GPa' if 'ALPSS_Peak_Shock_Stress_Uncertainty_GPa' in df.columns else None
+            elif 'Peak Shock Stress (GPa)' in df.columns:
+                shock_stress_col = 'Peak Shock Stress (GPa)'
+                shock_stress_unc_col = 'Peak Shock Stress Uncertainty (GPa)' if 'Peak Shock Stress Uncertainty (GPa)' in df.columns else None
+            else:
+                # Calculate shock stress from max velocity using material properties
+                self.progress_signal.emit("   Calculating shock stress from max velocity...")
+                
+                # Get material column
+                material_col = None
+                for col_name in df.columns:
+                    if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                        material_col = col_name
+                        break
+                
+                if material_col is None or 'max_velocity_ms' not in df.columns:
+                    self.progress_signal.emit("⚠ Cannot calculate shock stress - missing material or velocity data")
+                    return
+                
+                # Calculate shock stress for each row
+                shock_stress_values = []
+                for idx, row in df.iterrows():
+                    material = row.get(material_col, 'Unknown')
+                    max_velocity = row.get('max_velocity_ms', np.nan)
+                    
+                    if pd.isna(max_velocity):
+                        shock_stress_values.append(np.nan)
+                        continue
+                    
+                    # Get material properties
+                    if self.material_properties and material in self.material_properties:
+                        props = self.material_properties[material]
+                        density = props.get('density', 8960)  # Default to Cu density (kg/m³)
+                        acoustic_velocity = props.get('bulk_wave_speed', props.get('C0', 3950))  # Default to Cu (m/s)
+                        # S parameter for Hugoniot EOS: U = c + S*u_p
+                        # Default S values based on common materials
+                        S = props.get('S', props.get('slope_parameter', None))
+                        if S is None:
+                            # Use default S values for common materials
+                            material_lower = str(material).lower()
+                            if 'cu' in material_lower or 'copper' in material_lower:
+                                S = 1.49
+                            elif 'zn' in material_lower or 'zinc' in material_lower:
+                                S = 1.30
+                            elif 'brass' in material_lower:
+                                S = 1.43
+                            else:
+                                S = 1.49  # Default to Cu value
+                    else:
+                        # Use defaults (Copper)
+                        density = 8960  # kg/m³
+                        acoustic_velocity = 3950  # m/s
+                        S = 1.49  # Cu slope parameter
+                    
+                    # Calculate shock stress using EOS: U = c + S*u_p, then σ = ρ * U * u_p * 1e-9 (GPa)
+                    # max_velocity is free surface velocity (u_fs), particle velocity u_p = u_fs / 2
+                    u_p = max_velocity / 2.0  # Particle velocity = free surface velocity / 2
+                    shock_velocity = acoustic_velocity + S * u_p  # U = c + S*u_p
+                    shock_stress = density * shock_velocity * u_p * 1e-9  # σ = ρ * U * u_p (GPa)
+                    shock_stress_values.append(shock_stress)
+                
+                df['Calculated_Shock_Stress_GPa'] = shock_stress_values
+                shock_stress_col = 'Calculated_Shock_Stress_GPa'
+            
+            # Filter data: only rows with valid shock stress and laser energy
+            valid_data = df[(df[shock_stress_col].notna()) & (df[laser_energy_col].notna())].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid Shock Stress + Laser Energy data points - skipping plot")
+                return
+            
+            # Filter to only include traces that would be plotted in all_velocity_traces_plot
+            # (i.e., only accepted traces)
+            
+            # 1. Must have aligned successfully (reached threshold)
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True].copy()
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            
+            # Get material column first
+            material_col = None
+            for col_name in valid_data.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            
+            if material_col is None:
+                valid_data['Material'] = 'Unknown'
+                material_col = 'Material'
+            
+            # Filter out Unknown material if configured
+            if skip_unknown:
+                before_filter = len(valid_data)
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+                after_filter = len(valid_data)
+                if before_filter != after_filter:
+                    self.progress_signal.emit(f"   After Unknown material filter: {after_filter} traces (removed {before_filter - after_filter} Unknown)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No traces remaining after filtering - skipping plot")
+                return
+            
+            # Ensure numeric
+            valid_data[laser_energy_col] = pd.to_numeric(valid_data[laser_energy_col], errors='coerce')
+            valid_data[shock_stress_col] = pd.to_numeric(valid_data[shock_stress_col], errors='coerce')
+            
+            # Remove any rows that became NaN after conversion
+            valid_data = valid_data[(valid_data[laser_energy_col].notna()) & (valid_data[shock_stress_col].notna())].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after numeric conversion - skipping plot")
+                return
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Get unique materials and assign colors (consistent across all plots)
+            materials = valid_data[material_col].unique()
+            colors = self._get_material_color_mapping(materials)
+            
+            # Plot data grouped by material (scatter plot)
+            markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'X', 'd']
+            legend_handles = []
+            legend_labels = []
+            
+            for i, material in enumerate(materials):
+                material_data = valid_data[valid_data[material_col] == material]
+                
+                # Skip if no data points for this material
+                if len(material_data) == 0:
+                    continue
+                
+                # Get marker for this material
+                marker = markers[i % len(markers)]
+                color = colors[material]
+                
+                # Count data points for this material
+                n_points = len(material_data)
+                
+                # Plot scatter with error bars if uncertainty is available
+                if shock_stress_unc_col and shock_stress_unc_col in material_data.columns:
+                    errorbar_handle = ax.errorbar(
+                        material_data[laser_energy_col],
+                        material_data[shock_stress_col],
+                        yerr=material_data[shock_stress_unc_col],
+                        fmt=marker,
+                        color=color,
+                        markersize=10,
+                        linewidth=0,
+                        elinewidth=1.5,
+                        capsize=4,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})"
+                    )
+                    # errorbar returns a container, use the first element (line) for legend
+                    legend_handles.append(errorbar_handle[0])
+                else:
+                    scatter_handle = ax.scatter(
+                        material_data[laser_energy_col],
+                        material_data[shock_stress_col],
+                        marker=marker,
+                        c=[color],
+                        s=100,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})",
+                        edgecolors='black',
+                        linewidths=0.5
+                    )
+                    legend_handles.append(scatter_handle)
+                
+                legend_labels.append(f"{material} (n={n_points})")
+            
+            # Set labels and title
+            energy_unit = 'mJ' if energy_in_mj else 'J'
+            ax.set_xlabel(f'Laser Energy ({energy_unit})', fontsize=14, fontweight='bold')
+            ax.set_ylabel('Shock Stress (GPa)', fontsize=14, fontweight='bold')
+            ax.set_title('Shock Stress vs Laser Energy by Material', fontsize=16, fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            ax.legend(legend_handles, legend_labels, title='Material', loc='best', fontsize=11)
+            
+            # Tight layout and save
+            plt.tight_layout()
+            plot_path = os.path.join(spade_output_dir, 'shock_stress_vs_laser_energy_by_material.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Shock Stress vs Laser Energy plot: {plot_path}")
+            self.progress_signal.emit(f"   Plotted {len(valid_data)} data points from {len(materials)} material(s)")
+            
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Shock Stress vs Laser Energy plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_shock_stress_vs_waveplate_angle_plot(self, spade_output_dir):
+        """Generate Shock Stress vs Waveplate Angle scatter plot grouped by material"""
+        self.progress_signal.emit("Generating Shock Stress vs Waveplate Angle plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Load velocity shots summary
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Shock Stress vs Waveplate Angle plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
+            
+            # Look for waveplate angle column
+            waveplate_angle_col = None
+            
+            # Check for waveplate angle column
+            if 'Waveplate_Angle (Degrees)' in df.columns:
+                waveplate_angle_col = 'Waveplate_Angle (Degrees)'
+            else:
+                possible_names = [
+                    'Waveplate_Angle (Degrees)', 'Waveplate Angle (Degrees)',
+                    'Waveplate_Angle', 'Waveplate Angle', 'WaveplateAngle',
+                    'waveplate_angle', 'waveplate angle', 'Waveplate',
+                    'Angle (Degrees)', 'Angle', 'angle'
+                ]
+                for col_name in df.columns:
+                    col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                    for possible in possible_names:
+                        possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                        if col_name == possible or possible_normalized in col_normalized:
+                            waveplate_angle_col = col_name
+                            break
+                    if waveplate_angle_col:
+                        break
+            
+            if waveplate_angle_col is None:
+                self.progress_signal.emit("⚠ Waveplate angle column not found - skipping Shock Stress vs Waveplate Angle plot")
+                return
+            
+            self.progress_signal.emit(f"✓ Found waveplate angle column: '{waveplate_angle_col}'")
+            
+            # Get or calculate shock stress (same logic as laser energy plot)
+            shock_stress_col = None
+            shock_stress_unc_col = None
+            
+            # First, try to get from ALPSS results (if available)
+            if 'ALPSS_Peak_Shock_Stress_GPa' in df.columns:
+                shock_stress_col = 'ALPSS_Peak_Shock_Stress_GPa'
+                shock_stress_unc_col = 'ALPSS_Peak_Shock_Stress_Uncertainty_GPa' if 'ALPSS_Peak_Shock_Stress_Uncertainty_GPa' in df.columns else None
+            elif 'Peak Shock Stress (GPa)' in df.columns:
+                shock_stress_col = 'Peak Shock Stress (GPa)'
+                shock_stress_unc_col = 'Peak Shock Stress Uncertainty (GPa)' if 'Peak Shock Stress Uncertainty (GPa)' in df.columns else None
+            else:
+                # Calculate shock stress from max velocity using material properties
+                self.progress_signal.emit("   Calculating shock stress from max velocity...")
+                
+                # Get material column
+                material_col = None
+                for col_name in df.columns:
+                    if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                        material_col = col_name
+                        break
+                
+                if material_col is None or 'max_velocity_ms' not in df.columns:
+                    self.progress_signal.emit("⚠ Cannot calculate shock stress - missing material or velocity data")
+                    return
+                
+                # Calculate shock stress for each row
+                shock_stress_values = []
+                for idx, row in df.iterrows():
+                    material = row.get(material_col, 'Unknown')
+                    max_velocity = row.get('max_velocity_ms', np.nan)
+                    
+                    if pd.isna(max_velocity):
+                        shock_stress_values.append(np.nan)
+                        continue
+                    
+                    # Get material properties
+                    if self.material_properties and material in self.material_properties:
+                        props = self.material_properties[material]
+                        density = props.get('density', 8960)  # Default to Cu density (kg/m³)
+                        acoustic_velocity = props.get('bulk_wave_speed', props.get('C0', 3950))  # Default to Cu (m/s)
+                        # S parameter for Hugoniot EOS: U = c + S*u_p
+                        # Default S values based on common materials
+                        S = props.get('S', props.get('slope_parameter', None))
+                        if S is None:
+                            # Use default S values for common materials
+                            material_lower = str(material).lower()
+                            if 'cu' in material_lower or 'copper' in material_lower:
+                                S = 1.49
+                            elif 'zn' in material_lower or 'zinc' in material_lower:
+                                S = 1.30
+                            elif 'brass' in material_lower:
+                                S = 1.43
+                            else:
+                                S = 1.49  # Default to Cu value
+                    else:
+                        # Use defaults (Copper)
+                        density = 8960  # kg/m³
+                        acoustic_velocity = 3950  # m/s
+                        S = 1.49  # Cu slope parameter
+                    
+                    # Calculate shock stress using EOS: U = c + S*u_p, then σ = ρ * U * u_p * 1e-9 (GPa)
+                    # max_velocity is free surface velocity (u_fs), particle velocity u_p = u_fs / 2
+                    u_p = max_velocity / 2.0  # Particle velocity = free surface velocity / 2
+                    shock_velocity = acoustic_velocity + S * u_p  # U = c + S*u_p
+                    shock_stress = density * shock_velocity * u_p * 1e-9  # σ = ρ * U * u_p (GPa)
+                    shock_stress_values.append(shock_stress)
+                
+                df['Calculated_Shock_Stress_GPa'] = shock_stress_values
+                shock_stress_col = 'Calculated_Shock_Stress_GPa'
+            
+            # Filter data: only rows with valid shock stress and waveplate angle
+            valid_data = df[(df[shock_stress_col].notna()) & (df[waveplate_angle_col].notna())].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid Shock Stress + Waveplate Angle data points - skipping plot")
+                return
+            
+            # Filter to only include traces that would be plotted in all_velocity_traces_plot
+            # (i.e., only accepted traces)
+            
+            # 1. Must have aligned successfully (reached threshold)
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True].copy()
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            
+            # Get material column first
+            material_col = None
+            for col_name in valid_data.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            
+            if material_col is None:
+                valid_data['Material'] = 'Unknown'
+                material_col = 'Material'
+            
+            # Filter out Unknown material if configured
+            if skip_unknown:
+                before_filter = len(valid_data)
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+                after_filter = len(valid_data)
+                if before_filter != after_filter:
+                    self.progress_signal.emit(f"   After Unknown material filter: {after_filter} traces (removed {before_filter - after_filter} Unknown)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No traces remaining after filtering - skipping plot")
+                return
+            
+            # Ensure numeric
+            valid_data[waveplate_angle_col] = pd.to_numeric(valid_data[waveplate_angle_col], errors='coerce')
+            valid_data[shock_stress_col] = pd.to_numeric(valid_data[shock_stress_col], errors='coerce')
+            
+            # Remove any rows that became NaN after conversion
+            valid_data = valid_data[(valid_data[waveplate_angle_col].notna()) & (valid_data[shock_stress_col].notna())].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after numeric conversion - skipping plot")
+                return
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Get unique materials and assign colors (consistent across all plots)
+            materials = valid_data[material_col].unique()
+            colors = self._get_material_color_mapping(materials)
+            
+            # Plot data grouped by material (scatter plot)
+            markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'X', 'd']
+            legend_handles = []
+            legend_labels = []
+            
+            for i, material in enumerate(materials):
+                material_data = valid_data[valid_data[material_col] == material]
+                
+                # Skip if no data points for this material
+                if len(material_data) == 0:
+                    continue
+                
+                # Get marker for this material
+                marker = markers[i % len(markers)]
+                color = colors[material]
+                
+                # Count data points for this material
+                n_points = len(material_data)
+                
+                # Plot scatter with error bars if uncertainty is available
+                if shock_stress_unc_col and shock_stress_unc_col in material_data.columns:
+                    errorbar_handle = ax.errorbar(
+                        material_data[waveplate_angle_col],
+                        material_data[shock_stress_col],
+                        yerr=material_data[shock_stress_unc_col],
+                        fmt=marker,
+                        color=color,
+                        markersize=10,
+                        linewidth=0,
+                        elinewidth=1.5,
+                        capsize=4,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})"
+                    )
+                    # errorbar returns a container, use the first element (line) for legend
+                    legend_handles.append(errorbar_handle[0])
+                else:
+                    scatter_handle = ax.scatter(
+                        material_data[waveplate_angle_col],
+                        material_data[shock_stress_col],
+                        marker=marker,
+                        c=[color],
+                        s=100,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})",
+                        edgecolors='black',
+                        linewidths=0.5
+                    )
+                    legend_handles.append(scatter_handle)
+                
+                legend_labels.append(f"{material} (n={n_points})")
+            
+            # Set labels and title
+            ax.set_xlabel('Waveplate Angle (Degrees)', fontsize=14, fontweight='bold')
+            ax.set_ylabel('Shock Stress (GPa)', fontsize=14, fontweight='bold')
+            ax.set_title('Shock Stress vs Waveplate Angle by Material', fontsize=16, fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            ax.legend(legend_handles, legend_labels, title='Material', loc='best', fontsize=11)
+            
+            # Tight layout and save
+            plt.tight_layout()
+            plot_path = os.path.join(spade_output_dir, 'shock_stress_vs_waveplate_angle_by_material.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Shock Stress vs Waveplate Angle plot: {plot_path}")
+            self.progress_signal.emit(f"   Plotted {len(valid_data)} data points from {len(materials)} material(s)")
+            
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Shock Stress vs Waveplate Angle plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_laser_energy_vs_waveplate_angle_plot(self, spade_output_dir):
+        """Generate Laser Energy vs Waveplate Angle scatter plot to show energy variation at each angle"""
+        self.progress_signal.emit("Generating Laser Energy vs Waveplate Angle plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Load velocity shots summary
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Laser Energy vs Waveplate Angle plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
+            
+            # Look for waveplate angle column
+            waveplate_angle_col = None
+            if 'Waveplate_Angle (Degrees)' in df.columns:
+                waveplate_angle_col = 'Waveplate_Angle (Degrees)'
+            else:
+                possible_names = [
+                    'Waveplate_Angle (Degrees)', 'Waveplate Angle (Degrees)',
+                    'Waveplate_Angle', 'Waveplate Angle', 'WaveplateAngle',
+                    'waveplate_angle', 'waveplate angle', 'Waveplate',
+                    'Angle (Degrees)', 'Angle', 'angle'
+                ]
+                for col_name in df.columns:
+                    col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                    for possible in possible_names:
+                        possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                        if col_name == possible or possible_normalized in col_normalized:
+                            waveplate_angle_col = col_name
+                            break
+                    if waveplate_angle_col:
+                        break
+            
+            if waveplate_angle_col is None:
+                self.progress_signal.emit("⚠ Waveplate angle column not found - skipping Laser Energy vs Waveplate Angle plot")
+                return
+            
+            # Look for laser energy column
+            laser_energy_col = None
+            energy_in_mj = False
+            if 'Laser_Target_Energy (mJ)' in df.columns:
+                laser_energy_col = 'Laser_Target_Energy (mJ)'
+                energy_in_mj = True
+            else:
+                possible_names = [
+                    'Laser_Target_Energy (mJ)', 'Laser Target Energy (mJ)',
+                    'Laser_Target_Energy', 'Laser Target Energy',
+                    'Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy',
+                    'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power'
+                ]
+                for col_name in df.columns:
+                    col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                    for possible in possible_names:
+                        possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                        if col_name == possible or possible_normalized in col_normalized:
+                            laser_energy_col = col_name
+                            if "mj" in col_name.lower() or "(mj)" in col_name.lower():
+                                energy_in_mj = True
+                            break
+                    if laser_energy_col:
+                        break
+            
+            if laser_energy_col is None:
+                self.progress_signal.emit("⚠ Laser energy column not found - skipping Laser Energy vs Waveplate Angle plot")
+                return
+            
+            self.progress_signal.emit(f"✓ Found waveplate angle column: '{waveplate_angle_col}'")
+            self.progress_signal.emit(f"✓ Found laser energy column: '{laser_energy_col}'")
+            
+            # Filter to only include traces that were successfully plotted in all_velocity_traces_plot
+            # (i.e., only accepted traces)
+            if 'aligned_ok' in df.columns:
+                valid_data = df[df['aligned_ok'] == True].copy()
+            else:
+                valid_data = df.copy()
+            
+            # Skip Unknown material if configured
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            if skip_unknown:
+                material_col = None
+                for col_name in valid_data.columns:
+                    if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                        material_col = col_name
+                        break
+                if material_col:
+                    valid_data = valid_data[valid_data[material_col].str.lower() != 'unknown'].copy()
+            
+            # Convert to numeric
+            valid_data[waveplate_angle_col] = pd.to_numeric(valid_data[waveplate_angle_col], errors='coerce')
+            valid_data[laser_energy_col] = pd.to_numeric(valid_data[laser_energy_col], errors='coerce')
+            
+            # Remove rows with NaN values
+            valid_data = valid_data.dropna(subset=[waveplate_angle_col, laser_energy_col])
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data points - skipping Laser Energy vs Waveplate Angle plot")
+                return
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Get material column for color coding
+            material_col = None
+            for col_name in valid_data.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            
+            if material_col and material_col in valid_data.columns:
+                materials = valid_data[material_col].unique()
+                colors = self._get_material_color_mapping(materials)
+                markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'X', 'd']
+                legend_handles = []
+                legend_labels = []
+                
+                for i, material in enumerate(materials):
+                    material_data = valid_data[valid_data[material_col] == material]
+                    
+                    if len(material_data) == 0:
+                        continue
+                    
+                    marker = markers[i % len(markers)]
+                    color = colors[material]
+                    n_points = len(material_data)
+                    
+                    scatter_handle = ax.scatter(
+                        material_data[waveplate_angle_col],
+                        material_data[laser_energy_col],
+                        marker=marker,
+                        c=[color],
+                        s=100,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})",
+                        edgecolors='black',
+                        linewidths=0.5
+                    )
+                    legend_handles.append(scatter_handle)
+                    legend_labels.append(f"{material} (n={n_points})")
+            else:
+                # No material column, plot all points in one color
+                ax.scatter(
+                    valid_data[waveplate_angle_col],
+                    valid_data[laser_energy_col],
+                    marker='o',
+                    s=100,
+                    alpha=0.7,
+                    edgecolors='black',
+                    linewidths=0.5,
+                    label=f"All data (n={len(valid_data)})"
+                )
+            
+            # Set labels and title
+            ax.set_xlabel('Waveplate Angle (Degrees)', fontsize=14, fontweight='bold')
+            energy_unit = "mJ" if energy_in_mj else "J"
+            ax.set_ylabel(f'Laser Energy ({energy_unit})', fontsize=14, fontweight='bold')
+            ax.set_title('Laser Energy vs Waveplate Angle\n(Showing Energy Variation at Each Angle)', 
+                        fontsize=16, fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            
+            if material_col and material_col in valid_data.columns:
+                ax.legend(legend_handles, legend_labels, title='Material', loc='best', fontsize=11)
+            else:
+                ax.legend(loc='best', fontsize=11)
+            
+            # Tight layout and save
+            plt.tight_layout()
+            plot_path = os.path.join(spade_output_dir, 'laser_energy_vs_waveplate_angle.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Laser Energy vs Waveplate Angle plot: {plot_path}")
+            self.progress_signal.emit(f"   Plotted {len(valid_data)} data points")
+            
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Laser Energy vs Waveplate Angle plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_shock_stress_vs_peak_velocity_plot(self, spade_output_dir):
+        """Generate Shock Stress vs Peak Velocity scatter plot grouped by material"""
+        self.progress_signal.emit("Generating Shock Stress vs Peak Velocity plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # Load velocity shots summary
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Shock Stress vs Peak Velocity plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
+            
+            # Check for peak velocity column (max_velocity_ms)
+            peak_velocity_col = 'max_velocity_ms'
+            if peak_velocity_col not in df.columns:
+                self.progress_signal.emit("⚠ Peak velocity column (max_velocity_ms) not found - skipping Shock Stress vs Peak Velocity plot")
+                return
+            
+            # Get or calculate shock stress (same logic as other plots)
+            shock_stress_col = None
+            shock_stress_unc_col = None
+            
+            # First, try to get from ALPSS results (if available)
+            if 'ALPSS_Peak_Shock_Stress_GPa' in df.columns:
+                shock_stress_col = 'ALPSS_Peak_Shock_Stress_GPa'
+                shock_stress_unc_col = 'ALPSS_Peak_Shock_Stress_Uncertainty_GPa' if 'ALPSS_Peak_Shock_Stress_Uncertainty_GPa' in df.columns else None
+            elif 'Peak Shock Stress (GPa)' in df.columns:
+                shock_stress_col = 'Peak Shock Stress (GPa)'
+                shock_stress_unc_col = 'Peak Shock Stress Uncertainty (GPa)' if 'Peak Shock Stress Uncertainty (GPa)' in df.columns else None
+            else:
+                # Calculate shock stress from max velocity using material properties
+                self.progress_signal.emit("   Calculating shock stress from max velocity...")
+                
+                # Get material column
+                material_col = None
+                for col_name in df.columns:
+                    if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                        material_col = col_name
+                        break
+                
+                if material_col is None:
+                    self.progress_signal.emit("⚠ Cannot calculate shock stress - missing material data")
+                    return
+                
+                # Calculate shock stress for each row
+                shock_stress_values = []
+                for idx, row in df.iterrows():
+                    material = row.get(material_col, 'Unknown')
+                    max_velocity = row.get(peak_velocity_col, np.nan)
+                    
+                    if pd.isna(max_velocity):
+                        shock_stress_values.append(np.nan)
+                        continue
+                    
+                    # Get material properties
+                    if self.material_properties and material in self.material_properties:
+                        props = self.material_properties[material]
+                        density = props.get('density', 8960)  # Default to Cu density (kg/m³)
+                        acoustic_velocity = props.get('bulk_wave_speed', props.get('C0', 3950))  # Default to Cu (m/s)
+                        # S parameter for Hugoniot EOS: U = c + S*u_p
+                        # Default S values based on common materials
+                        S = props.get('S', props.get('slope_parameter', None))
+                        if S is None:
+                            # Use default S values for common materials
+                            material_lower = str(material).lower()
+                            if 'cu' in material_lower or 'copper' in material_lower:
+                                S = 1.49
+                            elif 'zn' in material_lower or 'zinc' in material_lower:
+                                S = 1.30
+                            elif 'brass' in material_lower:
+                                S = 1.43
+                            else:
+                                S = 1.49  # Default to Cu value
+                    else:
+                        # Use defaults (Copper)
+                        density = 8960  # kg/m³
+                        acoustic_velocity = 3950  # m/s
+                        S = 1.49  # Cu slope parameter
+                    
+                    # Calculate shock stress using EOS: U = c + S*u_p, then σ = ρ * U * u_p * 1e-9 (GPa)
+                    # max_velocity is free surface velocity (u_fs), particle velocity u_p = u_fs / 2
+                    u_p = max_velocity / 2.0  # Particle velocity = free surface velocity / 2
+                    shock_velocity = acoustic_velocity + S * u_p  # U = c + S*u_p
+                    shock_stress = density * shock_velocity * u_p * 1e-9  # σ = ρ * U * u_p (GPa)
+                    shock_stress_values.append(shock_stress)
+                
+                df['Calculated_Shock_Stress_GPa'] = shock_stress_values
+                shock_stress_col = 'Calculated_Shock_Stress_GPa'
+            
+            # Filter data: only rows with valid shock stress and peak velocity
+            valid_data = df[(df[shock_stress_col].notna()) & (df[peak_velocity_col].notna())].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid Shock Stress + Peak Velocity data points - skipping plot")
+                return
+            
+            # Filter to only include traces that would be plotted in all_velocity_traces_plot
+            # (i.e., only accepted traces)
+            
+            # 1. Must have aligned successfully (reached threshold)
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True].copy()
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            
+            # Get material column first
+            material_col = None
+            for col_name in valid_data.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            
+            if material_col is None:
+                valid_data['Material'] = 'Unknown'
+                material_col = 'Material'
+            
+            # Filter out Unknown material if configured
+            if skip_unknown:
+                before_filter = len(valid_data)
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+                after_filter = len(valid_data)
+                if before_filter != after_filter:
+                    self.progress_signal.emit(f"   After Unknown material filter: {after_filter} traces (removed {before_filter - after_filter} Unknown)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No traces remaining after filtering - skipping plot")
+                return
+            
+            # Ensure numeric
+            valid_data[peak_velocity_col] = pd.to_numeric(valid_data[peak_velocity_col], errors='coerce')
+            valid_data[shock_stress_col] = pd.to_numeric(valid_data[shock_stress_col], errors='coerce')
+            
+            # Convert free surface velocity (peak velocity) to particle velocity for plotting
+            # u_p = u_fs / 2 (free surface velocity is twice the particle velocity)
+            valid_data['particle_velocity_ms'] = valid_data[peak_velocity_col] / 2.0
+            
+            # Remove any rows that became NaN after conversion
+            valid_data = valid_data[(valid_data['particle_velocity_ms'].notna()) & (valid_data[shock_stress_col].notna())].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after numeric conversion - skipping plot")
+                return
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Get unique materials and assign colors (consistent across all plots)
+            materials = valid_data[material_col].unique()
+            colors = self._get_material_color_mapping(materials)
+            
+            # Plot data grouped by material (scatter plot)
+            markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'X', 'd']
+            legend_handles = []
+            legend_labels = []
+            
+            for i, material in enumerate(materials):
+                material_data = valid_data[valid_data[material_col] == material]
+                
+                # Skip if no data points for this material
+                if len(material_data) == 0:
+                    continue
+                
+                # Get marker for this material
+                marker = markers[i % len(markers)]
+                color = colors[material]
+                
+                # Count data points for this material
+                n_points = len(material_data)
+                
+                # Plot scatter with error bars if uncertainty is available
+                # Use particle velocity on x-axis (not free surface velocity)
+                if shock_stress_unc_col and shock_stress_unc_col in material_data.columns:
+                    errorbar_handle = ax.errorbar(
+                        material_data['particle_velocity_ms'],
+                        material_data[shock_stress_col],
+                        yerr=material_data[shock_stress_unc_col],
+                        fmt=marker,
+                        color=color,
+                        markersize=10,
+                        linewidth=0,
+                        elinewidth=1.5,
+                        capsize=4,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})"
+                    )
+                    # errorbar returns a container, use the first element (line) for legend
+                    legend_handles.append(errorbar_handle[0])
+                else:
+                    scatter_handle = ax.scatter(
+                        material_data['particle_velocity_ms'],
+                        material_data[shock_stress_col],
+                        marker=marker,
+                        c=[color],
+                        s=100,
+                        alpha=0.7,
+                        label=f"{material} (n={n_points})",
+                        edgecolors='black',
+                        linewidths=0.5
+                    )
+                    legend_handles.append(scatter_handle)
+                
+                legend_labels.append(f"{material} (n={n_points})")
+            
+            # Set labels and title
+            # Note: x-axis shows particle velocity (u_p = u_fs/2) to show the quadratic relationship
+            ax.set_xlabel('Particle Velocity (m/s)', fontsize=14, fontweight='bold')
+            ax.set_ylabel('Shock Stress (GPa)', fontsize=14, fontweight='bold')
+            ax.set_title('Shock Stress vs Particle Velocity by Material', fontsize=16, fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            ax.legend(legend_handles, legend_labels, title='Material', loc='best', fontsize=11)
+            
+            # Tight layout and save
+            plt.tight_layout()
+            plot_path = os.path.join(spade_output_dir, 'shock_stress_vs_peak_velocity_by_material.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Shock Stress vs Peak Velocity plot: {plot_path}")
+            self.progress_signal.emit(f"   Plotted {len(valid_data)} data points from {len(materials)} material(s)")
+            
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Shock Stress vs Peak Velocity plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_row_column_vs_peak_shock_stress_plots(self, spade_output_dir):
+        """Plot Flyer Column/Row versus peak shock stress with material grouping"""
+        self.progress_signal.emit("Generating Flyer Column/Row vs Peak Shock Stress plots...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Flyer Row/Column plots")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            if df.empty:
+                self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping Flyer Row/Column plots")
+                return
+            
+            # Identify required columns
+            row_col_candidates = ['Flyer_Row', 'Flyer Row', 'row', 'Row', 'FlyerRow']
+            col_col_candidates = ['Flyer_Column', 'Flyer Column', 'column', 'Column', 'FlyerColumn']
+            
+            row_col = self._find_parameter_column(df, row_col_candidates)
+            col_col = self._find_parameter_column(df, col_col_candidates)
+            
+            if row_col is None and col_col is None:
+                self.progress_signal.emit("⚠ Flyer Row/Column columns not found - skipping positional plots")
+                return
+            
+            # Determine shock stress column
+            shock_stress_col = None
+            for candidate in ['ALPSS_Peak_Shock_Stress_GPa', 'Peak Shock Stress (GPa)', 'Peak_Shock_Stress_GPa_Final',
+                              'Calculated_Shock_Stress_GPa']:
+                if candidate in df.columns:
+                    shock_stress_col = candidate
+                    break
+            
+            if shock_stress_col is None:
+                self.progress_signal.emit("⚠ Peak shock stress column not found - skipping Flyer Row/Column plots")
+                return
+            
+            required_columns = [shock_stress_col]
+            if col_col:
+                required_columns.append(col_col)
+            if row_col:
+                required_columns.append(row_col)
+            
+            subset_columns = required_columns + [c for c in ['aligned_ok'] if c in df.columns]
+            valid_data = df[subset_columns].copy()
+            valid_data = valid_data[valid_data[shock_stress_col].notna()]
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid shock stress data for Flyer Row/Column plots")
+                return
+            
+            # Filter aligned traces only
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True]
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No aligned traces available for Flyer Row/Column plots")
+                return
+            
+            # Skip Unknown material if configured
+            material_col = None
+            for col_name in df.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            if material_col is None:
+                valid_data['Material'] = 'Unknown'
+                material_col = 'Material'
+            else:
+                valid_data[material_col] = df.loc[valid_data.index, material_col]
+            
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            if skip_unknown:
+                before_filter = len(valid_data)
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+                after_filter = len(valid_data)
+                if before_filter != after_filter:
+                    self.progress_signal.emit(f"   After Unknown material filter: {after_filter} traces (removed {before_filter - after_filter} Unknown)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No traces remaining after material filtering - skipping positional plots")
+                return
+            
+            plots_to_generate = []
+            if col_col is not None:
+                col_numeric, col_ticks = self._convert_row_column_to_numeric(valid_data[col_col])
+                valid_data['Column_numeric'] = col_numeric
+                column_valid = valid_data[valid_data['Column_numeric'].notna()].copy()
+                if len(column_valid) > 0:
+                    plots_to_generate.append(('Flyer Column', 'Column_numeric', col_ticks, column_valid))
+                else:
+                    self.progress_signal.emit("⚠ No valid numeric Flyer Column values - skipping column plot")
+            
+            if row_col is not None:
+                row_numeric, row_ticks = self._convert_row_column_to_numeric(valid_data[row_col])
+                valid_data['Row_numeric'] = row_numeric
+                row_valid = valid_data[valid_data['Row_numeric'].notna()].copy()
+                if len(row_valid) > 0:
+                    plots_to_generate.append(('Flyer Row', 'Row_numeric', row_ticks, row_valid))
+                else:
+                    self.progress_signal.emit("⚠ No valid numeric Flyer Row values - skipping row plot")
+            
+            if not plots_to_generate:
+                self.progress_signal.emit("⚠ No positional plots generated due to missing row/column data")
+                return
+            
+            # Get materials and colors
+            materials = valid_data[material_col].unique()
+            colors = self._get_material_color_mapping(materials)
+            markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'X', 'd']
+            
+            fig, axes = plt.subplots(1, len(plots_to_generate), figsize=(9 * len(plots_to_generate), 7), sharey=True)
+            if len(plots_to_generate) == 1:
+                axes = [axes]
+            
+            legend_handles = []
+            legend_labels = []
+            
+            for axis_idx, (axis_label, numeric_col, tick_mapping, plot_data) in enumerate(plots_to_generate):
+                ax = axes[axis_idx]
+                for i, material in enumerate(materials):
+                    material_data = plot_data[plot_data[material_col] == material]
+                    if len(material_data) == 0:
+                        continue
+                    marker = markers[i % len(markers)]
+                    color = colors[material]
+                    scatter_handle = ax.scatter(
+                        material_data[numeric_col],
+                        material_data[shock_stress_col],
+                        marker=marker,
+                        c=[color],
+                        s=90,
+                        alpha=0.8,
+                        edgecolors='black',
+                        linewidths=0.5,
+                        label=f"{material} (n={len(material_data)})"
+                    )
+                    if axis_idx == 0:
+                        legend_handles.append(scatter_handle)
+                        legend_labels.append(f"{material} (n={len(material_data)})")
+                
+                ax.set_xlabel(axis_label, fontsize=14, fontweight='bold')
+                if axis_idx == 0:
+                    ax.set_ylabel('Peak Shock Stress (GPa)', fontsize=14, fontweight='bold')
+                ax.grid(True, linestyle='--', alpha=0.3)
+                
+                if tick_mapping:
+                    ticks = sorted(tick_mapping.keys())
+                    labels = [tick_mapping[t] for t in ticks]
+                    ax.set_xticks(ticks)
+                    ax.set_xticklabels(labels, rotation=45, ha='right')
+            
+            title = 'Flyer Column/Row vs Peak Shock Stress'
+            fig.suptitle(title, fontsize=18, fontweight='bold')
+            if legend_handles:
+                fig.legend(legend_handles, legend_labels, loc='upper right', bbox_to_anchor=(0.98, 0.98))
+            plt.tight_layout(rect=[0, 0, 0.98, 0.95])
+            
+            plot_path = os.path.join(spade_output_dir, 'flyer_row_column_vs_peak_shock_stress.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Flyer Row/Column vs Peak Shock Stress plots: {plot_path}")
+        
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Flyer Row/Column vs Peak Shock Stress plots: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_row_column_vs_peak_velocity_heatmap(self, spade_output_dir):
+        """Create heatmap of Flyer Row/Column vs Peak Velocity"""
+        self.progress_signal.emit("Generating Flyer Row/Column vs Peak Velocity heatmap...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping heatmap")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            if df.empty:
+                self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping heatmap")
+                return
+            
+            row_col_candidates = ['Flyer_Row', 'Flyer Row', 'row', 'Row', 'FlyerRow']
+            col_col_candidates = ['Flyer_Column', 'Flyer Column', 'column', 'Column', 'FlyerColumn']
+            row_col = self._find_parameter_column(df, row_col_candidates)
+            col_col = self._find_parameter_column(df, col_col_candidates)
+            
+            if row_col is None or col_col is None:
+                self.progress_signal.emit("⚠ Flyer Row or Column column not found - skipping heatmap")
+                return
+            
+            if 'max_velocity_ms' not in df.columns:
+                self.progress_signal.emit("⚠ Peak velocity column (max_velocity_ms) not found - skipping heatmap")
+                return
+            
+            subset_columns = [row_col, col_col, 'max_velocity_ms'] + [c for c in ['aligned_ok'] if c in df.columns]
+            valid_data = df[subset_columns].copy()
+            valid_data = valid_data.dropna(subset=[row_col, col_col, 'max_velocity_ms'])
+            
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True]
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data for Flyer Row/Column heatmap")
+                return
+            
+            # Apply 2-sigma filtering to peak velocity
+            velocity_values = valid_data['max_velocity_ms'].values
+            velocity_mean = np.nanmean(velocity_values)
+            velocity_std = np.nanstd(velocity_values)
+            lower_bound = velocity_mean - 2 * velocity_std
+            upper_bound = velocity_mean + 2 * velocity_std
+            
+            before_2sigma = len(valid_data)
+            valid_data = valid_data[
+                (valid_data['max_velocity_ms'] >= lower_bound) & 
+                (valid_data['max_velocity_ms'] <= upper_bound)
+            ].copy()
+            after_2sigma = len(valid_data)
+            self.progress_signal.emit(f"   After 2-sigma filter: {after_2sigma} traces (removed {before_2sigma - after_2sigma} outliers)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after 2-sigma filtering - skipping heatmap")
+                return
+            
+            grouped = valid_data.groupby([row_col, col_col])['max_velocity_ms']
+            mean_table = grouped.mean().unstack()
+            count_table = grouped.count().unstack().reindex_like(mean_table)
+            max_table = grouped.max().unstack().reindex_like(mean_table)
+            min_table = grouped.min().unstack().reindex_like(mean_table)
+            
+            if mean_table.empty:
+                self.progress_signal.emit("⚠ Pivot table is empty - skipping heatmap")
+                return
+            
+            rows = list(mean_table.index.astype(str))
+            columns = list(mean_table.columns.astype(str))
+            data = mean_table.values.astype(float)
+            
+            fig = plt.figure(figsize=(9, 9))
+            # Main heatmap axes - optimized to reduce white space
+            ax = fig.add_axes([0.1, 0.1, 0.7, 0.8])
+            cmap = plt.get_cmap('viridis')
+            masked_data = np.ma.masked_invalid(data)
+            heatmap = ax.imshow(masked_data, cmap=cmap, aspect='auto', origin='lower')
+            
+            for i in range(data.shape[0]):
+                for j in range(data.shape[1]):
+                    value = data[i, j]
+                    if not np.isnan(value):
+                        count_val = count_table.values[i, j] if not np.isnan(count_table.values[i, j]) else np.nan
+                        max_val = max_table.values[i, j] if not np.isnan(max_table.values[i, j]) else np.nan
+                        min_val = min_table.values[i, j] if not np.isnan(min_table.values[i, j]) else np.nan
+                        text_color = 'white' if np.nanmax(data) > 0 and value > 0.8 * np.nanmax(data) else 'black'
+                        label_lines = [f"{value:.1f} m/s"]
+                        if not np.isnan(count_val):
+                            label_lines.append(f"n={int(count_val)}")
+                        if not np.isnan(max_val):
+                            label_lines.append(f"max={max_val:.1f}")
+                        if not np.isnan(min_val):
+                            label_lines.append(f"min={min_val:.1f}")
+                        ax.text(j, i, "\n".join(label_lines), ha='center', va='center', color=text_color, fontsize=9)
+            
+            ax.set_xticks(np.arange(len(columns)))
+            ax.set_xticklabels(columns, rotation=45, ha='right')
+            ax.set_yticks(np.arange(len(rows)))
+            ax.set_yticklabels(rows)
+            ax.set_xlabel('Flyer Column', fontsize=14, fontweight='bold')
+            ax.set_ylabel('Flyer Row', fontsize=14, fontweight='bold')
+            ax.set_title('Peak Velocity Heatmap by Flyer Row/Column', fontsize=16, fontweight='bold')
+            
+            # Colorbar positioned right after heatmap
+            cbar = fig.colorbar(heatmap, ax=ax, pad=0.02, fraction=0.046)
+            cbar.set_label('Peak Velocity (m/s)', fontsize=12)
+            
+            # Legend/explanation axes on right, positioned after colorbar (compact)
+            legend_text_ax = fig.add_axes([0.82, 0.75, 0.16, 0.20])
+            legend_text_ax.axis('off')
+            legend_text = (
+                "Cell labels show:\\n"
+                " - Avg peak velocity (m/s)\\n"
+                " - n = traces contributing\\n"
+                " - max/min = velocity bounds\\n"
+                "Example format:\\n"
+                "  R1C1 -> \\\"5200 m/s\\\\n"
+                "          n=3\\\\n"
+                "          max=5450\\\\n"
+                "          min=4980\\\"\\n"
+                "(values update per cell)"
+            )
+            legend_text_ax.text(0, 1, legend_text, va='top', fontsize=10.5)
+            
+            plot_path = os.path.join(spade_output_dir, 'flyer_row_column_peak_velocity_heatmap.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Flyer Row/Column vs Peak Velocity heatmap: {plot_path}")
+        
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Flyer Row/Column vs Peak Velocity heatmap: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_row_column_pair_vs_peak_velocity_plot(self, spade_output_dir):
+        """Plot peak velocity for each Flyer Row/Column pair, grouped by material"""
+        self.progress_signal.emit("Generating Flyer Row/Column pair vs Peak Velocity plot...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping row/column pair plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            if df.empty:
+                self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping row/column pair plot")
+                return
+            
+            row_col_candidates = ['Flyer_Row', 'Flyer Row', 'row', 'Row', 'FlyerRow']
+            col_col_candidates = ['Flyer_Column', 'Flyer Column', 'column', 'Column', 'FlyerColumn']
+            row_col = self._find_parameter_column(df, row_col_candidates)
+            col_col = self._find_parameter_column(df, col_col_candidates)
+            
+            if row_col is None or col_col is None:
+                self.progress_signal.emit("⚠ Flyer Row or Column column not found - skipping row/column pair plot")
+                return
+            
+            if 'max_velocity_ms' not in df.columns:
+                self.progress_signal.emit("⚠ Peak velocity column (max_velocity_ms) not found - skipping row/column pair plot")
+                return
+            
+            subset_cols = [row_col, col_col, 'max_velocity_ms'] + [c for c in ['aligned_ok'] if c in df.columns]
+            valid_data = df[subset_cols].copy()
+            valid_data = valid_data.dropna(subset=[row_col, col_col, 'max_velocity_ms'])
+            
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True]
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data for row/column pair plot")
+                return
+            
+            # Apply 2-sigma filtering to peak velocity
+            velocity_values = valid_data['max_velocity_ms'].values
+            velocity_mean = np.nanmean(velocity_values)
+            velocity_std = np.nanstd(velocity_values)
+            lower_bound = velocity_mean - 2 * velocity_std
+            upper_bound = velocity_mean + 2 * velocity_std
+            
+            before_2sigma = len(valid_data)
+            valid_data = valid_data[
+                (valid_data['max_velocity_ms'] >= lower_bound) & 
+                (valid_data['max_velocity_ms'] <= upper_bound)
+            ].copy()
+            after_2sigma = len(valid_data)
+            self.progress_signal.emit(f"   After 2-sigma filter: {after_2sigma} traces (removed {before_2sigma - after_2sigma} outliers)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after 2-sigma filtering - skipping row/column pair plot")
+                return
+            
+            # Attach material info
+            material_col = None
+            for col_name in df.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            if material_col is None:
+                valid_data['Material'] = 'Unknown'
+                material_col = 'Material'
+            else:
+                valid_data[material_col] = df.loc[valid_data.index, material_col]
+            
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            if skip_unknown:
+                before_filter = len(valid_data)
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+                after_filter = len(valid_data)
+                if before_filter != after_filter:
+                    self.progress_signal.emit(f"   After Unknown material filter: {after_filter} traces")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No traces remaining after material filtering - skipping row/column pair plot")
+                return
+            
+            # Convert rows/columns to numeric order and build pair labels
+            row_numeric, _ = self._convert_row_column_to_numeric(valid_data[row_col])
+            col_numeric, _ = self._convert_row_column_to_numeric(valid_data[col_col])
+            valid_data['Row_numeric'] = row_numeric
+            valid_data['Col_numeric'] = col_numeric
+            valid_data = valid_data[valid_data['Row_numeric'].notna() & valid_data['Col_numeric'].notna()]
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid numeric row/column data - skipping row/column pair plot")
+                return
+            
+            # Determine sorting order (ascending row, then column)
+            unique_rows = sorted(valid_data['Row_numeric'].unique())
+            unique_cols = sorted(valid_data['Col_numeric'].unique())
+            
+            def format_label(row_value, col_value, row_raw, col_raw):
+                # Format row/column labels: remove .0 if present (e.g., R1.0 C1.0 -> R1C1)
+                row_label = str(row_raw).replace('.0', '').strip()
+                col_label = str(col_raw).replace('.0', '').strip()
+                row_fmt = row_label if row_label.lower().startswith('r') else f"R{row_label}"
+                col_fmt = col_label if col_label.lower().startswith('c') else f"C{col_label}"
+                return f"{row_fmt}{col_fmt}"
+            
+            # Build ordered pair list
+            ordered_pairs = []
+            pair_labels = []
+            for row_val in unique_rows:
+                row_subset = valid_data[valid_data['Row_numeric'] == row_val]
+                if row_subset.empty:
+                    continue
+                row_raw = row_subset[row_col].iloc[0]
+                for col_val in unique_cols:
+                    col_subset = row_subset[row_subset['Col_numeric'] == col_val]
+                    if col_subset.empty:
+                        continue
+                    col_raw = col_subset[col_col].iloc[0]
+                    label = format_label(row_val, col_val, row_raw, col_raw)
+                    ordered_pairs.append((row_val, col_val, label))
+                    pair_labels.append(label)
+            
+            if not ordered_pairs:
+                self.progress_signal.emit("⚠ No valid row/column combinations to plot")
+                return
+            
+            pair_to_position = {pair[2]: idx for idx, pair in enumerate(ordered_pairs)}
+            valid_data['RowCol_Label'] = valid_data.apply(
+                lambda row: format_label(
+                    row['Row_numeric'],
+                    row['Col_numeric'],
+                    row[row_col],
+                    row[col_col]
+                ),
+                axis=1
+            )
+            valid_data['RowCol_Pos'] = valid_data['RowCol_Label'].map(pair_to_position)
+            
+            # Prepare figure
+            fig, ax = plt.subplots(figsize=(max(12, len(ordered_pairs) * 0.7), 8))
+            materials = valid_data[material_col].unique()
+            colors = self._get_material_color_mapping(materials)
+            markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'X', 'd']
+            
+            legend_handles = []
+            legend_labels = []
+            jitter = 0.05
+            
+            for i, material in enumerate(materials):
+                material_data = valid_data[valid_data[material_col] == material]
+                if len(material_data) == 0:
+                    continue
+                marker = markers[i % len(markers)]
+                color = colors[material]
+                x_positions = material_data['RowCol_Pos'] + np.random.uniform(-jitter, jitter, size=len(material_data))
+                scatter_handle = ax.scatter(
+                    x_positions,
+                    material_data['max_velocity_ms'],
+                    marker=marker,
+                    c=[color],
+                    s=80,
+                    alpha=0.8,
+                    edgecolors='black',
+                    linewidths=0.5,
+                    label=f"{material} (n={len(material_data)})"
+                )
+                legend_handles.append(scatter_handle)
+                legend_labels.append(f"{material} (n={len(material_data)})")
+            
+            ax.set_xticks(range(len(pair_to_position)))
+            ax.set_xticklabels(pair_labels, rotation=45, ha='right')
+            ax.set_xlabel('Flyer Row/Column Pair', fontsize=14, fontweight='bold')
+            ax.set_ylabel('Peak Velocity (m/s)', fontsize=14, fontweight='bold')
+            ax.set_title('Peak Velocity by Flyer Row/Column Pair', fontsize=16, fontweight='bold')
+            ax.grid(True, linestyle='--', alpha=0.3, axis='y')
+            
+            if legend_handles:
+                ax.legend(legend_handles, legend_labels, loc='best', title='Material')
+            
+            plt.tight_layout()
+            plot_path = os.path.join(spade_output_dir, 'flyer_row_column_pair_peak_velocity.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Flyer Row/Column pair vs Peak Velocity plot: {plot_path}")
+        
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Flyer Row/Column pair vs Peak Velocity plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_row_column_pair_vs_peak_velocity_by_material_plot(self, spade_output_dir):
+        """Plot peak velocity for each Flyer Row/Column pair, with 3 subplots (one per material), markers color-coded by laser energy"""
+        self.progress_signal.emit("Generating Flyer Row/Column pair vs Peak Velocity plot (by material, color-coded by laser energy)...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            from matplotlib.colors import Normalize
+            from matplotlib.cm import ScalarMappable
+            
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping row/column pair by material plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            if df.empty:
+                self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping row/column pair by material plot")
+                return
+            
+            # Find laser energy column
+            laser_energy_col = None
+            energy_in_mj = False
+            if 'Laser_Target_Energy (mJ)' in df.columns:
+                laser_energy_col = 'Laser_Target_Energy (mJ)'
+                energy_in_mj = True
+            else:
+                possible_names = [
+                    'Laser_Target_Energy (mJ)', 'Laser Target Energy (mJ)',
+                    'Laser_Target_Energy', 'Laser Target Energy',
+                    'Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy',
+                    'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power'
+                ]
+                for col_name in df.columns:
+                    col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                    for possible in possible_names:
+                        possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                        if col_name == possible or possible_normalized in col_normalized:
+                            laser_energy_col = col_name
+                            if "mj" in col_name.lower() or "(mj)" in col_name.lower():
+                                energy_in_mj = True
+                            break
+                    if laser_energy_col:
+                        break
+            
+            if laser_energy_col is None:
+                self.progress_signal.emit("⚠ Laser energy column not found - skipping row/column pair by material plot")
+                return
+            
+            row_col_candidates = ['Flyer_Row', 'Flyer Row', 'row', 'Row', 'FlyerRow']
+            col_col_candidates = ['Flyer_Column', 'Flyer Column', 'column', 'Column', 'FlyerColumn']
+            row_col = self._find_parameter_column(df, row_col_candidates)
+            col_col = self._find_parameter_column(df, col_col_candidates)
+            
+            if row_col is None or col_col is None:
+                self.progress_signal.emit("⚠ Flyer Row or Column column not found - skipping row/column pair by material plot")
+                return
+            
+            if 'max_velocity_ms' not in df.columns:
+                self.progress_signal.emit("⚠ Peak velocity column (max_velocity_ms) not found - skipping row/column pair by material plot")
+                return
+            
+            # Get material column
+            material_col = None
+            for col_name in df.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            if material_col is None:
+                df['Material'] = 'Unknown'
+                material_col = 'Material'
+            
+            subset_cols = [row_col, col_col, 'max_velocity_ms', laser_energy_col, material_col] + [c for c in ['aligned_ok'] if c in df.columns]
+            valid_data = df[subset_cols].copy()
+            valid_data = valid_data.dropna(subset=[row_col, col_col, 'max_velocity_ms', laser_energy_col])
+            
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True]
+                self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data for row/column pair by material plot")
+                return
+            
+            # Apply 2-sigma filtering to peak velocity
+            velocity_values = valid_data['max_velocity_ms'].values
+            velocity_mean = np.nanmean(velocity_values)
+            velocity_std = np.nanstd(velocity_values)
+            lower_bound = velocity_mean - 2 * velocity_std
+            upper_bound = velocity_mean + 2 * velocity_std
+            
+            before_2sigma = len(valid_data)
+            valid_data = valid_data[
+                (valid_data['max_velocity_ms'] >= lower_bound) & 
+                (valid_data['max_velocity_ms'] <= upper_bound)
+            ].copy()
+            after_2sigma = len(valid_data)
+            self.progress_signal.emit(f"   After 2-sigma filter: {after_2sigma} traces (removed {before_2sigma - after_2sigma} outliers)")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after 2-sigma filtering - skipping row/column pair by material plot")
+                return
+            
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            if skip_unknown:
+                before_filter = len(valid_data)
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+                after_filter = len(valid_data)
+                if before_filter != after_filter:
+                    self.progress_signal.emit(f"   After Unknown material filter: {after_filter} traces")
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No traces remaining after material filtering - skipping row/column pair by material plot")
+                return
+            
+            # Convert rows/columns to numeric order and build pair labels
+            row_numeric, _ = self._convert_row_column_to_numeric(valid_data[row_col])
+            col_numeric, _ = self._convert_row_column_to_numeric(valid_data[col_col])
+            valid_data['Row_numeric'] = row_numeric
+            valid_data['Col_numeric'] = col_numeric
+            valid_data = valid_data[valid_data['Row_numeric'].notna() & valid_data['Col_numeric'].notna()]
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid numeric row/column data - skipping row/column pair by material plot")
+                return
+            
+            # Determine sorting order (ascending row, then column)
+            unique_rows = sorted(valid_data['Row_numeric'].unique())
+            unique_cols = sorted(valid_data['Col_numeric'].unique())
+            
+            def format_label(row_value, col_value, row_raw, col_raw):
+                # Format row/column labels: remove .0 if present (e.g., R1.0 C1.0 -> R1C1)
+                row_label = str(row_raw).replace('.0', '').strip()
+                col_label = str(col_raw).replace('.0', '').strip()
+                row_fmt = row_label if row_label.lower().startswith('r') else f"R{row_label}"
+                col_fmt = col_label if col_label.lower().startswith('c') else f"C{col_label}"
+                return f"{row_fmt}{col_fmt}"
+            
+            # Build ordered pair list with zigzag pattern:
+            # Odd rows (1, 3, 5): columns in reverse order (C5, C4, C3, C2, C1)
+            # Even rows (2, 4): columns in normal order (C1, C2, C3, C4, C5)
+            ordered_pairs = []
+            pair_labels = []
+            for row_val in unique_rows:
+                row_subset = valid_data[valid_data['Row_numeric'] == row_val]
+                if row_subset.empty:
+                    continue
+                row_raw = row_subset[row_col].iloc[0]
+                
+                # Determine column order: reverse for odd rows, normal for even rows
+                # Row 1, 3, 5 are odd -> reverse; Row 2, 4 are even -> normal
+                is_odd_row = (int(row_val) % 2 == 1)
+                col_order = reversed(unique_cols) if is_odd_row else unique_cols
+                
+                for col_val in col_order:
+                    col_subset = row_subset[row_subset['Col_numeric'] == col_val]
+                    if col_subset.empty:
+                        continue
+                    col_raw = col_subset[col_col].iloc[0]
+                    label = format_label(row_val, col_val, row_raw, col_raw)
+                    ordered_pairs.append((row_val, col_val, label))
+                    pair_labels.append(label)
+            
+            if not ordered_pairs:
+                self.progress_signal.emit("⚠ No valid row/column combinations to plot")
+                return
+            
+            pair_to_position = {pair[2]: idx for idx, pair in enumerate(ordered_pairs)}
+            valid_data['RowCol_Label'] = valid_data.apply(
+                lambda row: format_label(
+                    row['Row_numeric'],
+                    row['Col_numeric'],
+                    row[row_col],
+                    row[col_col]
+                ),
+                axis=1
+            )
+            valid_data['RowCol_Pos'] = valid_data['RowCol_Label'].map(pair_to_position)
+            
+            # Ensure laser energy is numeric
+            valid_data[laser_energy_col] = pd.to_numeric(valid_data[laser_energy_col], errors='coerce')
+            valid_data = valid_data[valid_data[laser_energy_col].notna()].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid laser energy data - skipping row/column pair by material plot")
+                return
+            
+            # Get unique materials (limit to 3 for 3 subplots)
+            materials = sorted(valid_data[material_col].unique())[:3]
+            if len(materials) == 0:
+                self.progress_signal.emit("⚠ No materials found - skipping row/column pair by material plot")
+                return
+            
+            # Get global laser energy range for consistent colormap across all subplots
+            global_energy_min = valid_data[laser_energy_col].min()
+            global_energy_max = valid_data[laser_energy_col].max()
+            
+            # Create figure with 3 subplots
+            fig, axes = plt.subplots(3, 1, figsize=(max(12, len(ordered_pairs) * 0.7), 12))
+            if len(materials) < 3:
+                # Hide unused subplots
+                for i in range(len(materials), 3):
+                    axes[i].axis('off')
+            
+            # Use a colormap for laser energy
+            cmap = plt.get_cmap('viridis')
+            norm = Normalize(vmin=global_energy_min, vmax=global_energy_max)
+            jitter = 0.05
+            
+            for subplot_idx, material in enumerate(materials):
+                ax = axes[subplot_idx]
+                material_data = valid_data[valid_data[material_col] == material].copy()
+                
+                if len(material_data) == 0:
+                    ax.text(0.5, 0.5, f'No data for {material}', ha='center', va='center', transform=ax.transAxes, fontsize=14)
+                    ax.set_ylabel('Peak Velocity (m/s)', fontsize=12, fontweight='bold')
+                    continue
+                
+                x_positions = material_data['RowCol_Pos'] + np.random.uniform(-jitter, jitter, size=len(material_data))
+                laser_energies = material_data[laser_energy_col].values
+                
+                # Color-code by laser energy
+                scatter = ax.scatter(
+                    x_positions,
+                    material_data['max_velocity_ms'],
+                    c=laser_energies,
+                    cmap=cmap,
+                    norm=norm,
+                    s=80,
+                    alpha=0.8,
+                    edgecolors='black',
+                    linewidths=0.5
+                )
+                
+                ax.set_xticks(range(len(pair_to_position)))
+                ax.set_xticklabels(pair_labels, rotation=45, ha='right', fontsize=9)
+                ax.set_ylabel('Peak Velocity (m/s)', fontsize=12, fontweight='bold')
+                ax.set_title(f'{material} (n={len(material_data)})', fontsize=14, fontweight='bold')
+                ax.grid(True, linestyle='--', alpha=0.3, axis='y')
+            
+            # Set x-axis label on bottom subplot only
+            axes[-1].set_xlabel('Flyer Row/Column Pair', fontsize=14, fontweight='bold')
+            
+            # Overall title
+            fig.suptitle('Peak Velocity by Flyer Row/Column Pair (Color-coded by Laser Energy)', 
+                        fontsize=16, fontweight='bold', y=0.995)
+            
+            # Adjust layout first to make room for colorbar
+            plt.tight_layout(rect=[0, 0, 0.92, 0.99])  # Leave space for colorbar on the right
+            
+            # Add colorbar for laser energy (shared across all subplots) - positioned to the right of plot area
+            energy_unit = 'mJ' if energy_in_mj else 'J'
+            # Create colorbar in a separate axes to the right of the plot
+            cbar_ax = fig.add_axes([0.93, 0.15, 0.02, 0.7])  # [left, bottom, width, height] in figure coordinates
+            cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cbar_ax)
+            cbar.set_label(f'Laser Energy ({energy_unit})', fontsize=12, fontweight='bold')
+            plot_path = os.path.join(spade_output_dir, 'flyer_row_column_pair_peak_velocity_by_material_laser_energy.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Flyer Row/Column pair vs Peak Velocity plot (by material, color-coded by laser energy): {plot_path}")
+        
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Flyer Row/Column pair vs Peak Velocity plot (by material): {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def generate_peak_velocity_pattern_analysis_plot(self, spade_output_dir):
+        """Generate diagnostic plots to analyze patterns: 1) Effect of laser energy on peak velocity, 2) Effect of test location (RxCy) on peak velocity"""
+        self.progress_signal.emit("Generating Peak Velocity Pattern Analysis plots...")
+        
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            if not os.path.exists(velocity_shots_path):
+                self.progress_signal.emit("⚠ Velocity shots summary not found - skipping pattern analysis plot")
+                return
+            
+            df = pd.read_csv(velocity_shots_path)
+            if df.empty:
+                self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping pattern analysis plot")
+                return
+            
+            # Find laser energy column
+            laser_energy_col = None
+            energy_in_mj = False
+            if 'Laser_Target_Energy (mJ)' in df.columns:
+                laser_energy_col = 'Laser_Target_Energy (mJ)'
+                energy_in_mj = True
+            else:
+                possible_names = [
+                    'Laser_Target_Energy (mJ)', 'Laser Target Energy (mJ)',
+                    'Laser_Target_Energy', 'Laser Target Energy',
+                    'Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy',
+                    'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power'
+                ]
+                for col_name in df.columns:
+                    col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                    for possible in possible_names:
+                        possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                        if col_name == possible or possible_normalized in col_normalized:
+                            laser_energy_col = col_name
+                            if "mj" in col_name.lower() or "(mj)" in col_name.lower():
+                                energy_in_mj = True
+                            break
+                    if laser_energy_col:
+                        break
+            
+            if laser_energy_col is None:
+                self.progress_signal.emit("⚠ Laser energy column not found - skipping pattern analysis plot")
+                return
+            
+            row_col_candidates = ['Flyer_Row', 'Flyer Row', 'row', 'Row', 'FlyerRow']
+            col_col_candidates = ['Flyer_Column', 'Flyer Column', 'column', 'Column', 'FlyerColumn']
+            row_col = self._find_parameter_column(df, row_col_candidates)
+            col_col = self._find_parameter_column(df, col_col_candidates)
+            
+            if row_col is None or col_col is None:
+                self.progress_signal.emit("⚠ Flyer Row or Column column not found - skipping pattern analysis plot")
+                return
+            
+            if 'max_velocity_ms' not in df.columns:
+                self.progress_signal.emit("⚠ Peak velocity column (max_velocity_ms) not found - skipping pattern analysis plot")
+                return
+            
+            # Get material column
+            material_col = None
+            for col_name in df.columns:
+                if 'material' in col_name.lower() and 'sample' in col_name.lower():
+                    material_col = col_name
+                    break
+            if material_col is None:
+                df['Material'] = 'Unknown'
+                material_col = 'Material'
+            
+            subset_cols = [row_col, col_col, 'max_velocity_ms', laser_energy_col, material_col] + [c for c in ['aligned_ok'] if c in df.columns]
+            valid_data = df[subset_cols].copy()
+            valid_data = valid_data.dropna(subset=[row_col, col_col, 'max_velocity_ms', laser_energy_col])
+            
+            if 'aligned_ok' in valid_data.columns:
+                valid_data = valid_data[valid_data['aligned_ok'] == True]
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data for pattern analysis plot")
+                return
+            
+            # Apply 2-sigma filtering to peak velocity
+            velocity_values = valid_data['max_velocity_ms'].values
+            velocity_mean = np.nanmean(velocity_values)
+            velocity_std = np.nanstd(velocity_values)
+            lower_bound = velocity_mean - 2 * velocity_std
+            upper_bound = velocity_mean + 2 * velocity_std
+            
+            valid_data = valid_data[
+                (valid_data['max_velocity_ms'] >= lower_bound) & 
+                (valid_data['max_velocity_ms'] <= upper_bound)
+            ].copy()
+            
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            if skip_unknown:
+                valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
+            
+            if len(valid_data) == 0:
+                self.progress_signal.emit("⚠ No valid data after filtering - skipping pattern analysis plot")
+                return
+            
+            # Ensure laser energy is numeric
+            valid_data[laser_energy_col] = pd.to_numeric(valid_data[laser_energy_col], errors='coerce')
+            valid_data = valid_data[valid_data[laser_energy_col].notna()].copy()
+            
+            # Convert rows/columns to numeric
+            row_numeric, _ = self._convert_row_column_to_numeric(valid_data[row_col])
+            col_numeric, _ = self._convert_row_column_to_numeric(valid_data[col_col])
+            valid_data['Row_numeric'] = row_numeric
+            valid_data['Col_numeric'] = col_numeric
+            valid_data = valid_data[valid_data['Row_numeric'].notna() & valid_data['Col_numeric'].notna()]
+            
+            # Create row/column pair labels
+            def format_label(row_val, col_val, row_raw, col_raw):
+                row_label = str(row_raw).replace('.0', '').strip()
+                col_label = str(col_raw).replace('.0', '').strip()
+                row_fmt = row_label if row_label.lower().startswith('r') else f"R{row_label}"
+                col_fmt = col_label if col_label.lower().startswith('c') else f"C{col_label}"
+                return f"{row_fmt}{col_fmt}"
+            
+            valid_data['RowCol_Label'] = valid_data.apply(
+                lambda row: format_label(
+                    row['Row_numeric'],
+                    row['Col_numeric'],
+                    row[row_col],
+                    row[col_col]
+                ),
+                axis=1
+            )
+            
+            # Get unique materials
+            materials = sorted(valid_data[material_col].unique())
+            colors = self._get_material_color_mapping(materials)
+            energy_unit = 'mJ' if energy_in_mj else 'J'
+            
+            # Create figure with 2 subplots
+            fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+            
+            # ===== SUBPLOT 1: Laser Energy vs Peak Velocity =====
+            ax1 = axes[0]
+            for material in materials:
+                # Filter by material (case-insensitive matching for robustness)
+                material_mask = valid_data[material_col].astype(str).str.strip().str.lower() == str(material).strip().lower()
+                material_data = valid_data[material_mask].copy()
+                
+                if len(material_data) == 0:
+                    continue
+                
+                # Ensure numeric and remove any remaining NaN values
+                material_data[laser_energy_col] = pd.to_numeric(material_data[laser_energy_col], errors='coerce')
+                material_data['max_velocity_ms'] = pd.to_numeric(material_data['max_velocity_ms'], errors='coerce')
+                
+                # Remove NaN and invalid values
+                material_data = material_data.dropna(subset=[laser_energy_col, 'max_velocity_ms'])
+                material_data = material_data[
+                    (material_data[laser_energy_col] > 0) & 
+                    (material_data['max_velocity_ms'] > 0) &
+                    (np.isfinite(material_data[laser_energy_col])) &
+                    (np.isfinite(material_data['max_velocity_ms']))
+                ].copy()
+                
+                if len(material_data) < 2:
+                    # Not enough data points for regression
+                    if len(material_data) > 0:
+                        x = material_data[laser_energy_col].values
+                        y = material_data['max_velocity_ms'].values
+                        color = colors.get(material, 'gray')
+                        ax1.scatter(x, y, c=[color], s=80, alpha=0.7, edgecolors='black', linewidths=0.5, 
+                                  label=f"{material} (n={len(material_data)})")
+                    continue
+                
+                x = material_data[laser_energy_col].values
+                y = material_data['max_velocity_ms'].values
+                color = colors.get(material, 'gray')
+                
+                # Scatter plot
+                ax1.scatter(x, y, c=[color], s=80, alpha=0.7, edgecolors='black', linewidths=0.5, 
+                          label=f"{material} (n={len(material_data)})")
+            
+            ax1.set_xlabel(f'Laser Energy ({energy_unit})', fontsize=14, fontweight='bold')
+            ax1.set_ylabel('Peak Velocity (m/s)', fontsize=14, fontweight='bold')
+            ax1.set_title('Effect of Laser Energy on Peak Velocity', fontsize=16, fontweight='bold')
+            ax1.grid(True, linestyle='--', alpha=0.3)
+            ax1.legend(loc='best', fontsize=10)
+            
+            # ===== SUBPLOT 2: Test Location (RxCy) vs Peak Velocity =====
+            ax2 = axes[1]
+            
+            # Build ordered pair list with zigzag pattern (same as other plot):
+            # Odd rows (1, 3, 5): columns in reverse order (C5, C4, C3, C2, C1)
+            # Even rows (2, 4): columns in normal order (C1, C2, C3, C4, C5)
+            unique_rows = sorted(valid_data['Row_numeric'].unique())
+            unique_cols = sorted(valid_data['Col_numeric'].unique())
+            
+            ordered_pairs = []
+            for row_val in unique_rows:
+                row_subset = valid_data[valid_data['Row_numeric'] == row_val]
+                if row_subset.empty:
+                    continue
+                row_raw = row_subset[row_col].iloc[0]
+                
+                # Determine column order: reverse for odd rows, normal for even rows
+                is_odd_row = (int(row_val) % 2 == 1)
+                col_order = reversed(unique_cols) if is_odd_row else unique_cols
+                
+                for col_val in col_order:
+                    col_subset = row_subset[row_subset['Col_numeric'] == col_val]
+                    if col_subset.empty:
+                        continue
+                    col_raw = col_subset[col_col].iloc[0]
+                    label = format_label(row_val, col_val, row_raw, col_raw)
+                    
+                    # Only add if this pair exists in the data
+                    if label in valid_data['RowCol_Label'].values:
+                        ordered_pairs.append(label)
+            
+            # Get unique row/column pairs that exist in data and calculate mean velocity for each
+            unique_pairs = ordered_pairs  # Use zigzag-ordered pairs
+            pair_means = []
+            pair_stds = []
+            pair_counts = []
+            
+            for pair in unique_pairs:
+                pair_data = valid_data[valid_data['RowCol_Label'] == pair]
+                if len(pair_data) > 0:
+                    pair_means.append(pair_data['max_velocity_ms'].mean())
+                    pair_stds.append(pair_data['max_velocity_ms'].std() if len(pair_data) > 1 else 0)
+                    pair_counts.append(len(pair_data))
+                else:
+                    pair_means.append(np.nan)
+                    pair_stds.append(0)
+                    pair_counts.append(0)
+            
+            # Create bar plot with error bars
+            x_pos = np.arange(len(unique_pairs))
+            bars = ax2.bar(x_pos, pair_means, yerr=pair_stds, capsize=5, alpha=0.7, edgecolor='black', linewidth=1)
+            
+            # Color bars by row (consistent color for all locations in the same row)
+            # Extract row number from pair label (e.g., "R4C1" -> 4)
+            for i, pair in enumerate(unique_pairs):
+                pair_data = valid_data[valid_data['RowCol_Label'] == pair]
+                if len(pair_data) > 0:
+                    # Extract row number from the pair label
+                    try:
+                        # Parse row number from label like "R4C1" or "R4.0C1.0"
+                        row_str = pair.split('C')[0].replace('R', '').replace('.0', '')
+                        row_num = int(float(row_str))
+                        
+                        # Use a colormap to assign colors by row (consistent across all columns in same row)
+                        # Use a simple color scheme: different shade for each row
+                        row_colors = plt.cm.viridis(np.linspace(0, 1, len(unique_rows)))
+                        row_idx = unique_rows.index(row_num) if row_num in unique_rows else 0
+                        bars[i].set_facecolor(row_colors[row_idx])
+                    except (ValueError, IndexError):
+                        # Fallback: use most common material if row parsing fails
+                        most_common_material = pair_data[material_col].mode()[0] if len(pair_data[material_col].mode()) > 0 else materials[0]
+                        bars[i].set_facecolor(colors.get(most_common_material, 'gray'))
+            
+            ax2.set_xlabel('Test Location (Row/Column Pair)', fontsize=14, fontweight='bold')
+            ax2.set_ylabel('Mean Peak Velocity (m/s)', fontsize=14, fontweight='bold')
+            ax2.set_title('Effect of Test Location on Peak Velocity', fontsize=16, fontweight='bold')
+            ax2.set_xticks(x_pos)
+            ax2.set_xticklabels(unique_pairs, rotation=45, ha='right', fontsize=9)
+            ax2.grid(True, linestyle='--', alpha=0.3, axis='y')
+            
+            # Add count annotations on bars
+            for i, (bar, count) in enumerate(zip(bars, pair_counts)):
+                if count > 0:
+                    height = bar.get_height()
+                    ax2.text(bar.get_x() + bar.get_width()/2., height + pair_stds[i] + 5,
+                           f'n={count}', ha='center', va='bottom', fontsize=8)
+            
+            # Overall title
+            fig.suptitle('Peak Velocity Pattern Analysis', fontsize=18, fontweight='bold', y=0.98)
+            
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            
+            plot_path = os.path.join(spade_output_dir, 'peak_velocity_pattern_analysis.png')
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.progress_signal.emit(f"✅ Generated Peak Velocity Pattern Analysis plot: {plot_path}")
+        
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Peak Velocity Pattern Analysis plot: {str(e)}")
+            import traceback
+            self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
+
+    def elastic_shock_strain_rate(self, C_L, U_hel, U_0, t_hel, t_0):
+        """
+        Compute elastic shock strain rate.
+
+        Parameters
+        ----------
+        C_L : float
+            Longitudinal wave velocity of the material (m/s).
+        U_hel : float
+            Free surface velocity at HEL (m/s).
+        U_0 : float
+            Free surface velocity at t = 0 (m/s).
+        t_hel : float
+            Time at which U_hel is measured (s).
+        t_0 : float
+            Initial time (s).
+
+        Returns
+        -------
+        float
+            Elastic shock strain rate (1/s).
+        """
+        dU = U_hel - U_0
+        dt = t_hel - t_0
+        
+        if dt <= 0:
+            return np.nan
+        
+        return (1 / (2 * C_L)) * (dU / dt)
+
     def _plot_individual_hel_detection(self, base_name, time_aligned, velocity_filtered,
                                        hel_start, hel_end, hel_time_clean, hel_velocity_clean,
-                                       peaks, valleys, first_peak_vel, first_valley_vel,
                                        hel_strength, hel_uncertainty, sample_material,
-                                       spade_output_dir):
+                                       spade_output_dir, gradient=None, angles_deg=None,
+                                       hel_segment_start=None, hel_segment_end=None,
+                                       free_surface_velocity=None, angle_thresh_deg=None,
+                                       U_0=None, t_0=None, t_hel=None):
         """Generate individual HEL detection plot showing detection results"""
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
         
-        # Create figure with two subplots
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        # Create figure with three subplots for gradient-based detection
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 14))
         
         # Top subplot: Full velocity trace with HEL window highlighted
         ax1.plot(time_aligned, velocity_filtered, 'b-', linewidth=1.5, alpha=0.7, label='Velocity')
@@ -1231,39 +5315,74 @@ class AnalysisThread(QThread):
         ax1.grid(True, alpha=0.3)
         ax1.legend(loc='upper left')
         
-        # Bottom subplot: Zoomed HEL window with peak/valley detection
+        # Middle subplot: Zoomed HEL window with velocity and detection overlays
         ax2.plot(hel_time_clean, hel_velocity_clean, 'b-', linewidth=2, label='Velocity in HEL window')
         
-        # Mark detected peaks and valleys
-        if len(peaks) > 0 and peaks[0] < len(hel_time_clean):
-            peak_time = hel_time_clean[peaks[0]]
-            ax2.plot(peak_time, first_peak_vel, 'ro', markersize=12, 
-                    label=f'Peak (Elastic Limit): {first_peak_vel:.1f} m/s', zorder=5)
-            ax2.axhline(first_peak_vel, color='red', linestyle='--', linewidth=1, alpha=0.5)
-        
-        if len(valleys) > 0 and valleys[0] < len(hel_time_clean):
-            valley_time = hel_time_clean[valleys[0]]
-            ax2.plot(valley_time, first_valley_vel, 'gs', markersize=12,
-                    label=f'Valley (Pullback): {first_valley_vel:.1f} m/s', zorder=5)
-            ax2.axhline(first_valley_vel, color='green', linestyle='--', linewidth=1, alpha=0.5)
-        
-        # Add arrow showing pullback
-        if len(peaks) > 0 and len(valleys) > 0 and peaks[0] < len(hel_time_clean) and valleys[0] < len(hel_time_clean):
-            mid_time = (hel_time_clean[peaks[0]] + hel_time_clean[valleys[0]]) / 2
-            ax2.annotate('', xy=(mid_time, first_valley_vel), xytext=(mid_time, first_peak_vel),
-                        arrowprops=dict(arrowstyle='<->', color='purple', lw=2))
-            pullback = abs(first_peak_vel - first_valley_vel)
-            ax2.text(mid_time, (first_peak_vel + first_valley_vel) / 2, 
-                    f'  ΔV = {pullback:.1f} m/s', fontsize=10, color='purple',
-                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
+        # Gradient-based detection: highlight HEL plateau region
+        if hel_segment_start is not None and hel_segment_end is not None and free_surface_velocity is not None:
+            plateau_start_time = hel_time_clean[hel_segment_start]
+            plateau_end_time = hel_time_clean[hel_segment_end]
+            ax2.axvspan(plateau_start_time, plateau_end_time, alpha=0.3, color='orange', 
+                       label=f'HEL Plateau ({free_surface_velocity:.1f} m/s)')
+            ax2.axhline(free_surface_velocity, color='orange', linestyle='--', linewidth=2, alpha=0.8,
+                       label=f'Mean Plateau Velocity: {free_surface_velocity:.1f} m/s')
+            # Mark segment boundaries
+            ax2.axvline(plateau_start_time, color='orange', linestyle=':', linewidth=1.5, alpha=0.7)
+            ax2.axvline(plateau_end_time, color='orange', linestyle=':', linewidth=1.5, alpha=0.7)
         
         ax2.set_xlabel('Time (ns)', fontsize=12)
         ax2.set_ylabel('Velocity (m/s)', fontsize=12)
-        ax2.set_title(f'HEL Window Detail', fontsize=13, fontweight='bold')
+        ax2.set_title(f'HEL Window Detail - Velocity', fontsize=13, fontweight='bold')
         ax2.grid(True, alpha=0.3)
         ax2.legend(loc='best', fontsize=10)
         
-        # Add text box with HEL results
+        # Bottom subplot: Gradient vs Time
+        ax3.plot(hel_time_clean, gradient, 'g-', linewidth=1.5, alpha=0.6, label='Gradient (dv/dt)')
+        ax3.axhline(0, color='black', linestyle='-', linewidth=0.8, alpha=0.5)
+        
+        # Highlight HEL plateau region in gradient plot
+        if hel_segment_start is not None and hel_segment_end is not None:
+            plateau_start_time = hel_time_clean[hel_segment_start]
+            plateau_end_time = hel_time_clean[hel_segment_end]
+            ax3.axvspan(plateau_start_time, plateau_end_time, alpha=0.3, color='orange', 
+                       label='HEL Plateau Region')
+            ax3.axvline(plateau_start_time, color='orange', linestyle=':', linewidth=1.5, alpha=0.7)
+            ax3.axvline(plateau_end_time, color='orange', linestyle=':', linewidth=1.5, alpha=0.7)
+        
+        # Plot angle threshold line
+        if angle_thresh_deg is not None:
+            # Convert angle threshold to gradient (slope)
+            angle_thresh_rad = np.radians(angle_thresh_deg)
+            gradient_thresh = np.tan(angle_thresh_rad)
+            ax3.axhline(gradient_thresh, color='red', linestyle='--', linewidth=1, alpha=0.7,
+                       label=f'Angle Threshold ({angle_thresh_deg}°)')
+            ax3.axhline(-gradient_thresh, color='red', linestyle='--', linewidth=1, alpha=0.7)
+        
+        ax3.set_xlabel('Time (ns)', fontsize=12)
+        ax3.set_ylabel('Gradient (m/s per ns)', fontsize=12)
+        ax3.set_title(f'Gradient vs Time - HEL Detection', fontsize=13, fontweight='bold')
+        ax3.grid(True, alpha=0.3)
+        ax3.legend(loc='best', fontsize=10)
+        
+        # Add strain rate slope line if U_0, t_0, and t_hel are provided
+        if (U_0 is not None and t_0 is not None and t_hel is not None and 
+            free_surface_velocity is not None and
+            np.isfinite(U_0) and np.isfinite(t_0) and np.isfinite(t_hel) and np.isfinite(free_surface_velocity)):
+            # Calculate slope: dU/dt = (U_hel - U_0) / (t_hel - t_0)
+            dU = free_surface_velocity - U_0
+            dt = t_hel - t_0
+            if dt > 0:
+                slope = dU / dt  # m/s per ns
+                # Draw line from (t_0, U_0) to (t_hel, U_hel)
+                ax2.plot([t_0, t_hel], [U_0, free_surface_velocity], 
+                        'r--', linewidth=2, alpha=0.8, 
+                        label=f'Strain Rate Slope: {slope:.2e} m/s/ns')
+                # Mark the points
+                ax2.plot(t_0, U_0, 'go', markersize=8, label=f'U₀: {U_0:.1f} m/s @ {t_0:.1f} ns', zorder=5)
+                ax2.plot(t_hel, free_surface_velocity, 'ro', markersize=8, 
+                        label=f'U_HEL: {free_surface_velocity:.1f} m/s @ {t_hel:.1f} ns', zorder=5)
+        
+        # Add text box with HEL results (on velocity subplot)
         result_text = f'HEL Strength: {hel_strength:.3f} ± {hel_uncertainty:.3f} GPa'
         ax2.text(0.02, 0.98, result_text, transform=ax2.transAxes,
                 fontsize=12, verticalalignment='top',
@@ -1398,15 +5517,19 @@ class AnalysisThread(QThread):
         except Exception as e:
             self.progress_signal.emit(f"Error generating combined velocity plot: {e}")
 
-    def generate_all_velocity_traces_plot(self, input_path, spade_output_dir, uncertainty_threshold):
+    def generate_all_velocity_traces_plot(self, input_path, spade_output_dir, uncertainty_threshold, unaligned_basenames=None):
         """Generate an all-traces plot aligned at 30 m/s using ALPSS output files in input_path.
         Applies noise fraction filtering (>1) and removes points with uncertainty > threshold.
-        Saves PNG to both main output_dir and SPADE output dir."""
+        Color-codes traces by sample material from parameter files.
+        Skips traces that never aligned (t0 not found) and saves PNG to both main output_dir and SPADE output dir."""
         try:
             import glob
             import pandas as pd
             import numpy as np
             import matplotlib.pyplot as plt
+            import re
+
+            skip_unaligned = set(unaligned_basenames or [])
 
             pattern = os.path.join(input_path, '**/*--vel-smooth-with-uncert.csv')
             files = glob.glob(pattern, recursive=True)
@@ -1414,14 +5537,246 @@ class AnalysisThread(QThread):
             if not files:
                 self.progress_signal.emit("No '*--vel-smooth-with-uncert.csv' files found for all-traces plot")
                 return
+            
+            # Initialize counters for this plot
+            # We'll count actual traces processed, not just files found
+            traces_plotted_local = 0
+            traces_rejected_local = 0
+            traces_skipped_initial = 0  # Traces skipped before processing loop
+            rejection_reasons_local = {}
 
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
-            cmap = plt.get_cmap('tab10')
-            colors = cmap(np.linspace(0, 1, max(1, len(files))))
+            # Helper function to extract material from parameter info
+            def extract_material(param_info_dict):
+                if not param_info_dict or not isinstance(param_info_dict, dict):
+                    return 'Unknown'
+                # Normalize keys once
+                normalized = {}
+                for k, v in param_info_dict.items():
+                    key_norm = ''.join(ch for ch in k.lower() if ch.isalnum())
+                    normalized[key_norm] = v
+                # Preferred explicit columns
+                preferred_keys = [
+                    'samplematerial', 'samplemat', 'sample', 'material', 'flyermaterial'
+                ]
+                for pk in preferred_keys:
+                    if pk in normalized and str(normalized[pk]).strip() != '':
+                        return str(normalized[pk]).strip()
+                # Fallback: scan values for common material tokens
+                for v in param_info_dict.values():
+                    val = str(v).strip()
+                    if not val:
+                        continue
+                    low = val.lower()
+                    if any(tok in low for tok in ['al', 'aluminum', 'aluminium']):
+                        return val
+                    if any(tok in low for tok in ['cu', 'copper']):
+                        return val
+                    if any(tok in low for tok in ['ti', 'titanium']):
+                        return val
+                    if 'steel' in low:
+                        return val
+                return 'Unknown'
+
+            # Collect traces with their materials
+            trace_data = []
+            for file_path in sorted(files):
+                try:
+                    # Extract base filename for parameter matching
+                    base_filename = os.path.basename(file_path)
+                    
+                    # Extract C1--XXXXXXXX--XXYYY pattern from filename
+                    # Pattern: C1--YYYYMMDD--NNNNN (e.g., C1--20251023--00924)
+                    pattern_match = re.search(r'(C\d+--\d{8}--\d{5})', base_filename)
+                    if pattern_match:
+                        pdv_filename_pattern = pattern_match.group(1)
+                    else:
+                        # Fallback: remove suffixes like '--vel-smooth-with-uncert.csv'
+                        pdv_filename_pattern = re.sub(r'--.*$', '', base_filename)
+                        pdv_filename_pattern = os.path.splitext(pdv_filename_pattern)[0]
+                    
+                    if skip_unaligned and pdv_filename_pattern in skip_unaligned:
+                        traces_skipped_initial += 1
+                        reason = 'Unaligned trace (from SPADE)'
+                        rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
+                        self.progress_signal.emit(f"Skipping {pdv_filename_pattern} in all-traces plot (unaligned trace)")
+                        continue
+
+                    # Get parameter data for this file by matching PDV_FileName
+                    param_info = {}
+                    material = 'Unknown'
+                    
+                    if hasattr(self, 'param_data') and self.param_data:
+                        # Try exact match first with the extracted pattern
+                        if pdv_filename_pattern in self.param_data:
+                            param_info = self.param_data[pdv_filename_pattern]
+                            self.progress_signal.emit(f"✓ Matched {pdv_filename_pattern} to parameter file")
+                        else:
+                            # Try matching with get_param_data_for_file as fallback
+                            param_info = self.get_param_data_for_file(pdv_filename_pattern)
+                            if param_info:
+                                self.progress_signal.emit(f"✓ Matched {pdv_filename_pattern} via fallback matching")
+                            else:
+                                self.progress_signal.emit(f"⚠️  No parameter match for {pdv_filename_pattern}")
+                        
+                        # Extract material from "Sample material" column
+                        if param_info:
+                            # Try various column name variations for sample material
+                            material_keys = [
+                                'Sample material', 'Sample Material', 'Sample_Material',
+                                'sample_material', 'samplematerial', 'SampleMaterial',
+                                'Material', 'material', 'Flyer_material', 'Flyer Material'
+                            ]
+                            for key in material_keys:
+                                if key in param_info:
+                                    material_val = str(param_info[key]).strip()
+                                    if material_val and material_val.lower() != 'nan':
+                                        material = material_val
+                                        self.progress_signal.emit(f"  Found material '{material}' from column '{key}'")
+                                        break
+                    
+                    # If still Unknown, try the extract_material helper (but don't use it if we found a match)
+                    if material == 'Unknown' and param_info:
+                        material = extract_material(param_info)
+                        if material != 'Unknown':
+                            self.progress_signal.emit(f"  Found material '{material}' via extract_material helper")
+                    
+                    self.progress_signal.emit(f"File: {base_filename} -> Pattern: {pdv_filename_pattern} -> Material: {material}")
+                    
+                    trace_data.append({
+                        'file_path': file_path,
+                        'base_name': pdv_filename_pattern,
+                        'material': material
+                    })
+                except Exception as e:
+                    traces_skipped_initial += 1
+                    reason = f'Error in initial processing: {str(e)[:50]}'
+                    rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
+                    self.progress_signal.emit(f"Error processing {file_path}: {e}")
+                    import traceback
+                    self.progress_signal.emit(traceback.format_exc())
+                    continue
+
+            # Group by material and assign colors
+            unique_materials = []
+            seen = set()
+            material_counts = {}
+            for trace in trace_data:
+                mat = trace['material']
+                material_counts[mat] = material_counts.get(mat, 0) + 1
+                if mat not in seen:
+                    seen.add(mat)
+                    unique_materials.append(mat)
+            
+            # Report material grouping summary
+            self.progress_signal.emit(f"\n=== Material Grouping Summary ===")
+            self.progress_signal.emit(f"Found {len(unique_materials)} unique material(s):")
+            for mat in sorted(unique_materials):
+                count = material_counts[mat]
+                self.progress_signal.emit(f"  {mat}: {count} trace(s)")
+            self.progress_signal.emit("=" * 40 + "\n")
+            
+            # Use Set3 colormap for <=12 materials, tab20 for more
+            if len(unique_materials) <= 12:
+                cmap = plt.get_cmap('Set3')
+            else:
+                cmap = plt.get_cmap('tab20')
+            colors = cmap(np.linspace(0, 1, max(1, len(unique_materials))))
+            material_to_color = {mat: colors[i] for i, mat in enumerate(unique_materials)}
+
+            # Use fixed 2920 x 1824 px per subplot (≈1.6:1 aspect ratio)
+            # Total figure: 2920 x 3648 px (2 subplots stacked vertically)
+            target_width_px = 2920
+            target_height_px = 3648  # 1824 * 2 for two subplots
+            target_dpi = 300
+            fig_width_in = target_width_px / target_dpi
+            fig_height_in = target_height_px / target_dpi
+            fig, (ax1, ax2) = plt.subplots(
+                2,
+                1,
+                figsize=(fig_width_in, fig_height_in),
+                dpi=target_dpi,
+            )
+
+            # Option to skip Unknown material traces
+            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            
+            # List to track IQ detection failures
+            iq_detection_failures = []
 
             traces_plotted = 0
-            for i, file_path in enumerate(sorted(files)):
+            for trace in trace_data:
+                file_path = trace['file_path']
+                material = trace['material']
+                
+                # Skip Unknown material traces if requested
+                if skip_unknown and material == 'Unknown':
+                    traces_rejected_local += 1
+                    reason = 'Unknown material'
+                    rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
+                    self.progress_signal.emit(f"Skipping {trace['base_name']} in all-traces plot (Unknown material)")
+                    continue
+                
+                color = material_to_color.get(material, 'gray')
+                
                 try:
+                    # Check IQ detection start time - skip if too close to end of time window
+                    results_file = file_path.replace('--vel-smooth-with-uncert.csv', '--results.csv')
+                    if os.path.exists(results_file):
+                        try:
+                            # Read ALPSS results - saved without header, has Name and Value columns
+                            results_df = pd.read_csv(results_file, header=None, names=['Name', 'Value'])
+                            
+                            # Find Signal Start Time row
+                            signal_start_time_s = None
+                            signal_start_row = results_df[results_df['Name'] == 'Signal Start Time']
+                            if not signal_start_row.empty:
+                                signal_start_time_s = signal_start_row['Value'].iloc[0]
+                                # Convert to float if it's a string
+                                try:
+                                    signal_start_time_s = float(signal_start_time_s)
+                                except (ValueError, TypeError):
+                                    signal_start_time_s = None
+                            
+                            if signal_start_time_s is not None and not pd.isna(signal_start_time_s):
+                                # Get time_to_take from ALPSS config
+                                time_to_take_s = self.alpss_params.get('time_to_take', 1e-6)
+                                time_to_skip_s = self.alpss_params.get('time_to_skip', 2e-6)
+                                
+                                # Calculate end of time window (absolute time from file start)
+                                time_window_end_s = time_to_skip_s + time_to_take_s
+                                
+                                # Check if start time is too close to end (within 5% of time_to_take)
+                                threshold_fraction = 0.05  # 5% of time window
+                                min_required_time_after_start = time_to_take_s * threshold_fraction
+                                
+                                # Calculate time available after signal start
+                                time_after_start = time_window_end_s - signal_start_time_s
+                                
+                                if time_after_start < min_required_time_after_start:
+                                    failure_info = {
+                                        'base_name': trace['base_name'],
+                                        'material': material,
+                                        'signal_start_time_us': signal_start_time_s * 1e6,
+                                        'time_window_end_us': time_window_end_s * 1e6,
+                                        'time_after_start_us': time_after_start * 1e6,
+                                        'min_required_us': min_required_time_after_start * 1e6,
+                                        'reason': 'IQ detection failed: start time too close to end of time window'
+                                    }
+                                    iq_detection_failures.append(failure_info)
+                                    traces_rejected_local += 1
+                                    reason = 'IQ detection failed'
+                                    rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
+                                    self.progress_signal.emit(
+                                        f"Skipping {trace['base_name']} in all-traces plot "
+                                        f"(IQ detection failed: start time {signal_start_time_s*1e6:.2f} μs too close to end "
+                                        f"{time_window_end_s*1e6:.2f} μs, only {time_after_start*1e6:.2f} μs after start, "
+                                        f"need at least {min_required_time_after_start*1e6:.2f} μs)")
+                                    continue
+                        except Exception as e:
+                            # If we can't read results, continue anyway (don't fail on this check)
+                            # Uncomment for debugging: self.progress_signal.emit(f"Warning: Could not read results for {trace['base_name']}: {e}")
+                            pass
+                    
                     df = pd.read_csv(file_path)
                     if df.shape[1] < 3:
                         continue
@@ -1459,21 +5814,62 @@ class AnalysisThread(QThread):
                     velocity_clean = velocity_data[valid_mask]
                     uncert_clean = uncertainty_data[valid_mask] if uncertainty_data is not None else None
                     if len(time_clean) == 0:
+                        traces_rejected_local += 1
+                        reason = 'No valid data after filtering'
+                        rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
                         continue
 
-                    # Align at first >= threshold
+                    # Get alignment threshold from config file and check if trace crosses threshold from below
+                    # This threshold is defined by the user in helix_master_config.json as "align_velocity_threshold_ms"
                     align_threshold = self.spade_params.get('align_velocity_threshold_ms', 30.0)
+                    tolerance = 0.01  # 0.01 m/s tolerance for floating point comparison
+                    
+                    # Find the first point where velocity reaches or exceeds threshold
+                    # This must be a rising crossing (trace starts below threshold and crosses it)
                     t0_idx = None
                     for j, v in enumerate(velocity_clean):
-                        if not np.isnan(v) and v >= align_threshold:
+                        if not np.isnan(v) and v >= (align_threshold - tolerance):
                             t0_idx = j
                             break
-                    if t0_idx is not None:
+                    
+                    # Check if trace crosses threshold from below (not starting above and decreasing)
+                    if t0_idx is None or t0_idx == 0:
+                        # No threshold crossing found, or trace starts at threshold (likely bad data)
+                        traces_rejected_local += 1
+                        reason = 'No threshold crossing found'
+                        rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
+                        max_vel = np.nanmax(velocity_clean) if len(velocity_clean) > 0 else 0
+                        min_vel = np.nanmin(velocity_clean) if len(velocity_clean) > 0 else 0
+                        self.progress_signal.emit(f"Skipping {trace['base_name']} in all-traces plot (no threshold crossing from below at {align_threshold} m/s, velocity range: {min_vel:.1f} to {max_vel:.1f} m/s)")
+                        continue
+                    
+                    # Verify that trace started below threshold (crossing from below)
+                    # Check if there's at least one point before t0_idx that's below threshold
+                    has_point_below = False
+                    for j in range(t0_idx):
+                        if not np.isnan(velocity_clean[j]) and velocity_clean[j] < (align_threshold - tolerance):
+                            has_point_below = True
+                            break
+                    
+                    if not has_point_below:
+                        # Trace starts at or above threshold - likely bad data (e.g., IQ detection failed, starts late)
+                        traces_rejected_local += 1
+                        reason = 'Does not cross threshold from below'
+                        rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
+                        max_vel = np.nanmax(velocity_clean) if len(velocity_clean) > 0 else 0
+                        min_vel = np.nanmin(velocity_clean) if len(velocity_clean) > 0 else 0
+                        self.progress_signal.emit(f"Skipping {trace['base_name']} in all-traces plot (trace starts at/above threshold {align_threshold} m/s, does not cross from below, velocity range: {min_vel:.1f} to {max_vel:.1f} m/s)")
+                        continue
+                    
+                    # Align the trace
                         t0 = time_clean[t0_idx]
                         time_clean = time_clean - t0
 
-                    color = colors[i % len(colors)]
-                    ax1.plot(time_clean, velocity_clean, color=color, alpha=0.7, linewidth=1)
+                    # Verify alignment: check that t=0 is actually at the alignment point
+                    if abs(time_clean[t0_idx]) > 1e-6:  # Should be very close to 0 after alignment
+                        self.progress_signal.emit(f"Warning: {trace['base_name']} alignment may be incorrect (t0={time_clean[t0_idx]:.3f} ns)")
+
+                    ax1.plot(time_clean, velocity_clean, color=color, alpha=0.7, linewidth=1.5, label=material if traces_plotted == 0 or material not in [t['material'] for t in trace_data[:traces_plotted]] else '')
                     # Optional uncertainty bands
                     if self.spade_params.get('include_uncert_bands', True) and uncert_clean is not None and len(uncert_clean) == len(velocity_clean):
                         alpha = float(self.spade_params.get('uncert_alpha', 0.2))
@@ -1486,7 +5882,7 @@ class AnalysisThread(QThread):
                     zoom_ns = int(self.spade_params.get('zoom_window_ns', 1000))
                     mask_1000 = time_clean <= zoom_ns
                     if np.any(mask_1000):
-                        ax2.plot(time_clean[mask_1000], velocity_clean[mask_1000], color=color, alpha=0.7, linewidth=1)
+                        ax2.plot(time_clean[mask_1000], velocity_clean[mask_1000], color=color, alpha=0.7, linewidth=1.5)
                         if self.spade_params.get('include_uncert_bands', True) and uncert_clean is not None and len(uncert_clean) == len(velocity_clean):
                             alpha = float(self.spade_params.get('uncert_alpha', 0.2))
                             ax2.fill_between(time_clean[mask_1000],
@@ -1495,18 +5891,42 @@ class AnalysisThread(QThread):
                                              color=color, alpha=alpha)
 
                     traces_plotted += 1
-                except Exception:
+                    traces_plotted_local += 1
+                except Exception as e:
+                    traces_rejected_local += 1
+                    reason = f'Processing error: {str(e)[:50]}'
+                    rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
+                    self.progress_signal.emit(f"Error processing {trace['base_name']} for all-traces plot: {str(e)}")
+                    import traceback
+                    self.progress_signal.emit(traceback.format_exc())
                     continue
 
             align_threshold = self.spade_params.get('align_velocity_threshold_ms', 30.0)
             ax1.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax1.set_ylabel('Velocity (m/s)', fontsize=12)
-            ax1.set_title(f'All Velocity Traces (Aligned) - {traces_plotted} traces', fontsize=14)
-            ax1.grid(True, alpha=0.3)
+            ax1.set_title(f'All Velocity Traces (Aligned, Color by Material) - {traces_plotted} traces', fontsize=14)
+            ax1.grid(False)
+            
+            # Add legend for materials (only show unique materials)
+            handles, labels = ax1.get_legend_handles_labels()
+            if handles:
+                # Remove duplicates while preserving order
+                seen_labels = set()
+                unique_handles = []
+                unique_labels = []
+                for h, l in zip(handles, labels):
+                    if l not in seen_labels:
+                        seen_labels.add(l)
+                        unique_handles.append(h)
+                        unique_labels.append(l)
+                # Set legend line width to 2
+                for handle in unique_handles:
+                    handle.set_linewidth(2)
+                ax1.legend(unique_handles, unique_labels, loc='best', fontsize=12, title='Sample Material', title_fontsize=13)
 
             ax2.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
             ax2.set_ylabel('Velocity (m/s)', fontsize=12)
-            ax2.grid(True, alpha=0.3)
+            ax2.grid(False)
 
             # Apply axis limits
             try:
@@ -1543,18 +5963,270 @@ class AnalysisThread(QThread):
             out_main = os.path.join(self.output_dir, 'all_velocity_traces.png')
             out_spade = os.path.join(spade_output_dir, 'all_velocity_traces.png')
             try:
-                fig.savefig(out_main, dpi=300, bbox_inches='tight')
+                fig.savefig(out_main, dpi=target_dpi, bbox_inches='tight')
             except Exception:
                 pass
             try:
-                fig.savefig(out_spade, dpi=300, bbox_inches='tight')
+                fig.savefig(out_spade, dpi=target_dpi, bbox_inches='tight')
             except Exception:
                 pass
             plt.close(fig)
 
+            # Save IQ detection failures list
+            if iq_detection_failures:
+                failure_file = os.path.join(spade_output_dir, 'IQ_based_detection_failure.csv')
+                try:
+                    failure_df = pd.DataFrame(iq_detection_failures)
+                    failure_df.to_csv(failure_file, index=False)
+                    self.progress_signal.emit(f"Saved IQ detection failure list: {failure_file} ({len(iq_detection_failures)} traces)")
+                except Exception as e:
+                    self.progress_signal.emit(f"Error saving IQ detection failure list: {e}")
+
+            # Update global counters
+            # Total input traces = files found (some may be skipped before processing)
+            self.total_input_traces = len(files)
+            self.traces_plotted = traces_plotted_local
+            # Total rejected = rejected during processing + skipped in initial loop
+            self.traces_rejected = traces_rejected_local + traces_skipped_initial
+            self.rejection_reasons = rejection_reasons_local
+
             self.progress_signal.emit(f"Saved aligned all-traces velocity plot to: {out_spade}")
         except Exception as e:
             self.progress_signal.emit(f"Error generating all-traces velocity plot: {e}")
+
+    def generate_zn_traces_diagnostic_plot(self, input_path, spade_output_dir, uncertainty_threshold):
+        """Temporary diagnostic plot showing only Zn traces with labels (last 5 digits of filename)"""
+        try:
+            import glob
+            import pandas as pd
+            import numpy as np
+            import matplotlib.pyplot as plt
+            import re
+
+            pattern = os.path.join(input_path, '**/*--vel-smooth-with-uncert.csv')
+            files = glob.glob(pattern, recursive=True)
+            files = [f for f in files if os.path.getsize(f) > 0]
+            if not files:
+                self.progress_signal.emit("No '*--vel-smooth-with-uncert.csv' files found for Zn diagnostic plot")
+                return
+
+            # Collect Zn traces
+            zn_traces = []
+            for file_path in sorted(files):
+                try:
+                    base_filename = os.path.basename(file_path)
+                    
+                    # Extract C1--XXXXXXXX--XXYYY pattern from filename
+                    pattern_match = re.search(r'(C\d+--\d{8}--\d{5})', base_filename)
+                    if pattern_match:
+                        pdv_filename_pattern = pattern_match.group(1)
+                    else:
+                        pdv_filename_pattern = re.sub(r'--.*$', '', base_filename)
+                        pdv_filename_pattern = os.path.splitext(pdv_filename_pattern)[0]
+                    
+                    # Extract last 5 digits from filename
+                    last_5_digits = pdv_filename_pattern[-5:] if len(pdv_filename_pattern) >= 5 else pdv_filename_pattern
+                    
+                    # Get material
+                    material = 'Unknown'
+                    if hasattr(self, 'param_data') and self.param_data:
+                        if pdv_filename_pattern in self.param_data:
+                            param_info = self.param_data[pdv_filename_pattern]
+                            material_keys = [
+                                'Sample material', 'Sample Material', 'Sample_Material',
+                                'sample_material', 'samplematerial', 'SampleMaterial',
+                                'Material', 'material', 'Flyer_material', 'Flyer Material'
+                            ]
+                            for key in material_keys:
+                                if key in param_info:
+                                    material_val = str(param_info[key]).strip()
+                                    if material_val and material_val.lower() != 'nan':
+                                        material = material_val
+                                        break
+                    
+                    # Only include Zn traces
+                    if material.lower() in ['zn', 'zinc']:
+                        zn_traces.append({
+                            'file_path': file_path,
+                            'base_name': pdv_filename_pattern,
+                            'label': last_5_digits,
+                            'material': material
+                        })
+                except Exception as e:
+                    continue
+            
+            if len(zn_traces) == 0:
+                self.progress_signal.emit("No Zn traces found for diagnostic plot")
+                return
+            
+            self.progress_signal.emit(f"Found {len(zn_traces)} Zn traces for diagnostic plot")
+            
+            # Create figure
+            fig, ax = plt.subplots(1, 1, figsize=(14, 10))
+            
+            align_threshold = self.spade_params.get('align_velocity_threshold_ms', 30.0)
+            traces_plotted = 0
+            
+            for trace in zn_traces:
+                file_path = trace['file_path']
+                label = trace['label']
+                
+                try:
+                    # Check IQ detection start time - skip if too close to end of time window
+                    results_file = file_path.replace('--vel-smooth-with-uncert.csv', '--results.csv')
+                    if os.path.exists(results_file):
+                        try:
+                            # Read ALPSS results - saved without header, has Name and Value columns
+                            results_df = pd.read_csv(results_file, header=None, names=['Name', 'Value'])
+                            
+                            # Find Signal Start Time row
+                            signal_start_time_s = None
+                            signal_start_row = results_df[results_df['Name'] == 'Signal Start Time']
+                            if not signal_start_row.empty:
+                                signal_start_time_s = signal_start_row['Value'].iloc[0]
+                                # Convert to float if it's a string
+                                try:
+                                    signal_start_time_s = float(signal_start_time_s)
+                                except (ValueError, TypeError):
+                                    signal_start_time_s = None
+                            
+                            if signal_start_time_s is not None and not pd.isna(signal_start_time_s):
+                                time_to_take_s = self.alpss_params.get('time_to_take', 1e-6)
+                                time_to_skip_s = self.alpss_params.get('time_to_skip', 2e-6)
+                                time_window_end_s = time_to_skip_s + time_to_take_s
+                                threshold_fraction = 0.05  # 5% of time window
+                                min_required_time_after_start = time_to_take_s * threshold_fraction
+                                time_after_start = time_window_end_s - signal_start_time_s
+                                
+                                if time_after_start < min_required_time_after_start:
+                                    self.progress_signal.emit(
+                                        f"Skipping {trace['base_name']} (IQ detection failed: start time {signal_start_time_s*1e6:.2f} μs too close to end)")
+                                    continue
+                        except Exception:
+                            pass
+                    
+                    df = pd.read_csv(file_path)
+                    if df.shape[1] < 3:
+                        continue
+                    time_data = df.iloc[:, 0].values
+                    velocity_data = df.iloc[:, 1].values
+                    uncertainty_data = df.iloc[:, 2].values
+
+                    # Convert time to ns if likely in s/us
+                    if np.nanmax(time_data) < 1e-3:
+                        time_data = time_data * 1e9
+                    elif np.nanmax(time_data) < 1.0:
+                        time_data = time_data * 1e3
+
+                    # Noise fraction filtering
+                    noise_file = file_path.replace('--vel-smooth-with-uncert.csv', '--noise--frac.csv')
+                    high_noise_mask = None
+                    if os.path.exists(noise_file):
+                        try:
+                            df_noise = pd.read_csv(noise_file)
+                            if df_noise.shape[1] >= 1:
+                                noise_fraction = df_noise.iloc[:, -1].values
+                                if len(noise_fraction) == len(velocity_data):
+                                    high_noise_mask = noise_fraction > 1.0
+                        except Exception:
+                            pass
+
+                    valid_mask = ~np.isnan(velocity_data)
+                    if high_noise_mask is not None:
+                        valid_mask &= (~high_noise_mask)
+                    if uncertainty_data is not None:
+                        valid_mask &= (uncertainty_data <= uncertainty_threshold)
+
+                    time_clean = time_data[valid_mask]
+                    velocity_clean = velocity_data[valid_mask]
+                    if len(time_clean) == 0:
+                        continue
+
+                    # Get alignment threshold and check if trace crosses threshold from below
+                    # This threshold is defined by the user in helix_master_config.json as "align_velocity_threshold_ms"
+                    tolerance = 0.01  # 0.01 m/s tolerance for floating point comparison
+                    
+                    # Find the first point where velocity reaches or exceeds threshold
+                    # This must be a rising crossing (trace starts below threshold and crosses it)
+                    t0_idx = None
+                    for j, v in enumerate(velocity_clean):
+                        if not np.isnan(v) and v >= (align_threshold - tolerance):
+                            t0_idx = j
+                            break
+                    
+                    # Check if trace crosses threshold from below (not starting above and decreasing)
+                    if t0_idx is None or t0_idx == 0:
+                        # No threshold crossing found, or trace starts at threshold (likely bad data)
+                        max_vel = np.nanmax(velocity_clean) if len(velocity_clean) > 0 else 0
+                        min_vel = np.nanmin(velocity_clean) if len(velocity_clean) > 0 else 0
+                        self.progress_signal.emit(f"Skipping {trace['base_name']} (no threshold crossing from below at {align_threshold} m/s, velocity range: {min_vel:.1f} to {max_vel:.1f} m/s)")
+                        continue
+                    
+                    # Verify that trace started below threshold (crossing from below)
+                    # Check if there's at least one point before t0_idx that's below threshold
+                    has_point_below = False
+                    for j in range(t0_idx):
+                        if not np.isnan(velocity_clean[j]) and velocity_clean[j] < (align_threshold - tolerance):
+                            has_point_below = True
+                            break
+                    
+                    if not has_point_below:
+                        # Trace starts at or above threshold - likely bad data (e.g., IQ detection failed, starts late)
+                        max_vel = np.nanmax(velocity_clean) if len(velocity_clean) > 0 else 0
+                        min_vel = np.nanmin(velocity_clean) if len(velocity_clean) > 0 else 0
+                        self.progress_signal.emit(f"Skipping {trace['base_name']} (trace starts at/above threshold {align_threshold} m/s, does not cross from below, velocity range: {min_vel:.1f} to {max_vel:.1f} m/s)")
+                        continue
+                    
+                    # Align the trace
+                    t0 = time_clean[t0_idx]
+                    time_clean = time_clean - t0
+                    
+                    # Filter negative time if requested
+                    filter_negative_time = self.spade_params.get('filter_negative_time', False)
+                    if filter_negative_time:
+                        mask_t_positive = time_clean >= 0
+                        time_clean = time_clean[mask_t_positive]
+                        velocity_clean = velocity_clean[mask_t_positive]
+                        if len(time_clean) == 0:
+                            continue
+                    
+                    # Plot with label
+                    ax.plot(time_clean, velocity_clean, alpha=0.7, linewidth=1.5, label=label)
+                    
+                    # Add text label at peak or end of trace
+                    if len(velocity_clean) > 0:
+                        peak_idx = np.nanargmax(velocity_clean)
+                        if peak_idx < len(time_clean) and peak_idx < len(velocity_clean):
+                            ax.text(time_clean[peak_idx], velocity_clean[peak_idx], 
+                                   f' {label}', fontsize=8, alpha=0.8, 
+                                   verticalalignment='bottom')
+                    
+                    traces_plotted += 1
+                except Exception as e:
+                    self.progress_signal.emit(f"Error processing {trace['base_name']}: {e}")
+                    continue
+
+            ax.set_xlabel(f'Time (ns) - aligned to t=0 at {align_threshold} m/s', fontsize=12)
+            ax.set_ylabel('Velocity (m/s)', fontsize=12)
+            ax.set_title(f'Zn Traces Diagnostic Plot - {traces_plotted} traces (labeled with last 5 digits)', fontsize=14)
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc='best', fontsize=8, ncol=3)
+            
+            plt.tight_layout()
+
+            # Save to SPADE output dir
+            out_path = os.path.join(spade_output_dir, 'zn_traces_diagnostic.png')
+            try:
+                fig.savefig(out_path, dpi=300, bbox_inches='tight')
+                self.progress_signal.emit(f"Saved Zn diagnostic plot to: {out_path}")
+            except Exception as e:
+                self.progress_signal.emit(f"Error saving Zn diagnostic plot: {e}")
+            plt.close(fig)
+
+        except Exception as e:
+            self.progress_signal.emit(f"Error generating Zn diagnostic plot: {e}")
+            import traceback
+            self.progress_signal.emit(traceback.format_exc())
 
     def generate_spall_analysis_summary(self, spade_output_dir):
         """Generate enhanced spall analysis summary with comprehensive parameter file data"""
@@ -1584,7 +6256,7 @@ class AnalysisThread(QThread):
             # Get file base name for parameter matching
             # Handle cases where filename might be a full path or just a name
             base_name = os.path.splitext(os.path.basename(str(filename)))[0]
-            
+
             # Skip if base_name is still invalid
             if not base_name or base_name == 'data':
                 self.progress_signal.emit(f"Skipping invalid base_name from filename: {repr(filename)}")
@@ -1789,42 +6461,66 @@ class AnalysisThread(QThread):
             
             # Plot 3: Material comparison (if material data available)
             if color_col and len(enhanced_spall_df[color_col].unique()) > 1:
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+                # Check if we have valid data for both plots
+                has_spall_data = 'Spall Strength (GPa)' in enhanced_spall_df.columns
+                has_strain_data = 'Strain Rate (s^-1)' in enhanced_spall_df.columns
                 
-                # Box plot of spall strength by material
-                if 'Spall Strength (GPa)' in enhanced_spall_df.columns:
+                if has_spall_data or has_strain_data:
+                    # Determine number of subplots needed
+                    n_plots = sum([has_spall_data, has_strain_data])
+                    if n_plots == 1:
+                        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+                        axes = [ax]
+                    else:
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+                        axes = [ax1, ax2]
+                
+                    plot_idx = 0
                     materials = enhanced_spall_df[color_col].unique()
-                    spall_data = [enhanced_spall_df[enhanced_spall_df[color_col] == mat]['Spall Strength (GPa)'].dropna() 
-                                 for mat in materials]
                     
-                    bp1 = ax1.boxplot(spall_data, labels=materials, patch_artist=True)
-                    for patch, color in zip(bp1['boxes'], [color_map.get(mat, 'gray') for mat in materials]):
-                        patch.set_facecolor(color)
-                        patch.set_alpha(0.7)
+                    # Box plot of spall strength by material
+                    if has_spall_data:
+                        spall_data = [
+                            enhanced_spall_df[enhanced_spall_df[color_col] == mat]['Spall Strength (GPa)'].dropna()
+                            for mat in materials
+                        ]
+                        valid_spall_data = [(data, mat) for data, mat in zip(spall_data, materials) if len(data) > 0]
+                        if valid_spall_data:
+                            spall_data_clean, materials_clean = zip(*valid_spall_data)
+                            bp1 = axes[plot_idx].boxplot(spall_data_clean, labels=materials_clean, patch_artist=True)
+                            for patch, mat in zip(bp1['boxes'], materials_clean):
+                                patch.set_facecolor(color_map.get(mat, 'gray'))
+                                patch.set_alpha(0.7)
+                            axes[plot_idx].set_ylabel('Spall Strength (GPa)', fontsize=14)
+                            axes[plot_idx].set_title('Spall Strength by Material', fontsize=16)
+                            axes[plot_idx].grid(True, alpha=0.3)
+                            plot_idx += 1
                     
-                    ax1.set_ylabel('Spall Strength (GPa)', fontsize=14)
-                    ax1.set_title('Spall Strength by Material', fontsize=16)
-                    ax1.grid(True, alpha=0.3)
-                
-                # Box plot of strain rate by material
-                if 'Strain Rate (s^-1)' in enhanced_spall_df.columns:
-                    strain_data = [enhanced_spall_df[enhanced_spall_df[color_col] == mat]['Strain Rate (s^-1)'].dropna() 
-                                 for mat in materials]
+                    # Box plot of strain rate by material
+                    if has_strain_data:
+                        strain_data = [
+                            enhanced_spall_df[enhanced_spall_df[color_col] == mat]['Strain Rate (s^-1)'].dropna()
+                            for mat in materials
+                        ]
+                        valid_strain_data = [(data, mat) for data, mat in zip(strain_data, materials) if len(data) > 0]
+                        if valid_strain_data:
+                            strain_data_clean, materials_clean = zip(*valid_strain_data)
+                            bp2 = axes[plot_idx].boxplot(strain_data_clean, labels=materials_clean, patch_artist=True)
+                            for patch, mat in zip(bp2['boxes'], materials_clean):
+                                patch.set_facecolor(color_map.get(mat, 'gray'))
+                                patch.set_alpha(0.7)
+                            axes[plot_idx].set_ylabel('Strain Rate (s^-1)', fontsize=14)
+                            axes[plot_idx].set_title('Strain Rate by Material', fontsize=16)
+                            axes[plot_idx].grid(True, alpha=0.3)
+                            plot_idx += 1
                     
-                    bp2 = ax2.boxplot(strain_data, labels=materials, patch_artist=True)
-                    for patch, color in zip(bp2['boxes'], [color_map.get(mat, 'gray') for mat in materials]):
-                        patch.set_facecolor(color)
-                        patch.set_alpha(0.7)
-                    
-                    ax2.set_ylabel('Strain Rate (s⁻¹)', fontsize=14)
-                    ax2.set_title('Strain Rate by Material', fontsize=16)
-                    ax2.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                plot_path = os.path.join(spade_output_dir, 'material_comparison_spall.png')
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-                plt.close()
-                self.progress_signal.emit(f"Generated material comparison plots")
+                    plt.tight_layout()
+                    comparison_path = os.path.join(spade_output_dir, 'spall_material_comparison.png')
+                    plt.savefig(comparison_path, dpi=300, bbox_inches='tight')
+                    plt.close()
+                    self.progress_signal.emit(f"Generated material comparison plot: {comparison_path}")
+                else:
+                    self.progress_signal.emit("Skipping material comparison plot - insufficient data for spall or strain rate")
             
             self.progress_signal.emit("Completed spall analysis plots generation")
             
@@ -1999,16 +6695,21 @@ class AnalysisThread(QThread):
                     if matched_param:
                         sample_material = matched_param.get('Sample material', 'Unknown')
                     
-                    # Get material-specific properties from database
-                    mat_props = get_material_properties(sample_material, default_density, default_acoustic_velocity)
-                    density = mat_props['density']
-                    acoustic_velocity = mat_props['bulk_wave_speed']
-                    
+                    # Get material-specific properties from config first, then database
+                    mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)
+                    # Parameter file can override (highest priority)
+                    if matched_param:
+                        density = matched_param.get('Density_kg_m3', mat_props['density'])
+                        acoustic_velocity = matched_param.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed'])
+                    else:
+                        density = mat_props['density']
+                        acoustic_velocity = mat_props['bulk_wave_speed']
                     # Add material information to enhanced row
                     enhanced_row['Material'] = sample_material
                     enhanced_row['Density_kg_m3'] = density
                     enhanced_row['Acoustic_Velocity_m_s'] = acoustic_velocity
                     enhanced_row['Material_Found_In_Database'] = mat_props['material_found']
+                    enhanced_row['Material_Properties_Source'] = mat_props.get('source', 'unknown')
                     
                     # Try to find corresponding ALPSS results file
                     alpss_results_file = os.path.join(self.output_dir, f"{filename}--results.csv")
@@ -2100,6 +6801,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("  - enhanced_spall_summary.csv: Complete results with ALPSS data and uncertainties")
                 self.progress_signal.emit("  - spall_vs_strain_rate.png: Spall strength vs strain rate plot")
                 self.progress_signal.emit("  - spall_vs_shock_stress.png: Spall strength vs shock stress plot")
+                self.progress_signal.emit("  - shock_stress_vs_laser_energy.png: Peak shock stress vs laser energy")
                 self.progress_signal.emit("  - Individual ALPSS files: *--results.csv, *--velocity.csv, etc.")
                 self.progress_signal.emit("  - Individual SPADE analysis plots (if enabled)")
                 self.progress_signal.emit("  - ALPSS velocity files: 4 columns (Time, Velocity, Uncertainty, Velocity+Uncertainty)")
@@ -2128,6 +6830,16 @@ class AnalysisThread(QThread):
                     self.progress_signal.emit("✅ Generated spall_vs_shock_stress.png")
                 except Exception as e:
                     msg = f"[WARNING] Failed to generate spall_vs_shock_stress.png: {e}"
+                    print(msg)
+                    self.progress_signal.emit(msg)
+                try:
+                    plot_shock_stress_vs_laser_energy(
+                        df=summary_df,
+                        output_filename=os.path.join(spade_output_dir, 'shock_stress_vs_laser_energy.png')
+                    )
+                    self.progress_signal.emit("✅ Generated shock_stress_vs_laser_energy.png")
+                except Exception as e:
+                    msg = f"[WARNING] Failed to generate shock_stress_vs_laser_energy.png: {e}"
                     print(msg)
                     self.progress_signal.emit(msg)
                 
@@ -2168,6 +6880,7 @@ class AnalysisThread(QThread):
                 'combined_mean_velocity.png',
                 'spall_vs_strain_rate.png',
                 'spall_vs_shock_stress.png',
+                'shock_stress_vs_laser_energy.png',
                 'all_smoothed_velocity_traces.png'
             ]
         else:
@@ -2342,7 +7055,7 @@ class PostProcessingWorker(QObject):
                 cmap = plt.get_cmap('viridis')
             else:
                 unique_values_sorted = sorted(list(unique_values))
-                cmap = plt.get_cmap('tab20')
+            cmap = plt.get_cmap('tab20')
             
             for i, value in enumerate(unique_values_sorted):
                 group_colors[value] = cmap(i / max(len(unique_values_sorted), 1))
@@ -2416,11 +7129,9 @@ class PostProcessingWorker(QObject):
                     
                     # Try to get grouping parameter value from param_data
                     if param_data:
-                        # Try exact match first
                         if base_name in param_data:
                             group_value = param_data[base_name].get(color_param, 'Unknown')
-                        else:
-                            # Try date-shot pattern matching (YYYYMMDD--NNNNN)
+                    else:
                             import re
                             date_shot_pattern = re.search(r'(\d{8}--\d{5})', base_name)
                             if date_shot_pattern:
@@ -2429,19 +7140,17 @@ class PostProcessingWorker(QObject):
                                     if date_shot in str(key):
                                         group_value = param_data[key].get(color_param, 'Unknown')
                                         break
-                        
-                        # Convert to string and clean up
-                        if isinstance(group_value, (int, float)):
-                            group_value = str(group_value)
-                        elif isinstance(group_value, str):
-                            group_value = group_value.strip()
-                        
-                        if group_value == "Unknown":
-                            # Debug: show first few mismatches
-                            if i < 5:
-                                self.progress.emit(f"  No match for: {base_name}")
-                            elif i == 5:
-                                self.progress.emit(f"  ... (more non-matching files)")
+                    # Convert to string and clean up
+                    if isinstance(group_value, (int, float)):
+                        group_value = str(group_value)
+                    elif isinstance(group_value, str):
+                        group_value = group_value.strip()
+                    
+                    if group_value == "Unknown" and param_data:
+                        if i < 5:
+                            self.progress.emit(f"  No match for: {base_name}")
+                        elif i == 5:
+                            self.progress.emit("  ... (more non-matching files)")
                     
                     # Assign color based on grouping parameter value
                     if group_value not in group_colors:
@@ -2541,7 +7250,14 @@ class PostProcessingWorker(QObject):
             # Generate per-material subplots (if using material colors)
             if current_params.get('use_material_colors', True):
                 self.progress.emit("Generating per-material subplot plot...")
-                self._generate_material_subplots(files, param_data, spade_out, current_params, group_colors, align_threshold)
+                self._generate_material_subplots(
+                    files,
+                    param_data,
+                    spade_out,
+                    current_params,
+                    group_colors,
+                    align_threshold,
+                )
             
             # Generate laser energy vs impact velocity plot (if enabled)
             if current_params.get('laser_energy_vs_velocity', False):
@@ -2577,11 +7293,9 @@ class PostProcessingWorker(QObject):
                 
                 material = "Unknown"
                 if param_data:
-                    # Try exact match first
                     if base_name in param_data:
                         material = param_data[base_name].get('Sample material', 'Unknown')
                     else:
-                        # Try date-shot pattern matching (YYYYMMDD--NNNNN)
                         import re
                         date_shot_pattern = re.search(r'(\d{8}--\d{5})', base_name)
                         if date_shot_pattern:
@@ -6588,7 +11302,8 @@ Output Files:
             # Start ALPSS-only analysis thread
             self.analysis_thread = AnalysisThread(
                 alpss_params, spade_params, input_files, output_dir, param_data,
-                spade_auto_mode=False, spade_input_files=None, analysis_mode="alpss_only"
+                spade_auto_mode=False, spade_input_files=None, analysis_mode="alpss_only",
+                material_properties={}  # GUI doesn't use config material_properties, falls back to database
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
             self.analysis_thread.finished_signal.connect(self.analysis_finished)
@@ -6634,7 +11349,8 @@ Output Files:
             # Start SPADE-only analysis thread
             self.analysis_thread = AnalysisThread(
                 alpss_params, spade_params, [], output_dir, param_data,
-                spade_auto_mode=False, spade_input_files=spade_input_files, analysis_mode="spade_only"
+                spade_auto_mode=False, spade_input_files=spade_input_files, analysis_mode="spade_only",
+                material_properties={}  # GUI doesn't use config material_properties, falls back to database
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
             self.analysis_thread.finished_signal.connect(self.analysis_finished)
@@ -6680,7 +11396,8 @@ Output Files:
             # Start combined analysis thread
             self.analysis_thread = AnalysisThread(
                 alpss_params, spade_params, input_files, output_dir, param_data,
-                spade_auto_mode=spade_auto_mode, spade_input_files=spade_input_files, analysis_mode="both"
+                spade_auto_mode=spade_auto_mode, spade_input_files=spade_input_files, analysis_mode="both",
+                material_properties={}  # GUI doesn't use config material_properties, falls back to database
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
             self.analysis_thread.finished_signal.connect(self.analysis_finished)
@@ -6720,6 +11437,12 @@ Output Files:
         except Exception:
             pass
         
+        def _safe_int_from_token(token):
+            if not token:
+                return None
+            token_digits = ''.join(ch for ch in token if ch.isdigit())
+            return int(token_digits) if token_digits.isdigit() else None
+        
         # Update the correct progress bar
         if "ALPSS" in message and "Processing file" in message:
             try:
@@ -6728,10 +11451,11 @@ Output Files:
                     current = int(parts[0])
                     # Extract total - handle cases like "21" or "21: Starting..."
                     total_str = parts[1].split()[0] if parts[1].split() else parts[1]
-                    total = int(total_str) if total_str.isdigit() else 100  # Default to 100 if can't parse
+                    total_val = _safe_int_from_token(total_str)
+                    total = total_val if total_val is not None else self.alpss_progress_bar.maximum() or 100
                     self.alpss_progress_bar.setMaximum(total)
-                    self.alpss_progress_bar.setValue(current)
-                    QApplication.processEvents()  # Force immediate update
+                self.alpss_progress_bar.setValue(current)
+                QApplication.processEvents()  # Force immediate update
             except (ValueError, IndexError, AttributeError):
                 pass
         elif "SPADE" in message and "Processing file" in message:
@@ -6741,10 +11465,11 @@ Output Files:
                     current = int(parts[0])
                     # Extract total - handle cases like "21" or "21: Starting..."
                     total_str = parts[1].split()[0] if parts[1].split() else parts[1]
-                    total = int(total_str) if total_str.isdigit() else 100  # Default to 100 if can't parse
+                    total_val = _safe_int_from_token(total_str)
+                    total = total_val if total_val is not None else self.spade_progress_bar.maximum() or 100
                     self.spade_progress_bar.setMaximum(total)
-                    self.spade_progress_bar.setValue(current)
-                    QApplication.processEvents()  # Force immediate update
+                self.spade_progress_bar.setValue(current)
+                QApplication.processEvents()  # Force immediate update
             except (ValueError, IndexError, AttributeError):
                 pass
         elif "Processing file" in message:
@@ -6754,17 +11479,40 @@ Output Files:
                     current = int(parts[0])
                     # Extract total - handle cases like "21" or "21: Starting..."
                     total_str = parts[1].split()[0] if parts[1].split() else parts[1]
-                    total = int(total_str) if total_str.isdigit() else 100  # Default to 100 if can't parse
+                    total_val = _safe_int_from_token(total_str)
+                    total = total_val if total_val is not None else self.spade_progress_bar.maximum() or 100
                     self.spade_progress_bar.setMaximum(total)
-                    self.spade_progress_bar.setValue(current)
-                    QApplication.processEvents()  # Force immediate update
+                self.spade_progress_bar.setValue(current)
+                QApplication.processEvents()  # Force immediate update
             except (ValueError, IndexError, AttributeError):
                 pass
+        # Handle completion messages - set progress to 100%
+        elif "All analysis completed successfully" in message or "Analysis completed successfully" in message:
+            if self.alpss_progress_bar.isVisible():
+                max_val = self.alpss_progress_bar.maximum()
+                if max_val > 0:
+                    self.alpss_progress_bar.setValue(max_val)
+            if self.spade_progress_bar.isVisible():
+                max_val = self.spade_progress_bar.maximum()
+                if max_val > 0:
+                    self.spade_progress_bar.setValue(max_val)
+            QApplication.processEvents()  # Force immediate update
                 
     def analysis_finished(self, success, message):
         """Handle analysis completion"""
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        
+        # Set progress bars to 100% when analysis completes
+        if self.alpss_progress_bar.isVisible():
+            max_val = self.alpss_progress_bar.maximum()
+            if max_val > 0:
+                self.alpss_progress_bar.setValue(max_val)
+        if self.spade_progress_bar.isVisible():
+            max_val = self.spade_progress_bar.maximum()
+            if max_val > 0:
+                self.spade_progress_bar.setValue(max_val)
+        
         self.spade_progress_bar.setVisible(False)
         
         if success:

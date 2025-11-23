@@ -28,6 +28,7 @@ from scipy.special import gamma as gamma_func # Needed for PRL model helpers
 import matplotlib
 import matplotlib.patches as mpatches
 from matplotlib.offsetbox import AnchoredOffsetbox, VPacker, HPacker, TextArea, DrawingArea
+from matplotlib.ticker import FuncFormatter, ScalarFormatter
 
 
 from . import utils
@@ -146,12 +147,25 @@ def plot_spall_vs_strain_rate(df, output_filename, title="Spall Strength vs. Str
     try:
         # --- Plot Experimental Data ---
         logging.info(f"Processing experimental data from DataFrame for Strain Rate plot...")
+        dns_entries = pd.Series(False, index=df.index) if df is not None and not df.empty else pd.Series(dtype=bool)
         if df is not None and not df.empty:
             data = df.copy()
             required_exp_cols = [strain_rate_col, spall_col, material_col]
             if not all(col in data.columns for col in required_exp_cols):
                 logging.warning(f"Skipping experimental data plotting. DataFrame missing required columns: {', '.join(c for c in required_exp_cols if c not in data.columns)}")
             else:
+                try:
+                    spall_text = data[spall_col].astype(str).str.upper()
+                    dns_entries |= spall_text.str.contains('DNS', na=False) | spall_text.str.contains('NO SPALL', na=False)
+                except Exception:
+                    pass
+                for status_col in ['Processing Status', 'Spall Status', 'Spall_Result', 'Spall Outcome']:
+                    if status_col in data.columns:
+                        try:
+                            status_text = data[status_col].astype(str).str.upper()
+                            dns_entries |= status_text.str.contains('DNS', na=False) | status_text.str.contains('NO SPALL', na=False)
+                        except Exception:
+                            continue
                 x_data = pd.to_numeric(data[strain_rate_col], errors='coerce')
                 y_data = pd.to_numeric(data[spall_col], errors='coerce')
                 y_err = pd.to_numeric(data[spall_unc_col].abs(), errors='coerce') if spall_unc_col and spall_unc_col in data.columns else None
@@ -246,6 +260,17 @@ def plot_spall_vs_strain_rate(df, output_filename, title="Spall Strength vs. Str
             except Exception as e:
                 logging.exception(f"Error reading or processing literature file {literature_data_file}: {e}")
 
+        dns_plotted = False
+        if df is not None and not df.empty and dns_entries.any():
+            dns_x = pd.to_numeric(df.loc[dns_entries, strain_rate_col], errors='coerce')
+            if log_scale:
+                dns_x = dns_x[dns_x > 0]
+            dns_x = dns_x.dropna()
+            if not dns_x.empty:
+                dns_y = np.zeros(len(dns_x))
+                ax.scatter(dns_x, dns_y, marker='s', color='black', label='_nolegend_', zorder=5, s=60)
+                dns_plotted = True
+
         # --- Customize Plot ---
         logging.debug("Customizing plot axes and labels...")
         ax.set_title(title, fontsize=20)
@@ -253,10 +278,16 @@ def plot_spall_vs_strain_rate(df, output_filename, title="Spall Strength vs. Str
         ax.set_ylabel(spall_col, fontsize=20)
         if log_scale:
             ax.set_xscale('log')
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.1e}" if value > 0 else ""))
         if xlim:
             ax.set_xlim(xlim)
         if ylim:
             ax.set_ylim(ylim)
+        if not log_scale:
+            formatter = ScalarFormatter(useMathText=True)
+            formatter.set_powerlimits((0, 0))
+            ax.xaxis.set_major_formatter(formatter)
+            ax.ticklabel_format(style='scientific', axis='x', scilimits=(0, 0))
         ax.tick_params(axis='both', which='major')
         ax.grid(True, which='both' if log_scale else 'major', linestyle='--', alpha=0.6)
 
@@ -270,6 +301,10 @@ def plot_spall_vs_strain_rate(df, output_filename, title="Spall Strength vs. Str
                 proxy_handle = exp_handles_proxies[material_label]
                 legend_handles.append(proxy_handle)
                 legend_labels.append(f"{material_label} Exp.")
+        if dns_plotted:
+            dns_proxy = plt.Line2D([0], [0], linestyle='None', marker='s', color='black', markersize=plt.rcParams['lines.markersize'])
+            legend_handles.append(dns_proxy)
+            legend_labels.append("Did Not Spall")
         sorted_lit_sources = sorted(lit_handles.keys())
         for source in sorted_lit_sources:
             handle = lit_handles[source]
@@ -505,6 +540,102 @@ def plot_spall_vs_shock_stress(df, output_filename, title="Spall Strength vs. Sh
         plt.close(fig)
         if not plot_saved:
              logging.error(f"Plot generation failed or was skipped, plot NOT saved: {output_filename}")
+
+
+def plot_shock_stress_vs_laser_energy(df, output_filename,
+                                      shock_stress_col='Peak Shock Stress (GPa)',
+                                      shock_unc_col='Peak Shock Stress Uncertainty (GPa)',
+                                      material_col='Material',
+                                      color_map=None, marker_map=None):
+    """
+    Plot peak shock stress versus laser energy using experimental data.
+    """
+    if color_map is None:
+        color_map = utils.COLOR_MAPPING
+    if marker_map is None:
+        marker_map = utils.MARKER_MAPPING
+
+    if df is None or df.empty:
+        logging.warning("Shock Stress vs Laser Energy: DataFrame is empty, skipping plot.")
+        return
+
+    laser_cols = [col for col in df.columns if 'laser' in col.lower() and 'energy' in col.lower()]
+    if not laser_cols:
+        logging.warning("Shock Stress vs Laser Energy: No laser energy column found, skipping plot.")
+        return
+    laser_col = laser_cols[0]
+
+    if shock_stress_col not in df.columns:
+        logging.warning(f"Shock Stress vs Laser Energy: Missing '{shock_stress_col}' column, skipping plot.")
+        return
+
+    data = df.copy()
+    data['__laser__'] = pd.to_numeric(data[laser_col], errors='coerce')
+    data['__shock__'] = pd.to_numeric(data[shock_stress_col], errors='coerce')
+    if shock_unc_col in data.columns:
+        data['__shock_unc__'] = pd.to_numeric(data[shock_unc_col], errors='coerce')
+    data.dropna(subset=['__laser__', '__shock__'], inplace=True)
+    if data.empty:
+        logging.warning("Shock Stress vs Laser Energy: No valid data after cleaning, skipping plot.")
+        return
+
+    fig, ax = plt.subplots()
+    plotted_materials = set()
+    exp_handles = {}
+    plot_saved = False
+
+    try:
+        for material_label, group_data in data.groupby(material_col):
+            color = color_map.get(material_label, color_map.get("Default", "gray"))
+            marker = marker_map.get(material_label, marker_map.get("Default", "o"))
+            ax.errorbar(group_data['__laser__'], group_data['__shock__'],
+                        yerr=group_data.get('__shock_unc__'),
+                        fmt=marker, color=color, ecolor='darkgray', elinewidth=1,
+                        capsize=plt.rcParams['errorbar.capsize'], alpha=0.85,
+                        label='_nolegend_', markersize=plt.rcParams['lines.markersize'])
+            if material_label not in plotted_materials:
+                plotted_materials.add(material_label)
+                proxy = plt.Line2D([0], [0], linestyle='None', marker=marker, color=color,
+                                   markersize=plt.rcParams['lines.markersize'])
+                exp_handles[material_label] = proxy
+
+        ax.set_title("Peak Shock Stress vs Laser Energy", fontsize=20)
+        ax.set_xlabel(laser_col, fontsize=20)
+        ax.set_ylabel(shock_stress_col, fontsize=20)
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.ticklabel_format(style='scientific', axis='x', scilimits=(0, 0))
+        ax.tick_params(axis='both', which='major')
+
+        legend_handles = []
+        legend_labels = []
+        for material_label in sorted(exp_handles.keys()):
+            legend_handles.append(exp_handles[material_label])
+            legend_labels.append(material_label)
+        if legend_handles:
+            legend_fontsize = ax.xaxis.label.get_size() * 0.8
+            ax.legend(legend_handles, legend_labels, loc='best', fontsize=legend_fontsize)
+
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color('black')
+            spine.set_linewidth(1.5)
+        ax.set_frame_on(True)
+        ax.tick_params(axis='both', which='major', direction='in', length=7, width=1.5,
+                       colors='black', top=True, right=True)
+        ax.tick_params(axis='both', which='minor', direction='in', length=4, width=1.0,
+                       colors='black', top=True, right=True)
+        ax.minorticks_on()
+
+        plt.tight_layout()
+        plt.savefig(output_filename, dpi=150)
+        logging.info(f"Successfully saved shock stress vs laser energy plot to: {output_filename}")
+        plot_saved = True
+    except Exception as exc:
+        logging.exception(f"Error generating shock stress vs laser energy plot: {exc}")
+    finally:
+        plt.close(fig)
+        if not plot_saved:
+            logging.error(f"Shock stress vs laser energy plot was not saved: {output_filename}")
 
 
 def plot_wilkerson_comparison(
