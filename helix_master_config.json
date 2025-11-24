@@ -64,14 +64,8 @@
         "save_velocity_smooth_uncert_csv": true,
         "save_results_csv": true,
         "save_noise_csv": true,
-        "save_velocity_plot": false,
-        "save_stft_plot": false,
-        "save_filtered_plot": false,
-        "save_phase_plot": false,
-        "save_amplitude_plot": false,
-        "save_iq_start_time_plot": false,
-        "save_peak_detection_plot": false,
-        "save_uncertainty_plot": false
+        "save_combined_plot": true,
+        "save_iq_start_time_plot": false
     },
     "spade_config": {
         "experiment_velocity_shots": true,

@@ -103,20 +103,15 @@ def _transform_alpss_params_for_analysis(alpss_params: Dict) -> Dict:
         params['save_plots_in_subfolder'] = False
     
     # Gate plot flags by plots_enabled (matches get_alpss_params() lines 6462-6469)
-    plot_flags = [
-        'save_velocity_plot', 'save_stft_plot', 'save_filtered_plot',
-        'save_phase_plot', 'save_amplitude_plot', 'save_iq_start_time_plot',
-        'save_peak_detection_plot', 'save_uncertainty_plot'
-    ]
-    for flag in plot_flags:
+    plot_flags = {
+        'save_combined_plot': True,
+        'save_iq_start_time_plot': False,
+    }
+    for flag, default in plot_flags.items():
         if flag in params:
-            # Apply the AND logic: checkbox_value AND plots_enabled
             params[flag] = bool(params[flag]) and plots_enabled
-        elif plots_enabled:
-            # Default to True only if plots are enabled and flag not specified
-            params[flag] = True
         else:
-            params[flag] = False
+            params[flag] = (default and plots_enabled)
     
     # Convert blur_kernel_x and blur_kernel_y to blur_kernel tuple
     # This matches get_alpss_params() line 6438

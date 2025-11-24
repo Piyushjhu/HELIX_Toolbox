@@ -157,6 +157,24 @@ class AnalysisThread(QThread):
         self.traces_plotted = 0
         self.traces_rejected = 0
         self.rejection_reasons = {}  # Track reasons for rejection
+        self._warned_skip_unknown_override = False
+
+    def _should_skip_unknown_materials(self):
+        """
+        Determine whether Unknown-material traces should be skipped.
+        Automatically disables skipping when no parameter file is loaded so
+        combined plots are not empty.
+        """
+        skip_requested = bool(self.spade_params.get('skip_unknown_material_traces', False))
+        param_available = bool(self.param_data)
+        if skip_requested and not param_available:
+            if not self._warned_skip_unknown_override:
+                self.progress_signal.emit(
+                    "⚠️  Parameter file not selected; including 'Unknown' material traces in combined plots."
+                )
+                self._warned_skip_unknown_override = True
+            return False
+        return skip_requested
 
     def get_param_data_for_file(self, base_name):
         """
@@ -267,8 +285,6 @@ class AnalysisThread(QThread):
 
     def detect_dns_and_process_spall(self, file_path, base_name, density, acoustic_velocity, 
                                      threshold_velocity, spall_start_time, spall_end_time,
-                                     expected_maxima_time=None, expected_minima_time=None,
-                                     maxima_search_window=20.0, minima_search_window=20.0,
                                      analysis_model='max_min', plot_path=None, **spade_kwargs):
         """
         Detect DNS (Did Not Spall) and process spall analysis following Binary_metal_analysis methodology.
@@ -437,93 +453,72 @@ class AnalysisThread(QThread):
             results['Pullback_Velocity_Unc_m_s'] = pullback_unc
             
             # Step 6: SPADE Analysis (only for valid spall cases)
-            # Modify max_min method if expected times are provided
-            if analysis_model == 'max_min' and (expected_maxima_time is not None or expected_minima_time is not None):
-                # Create custom max_min function that searches around expected times
-                spall_strength, spall_unc, strain_rate, peak_idx, valley_idx = self._calculate_max_min_with_time_ranges(
-                    time_window, vel_window, uncert_window, density, acoustic_velocity,
-                    expected_maxima_time, expected_minima_time,
-                    maxima_search_window, minima_search_window
-                )
-                results['Spall_Strength_GPa'] = spall_strength
-                results['Spall_Strength_Unc_GPa'] = spall_unc
-                results['Spall_StrainRate_s^-1'] = strain_rate
+            from SPADE.spall_analysis_release.spall_analysis.data_processing import calculate_spall_parameters
+            spade_lines_info = None
+            spade_intersections = None
+
+            result_dict, spade_lines_info, spade_intersections = calculate_spall_parameters(
+                time_ns=time_window,
+                velocity_ms=vel_window,
+                uncertainty_ms=uncert_window,
+                density=density,
+                acoustic_velocity=acoustic_velocity,
+                analysis_model=analysis_model,
+                plot_path=plot_path,
+                **{k: v for k, v in spade_kwargs.items() if k not in ['density', 'acoustic_velocity', 'analysis_model']}
+            )
+            
+            # Extract spall strength with flexible key matching
+            spall_strength = np.nan
+            for key in result_dict.keys():
+                if 'spall' in key.lower() and 'strength' in key.lower() and 'gpa' in key.lower() and 'unc' not in key.lower() and 'err' not in key.lower():
+                    try:
+                        val = result_dict[key]
+                        if isinstance(val, str) and val.upper() == 'DNS':
+                            spall_strength = "DNS"
+                        else:
+                            spall_strength = float(val) if pd.notna(val) else np.nan
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Extract uncertainty
+            spall_unc = np.nan
+            for key in result_dict.keys():
+                if ('unc' in key.lower() or 'err' in key.lower()) and 'spall' in key.lower() and 'gpa' in key.lower():
+                    try:
+                        spall_unc = float(result_dict[key]) if pd.notna(result_dict[key]) else np.nan
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Step 7: Uncertainty fallback calculation
+            if pd.isna(spall_unc) and np.isfinite(pullback_unc) and np.isfinite(density) and np.isfinite(acoustic_velocity):
+                spall_unc = 0.5 * density * acoustic_velocity * pullback_unc / 1e9
+            
+            # Extract strain rate
+            strain_rate = result_dict.get('Strain Rate (s^-1)', np.nan)
+            if pd.isna(strain_rate):
+                strain_rate = result_dict.get('Strain_Rate_s^-1', np.nan)
+            
+            # Step 8: Final classification
+            if result_dict.get('Processing Status') == 'Success':
                 results['Spall_OK'] = True
                 results['Processing_Status'] = 'Success'
-                results['DNS_Classification'] = 'Valid Spall'
-                
-                # Generate plot if plot_path is provided
-                if plot_path:
-                    self._plot_max_min_spall_analysis(
-                        plot_path, time_window, vel_window, uncert_window,
-                        peak_idx, valley_idx, spall_strength, base_name
-                    )
             else:
-                # Use SPADE's calculate_spall_parameters
-                spade_lines_info = None
-                spade_intersections = None
-                from SPADE.spall_analysis_release.spall_analysis.data_processing import calculate_spall_parameters
-                
-                result_dict, spade_lines_info, spade_intersections = calculate_spall_parameters(
-                    time_ns=time_window,
-                    velocity_ms=vel_window,
-                    uncertainty_ms=uncert_window,
-                    density=density,
-                    acoustic_velocity=acoustic_velocity,
-                    analysis_model=analysis_model,
-                    skip_smoothing=True,
-                    plot_path=plot_path,
-                    **{k: v for k, v in spade_kwargs.items() if k not in ['density', 'acoustic_velocity', 'analysis_model']}
-                )
-                
-                # Extract spall strength with flexible key matching
-                spall_strength = np.nan
-                for key in result_dict.keys():
-                    if 'spall' in key.lower() and 'strength' in key.lower() and 'gpa' in key.lower() and 'unc' not in key.lower() and 'err' not in key.lower():
-                        try:
-                            val = result_dict[key]
-                            if isinstance(val, str) and val.upper() == 'DNS':
-                                spall_strength = "DNS"
-                            else:
-                                spall_strength = float(val) if pd.notna(val) else np.nan
-                            break
-                        except (ValueError, TypeError):
-                            continue
-                
-                # Extract uncertainty
-                spall_unc = np.nan
-                for key in result_dict.keys():
-                    if ('unc' in key.lower() or 'err' in key.lower()) and 'spall' in key.lower() and 'gpa' in key.lower():
-                        try:
-                            spall_unc = float(result_dict[key]) if pd.notna(result_dict[key]) else np.nan
-                            break
-                        except (ValueError, TypeError):
-                            continue
-                
-                # Step 7: Uncertainty fallback calculation
-                if pd.isna(spall_unc) and np.isfinite(pullback_unc) and np.isfinite(density) and np.isfinite(acoustic_velocity):
-                    spall_unc = 0.5 * density * acoustic_velocity * pullback_unc / 1e9
-                
-                # Extract strain rate
-                strain_rate = result_dict.get('Strain Rate (s^-1)', np.nan)
-                if pd.isna(strain_rate):
-                    strain_rate = result_dict.get('Strain_Rate_s^-1', np.nan)
-                
-                # Step 8: Final classification
-                if result_dict.get('Processing Status') == 'Success':
-                    results['Spall_OK'] = True
-                    results['Processing_Status'] = 'Success'
+                results['Spall_OK'] = False
+                results['Processing_Status'] = result_dict.get('Processing Status', 'Failed: SPADE analysis failed')
+            
+            results['Spall_Strength_GPa'] = spall_strength
+            results['Spall_Strength_Unc_GPa'] = spall_unc
+            results['Spall_StrainRate_s^-1'] = strain_rate
+            results['DNS_Classification'] = 'Valid Spall' if results['Spall_OK'] else 'Failed'
+            
+            # Generate plot if plot_path is provided
+            if plot_path:
+                if analysis_model == 'hybrid_5_segment':
+                    self.progress_signal.emit("  Hybrid 5-segment plot saved directly by SPADE (GUI overlay skipped to preserve SPADE styling).")
                 else:
-                    results['Spall_OK'] = False
-                    results['Processing_Status'] = result_dict.get('Processing Status', 'Failed: SPADE analysis failed')
-                
-                results['Spall_Strength_GPa'] = spall_strength
-                results['Spall_Strength_Unc_GPa'] = spall_unc
-                results['Spall_StrainRate_s^-1'] = strain_rate
-                results['DNS_Classification'] = 'Valid Spall' if results['Spall_OK'] else 'Failed'
-                
-                # Generate plot if plot_path is provided
-                if plot_path:
                     self.progress_signal.emit(f"  [DEBUG] Plot path provided for {base_name}: {plot_path}")
                     try:
                         self._plot_generic_spall_analysis(
@@ -541,8 +536,8 @@ class AnalysisThread(QThread):
                         import traceback
                         self.progress_signal.emit(f"  Warning: Could not generate spall plot: {str(plot_error)}")
                         self.progress_signal.emit(f"  [DEBUG] Plot error traceback: {traceback.format_exc()}")
-                else:
-                    self.progress_signal.emit(f"  [DEBUG] No plot_path provided for {base_name}")
+            else:
+                self.progress_signal.emit(f"  [DEBUG] No plot_path provided for {base_name}")
         
         except Exception as e:
             import traceback
@@ -553,146 +548,6 @@ class AnalysisThread(QThread):
         
         return results
 
-    def _calculate_max_min_with_time_ranges(self, time_window, vel_window, uncert_window, 
-                                           density, acoustic_velocity,
-                                           expected_maxima_time, expected_minima_time,
-                                           maxima_search_window, minima_search_window):
-        """
-        Calculate spall parameters using max_min method with expected time ranges.
-        Searches for maxima and minima around the expected times.
-        """
-        from scipy.signal import find_peaks
-        
-        # Find maxima around expected time
-        if expected_maxima_time is not None:
-            max_time_low = expected_maxima_time - maxima_search_window / 2
-            max_time_high = expected_maxima_time + maxima_search_window / 2
-            max_mask = (time_window >= max_time_low) & (time_window <= max_time_high)
-            if np.any(max_mask):
-                max_window = vel_window[max_mask]
-                max_time_window = time_window[max_mask]
-                peaks, _ = find_peaks(max_window, prominence=np.nanstd(max_window) * 0.1)
-                if len(peaks) > 0:
-                    # Use peak closest to expected time
-                    peak_times = max_time_window[peaks]
-                    closest_peak_idx = np.argmin(np.abs(peak_times - expected_maxima_time))
-                    first_peak_idx_in_window = peaks[closest_peak_idx]
-                    # Map back to full window
-                    max_indices = np.where(max_mask)[0]
-                    first_peak_idx = max_indices[first_peak_idx_in_window]
-                else:
-                    # Fallback: use maximum in window
-                    first_peak_idx = np.nanargmax(max_window)
-                    max_indices = np.where(max_mask)[0]
-                    first_peak_idx = max_indices[first_peak_idx]
-            else:
-                # Fallback to global maximum
-                first_peak_idx = np.nanargmax(vel_window)
-        else:
-            # Use standard peak finding
-            peaks, _ = find_peaks(vel_window, prominence=np.nanstd(vel_window) * 0.1)
-            if len(peaks) > 0:
-                first_peak_idx = peaks[0]
-            else:
-                first_peak_idx = np.nanargmax(vel_window)
-        
-        # Find minima after peak, around expected time if provided
-        signal_after_peak = vel_window[first_peak_idx + 1:]
-        if len(signal_after_peak) == 0:
-            raise ValueError("No signal data found after the initial peak.")
-        
-        if expected_minima_time is not None:
-            min_time_low = expected_minima_time - minima_search_window / 2
-            min_time_high = expected_minima_time + minima_search_window / 2
-            min_mask = (time_window >= min_time_low) & (time_window <= min_time_high) & (time_window > time_window[first_peak_idx])
-            if np.any(min_mask):
-                min_window = vel_window[min_mask]
-                min_time_window = time_window[min_mask]
-                valleys, _ = find_peaks(-min_window, prominence=np.nanstd(min_window) * 0.1)
-                if len(valleys) > 0:
-                    # Use valley closest to expected time
-                    valley_times = min_time_window[valleys]
-                    closest_valley_idx = np.argmin(np.abs(valley_times - expected_minima_time))
-                    first_valley_idx_in_window = valleys[closest_valley_idx]
-                    # Map back to full window
-                    min_indices = np.where(min_mask)[0]
-                    first_valley_idx = min_indices[first_valley_idx_in_window]
-                else:
-                    # Fallback: use minimum in window
-                    first_valley_idx = np.nanargmin(min_window)
-                    min_indices = np.where(min_mask)[0]
-                    first_valley_idx = min_indices[first_valley_idx]
-            else:
-                # Fallback to standard method
-                relative_idx_min = np.nanargmin(signal_after_peak)
-                first_valley_idx = first_peak_idx + 1 + relative_idx_min
-        else:
-            # Standard method: find minimum after peak
-            relative_idx_min = np.nanargmin(signal_after_peak)
-            first_valley_idx = first_peak_idx + 1 + relative_idx_min
-        
-        # Calculate spall strength
-        first_peak_vel = vel_window[first_peak_idx]
-        first_valley_vel = vel_window[first_valley_idx]
-        delta_v = abs(first_peak_vel - first_valley_vel)
-        spall_strength = 0.5 * density * acoustic_velocity * delta_v / 1e9
-        
-        # Calculate uncertainty
-        peak_unc = uncert_window[first_peak_idx] if first_peak_idx < len(uncert_window) else 0
-        valley_unc = uncert_window[first_valley_idx] if first_valley_idx < len(uncert_window) else 0
-        pullback_unc = np.sqrt(peak_unc**2 + valley_unc**2) if np.isfinite(peak_unc) and np.isfinite(valley_unc) else np.nan
-        spall_unc = 0.5 * density * acoustic_velocity * pullback_unc / 1e9 if np.isfinite(pullback_unc) else np.nan
-        
-        # Calculate strain rate
-        time_diff_s = (time_window[first_valley_idx] - time_window[first_peak_idx]) * 1e-9
-        if time_diff_s > 0:
-            strain_rate = (delta_v / time_diff_s) / (2 * acoustic_velocity)
-        else:
-            strain_rate = np.nan
-        
-        return spall_strength, spall_unc, strain_rate, first_peak_idx, first_valley_idx
-
-    def _plot_max_min_spall_analysis(self, plot_path, time_window, vel_window, uncert_window,
-                                     peak_idx, valley_idx, spall_strength, base_name):
-        """Generate plot for max_min spall analysis with expected times"""
-        try:
-            import matplotlib.pyplot as plt
-            import numpy as np
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            # Plot velocity trace
-            ax.plot(time_window, vel_window, 'b-', linewidth=1.5, alpha=0.7, label='Velocity')
-            
-            # Plot uncertainty bands if available
-            if uncert_window is not None and len(uncert_window) == len(vel_window):
-                ax.fill_between(time_window, vel_window - uncert_window, vel_window + uncert_window,
-                               alpha=0.2, color='blue', label='Uncertainty')
-            
-            # Mark peak and valley
-            ax.plot(time_window[peak_idx], vel_window[peak_idx], 'ro', markersize=10, 
-                   label=f'Peak: {vel_window[peak_idx]:.1f} m/s')
-            ax.plot(time_window[valley_idx], vel_window[valley_idx], 'go', markersize=10,
-                   label=f'Valley: {vel_window[valley_idx]:.1f} m/s')
-            
-            # Draw line between peak and valley
-            ax.plot([time_window[peak_idx], time_window[valley_idx]], 
-                   [vel_window[peak_idx], vel_window[valley_idx]], 
-                   'r--', linewidth=2, alpha=0.5, label='Pullback')
-            
-            ax.set_xlabel('Time (ns)', fontsize=12)
-            ax.set_ylabel('Velocity (m/s)', fontsize=12)
-            ax.set_title(f'Spall Analysis: {base_name}\nSpall Strength: {spall_strength:.3f} GPa', 
-                        fontsize=14, fontweight='bold')
-            ax.legend(loc='best', fontsize=10)
-            ax.grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-            self.progress_signal.emit(f"  Saved spall plot: {os.path.basename(plot_path)}")
-        except Exception as e:
-            self.progress_signal.emit(f"  Warning: Could not generate spall plot: {str(e)}")
 
     def _plot_generic_spall_analysis(self, plot_path, time_window, vel_window, uncert_window,
                                      peak_idx, valley_idx, spall_strength, spall_unc, base_name,
@@ -896,22 +751,10 @@ class AnalysisThread(QThread):
                         alpss_params['experiment_info'] = {}
 
                     # Pass image selection parameters to ALPSS
-                    alpss_params['save_velocity_plot'] = self.alpss_params.get(
-                        'save_velocity_plot', False)
-                    alpss_params['save_stft_plot'] = self.alpss_params.get(
-                        'save_stft_plot', False)
-                    alpss_params['save_filtered_plot'] = self.alpss_params.get(
-                        'save_filtered_plot', False)
-                    alpss_params['save_phase_plot'] = self.alpss_params.get(
-                        'save_phase_plot', False)
-                    alpss_params['save_amplitude_plot'] = self.alpss_params.get(
-                        'save_amplitude_plot', False)
+                    alpss_params['save_combined_plot'] = self.alpss_params.get(
+                        'save_combined_plot', True)
                     alpss_params['save_iq_start_time_plot'] = self.alpss_params.get(
                         'save_iq_start_time_plot', False)
-                    alpss_params['save_peak_detection_plot'] = self.alpss_params.get(
-                        'save_peak_detection_plot', False)
-                    alpss_params['save_uncertainty_plot'] = self.alpss_params.get(
-                        'save_uncertainty_plot', False)
                     
                     # Handle smart selection for combined mode
                     smart_selection_enabled = self.alpss_params.get('smart_selection_enabled', False)
@@ -1151,11 +994,10 @@ class AnalysisThread(QThread):
                                 threshold_velocity = self.spade_params.get('threshold_velocity_ms', 30.0)
                                 spall_start_time = self.spade_params.get('spall_start_time_ns', 10.0)
                                 spall_end_time = self.spade_params.get('spall_end_time_ns', 100.0)
-                                expected_maxima_time = self.spade_params.get('expected_maxima_time_ns')
-                                expected_minima_time = self.spade_params.get('expected_minima_time_ns')
-                                maxima_search_window = self.spade_params.get('maxima_search_window_ns', 20.0)
-                                minima_search_window = self.spade_params.get('minima_search_window_ns', 20.0)
                                 analysis_model = self.spade_params.get('analysis_model', 'max_min')
+                                spall_msg = f"  [SPALL] Using analysis_model='{analysis_model}', window=[{spall_start_time:.1f}, {spall_end_time:.1f}] ns, threshold={threshold_velocity:.1f} m/s"
+                                self.progress_signal.emit(spall_msg)
+                                print(spall_msg)  # Also print to terminal
                                 
                                 # Get material properties for each file
                                 default_density = self.spade_params.get('density', 8960)
@@ -1197,10 +1039,6 @@ class AnalysisThread(QThread):
                                         threshold_velocity=threshold_velocity,
                                         spall_start_time=spall_start_time,
                                         spall_end_time=spall_end_time,
-                                        expected_maxima_time=expected_maxima_time,
-                                        expected_minima_time=expected_minima_time,
-                                        maxima_search_window=maxima_search_window,
-                                        minima_search_window=minima_search_window,
                                         analysis_model=analysis_model,
                                         plot_path=individual_plot_path,
                                         **{k: v for k, v in spade_params_with_skip.items() if k not in ['plot_individual', 'density', 'acoustic_velocity', 'analysis_model']}
@@ -1353,11 +1191,10 @@ class AnalysisThread(QThread):
                                 threshold_velocity = self.spade_params.get('threshold_velocity_ms', 30.0)
                                 spall_start_time = self.spade_params.get('spall_start_time_ns', 10.0)
                                 spall_end_time = self.spade_params.get('spall_end_time_ns', 100.0)
-                                expected_maxima_time = self.spade_params.get('expected_maxima_time_ns')
-                                expected_minima_time = self.spade_params.get('expected_minima_time_ns')
-                                maxima_search_window = self.spade_params.get('maxima_search_window_ns', 20.0)
-                                minima_search_window = self.spade_params.get('minima_search_window_ns', 20.0)
                                 analysis_model = self.spade_params.get('analysis_model', 'max_min')
+                                spall_msg = f"  [SPALL] Using analysis_model='{analysis_model}', window=[{spall_start_time:.1f}, {spall_end_time:.1f}] ns, threshold={threshold_velocity:.1f} m/s"
+                                self.progress_signal.emit(spall_msg)
+                                print(spall_msg)  # Also print to terminal
                                 
                                 # Get material properties for each file
                                 default_density = self.spade_params.get('density', 8960)
@@ -1399,10 +1236,6 @@ class AnalysisThread(QThread):
                                         threshold_velocity=threshold_velocity,
                                         spall_start_time=spall_start_time,
                                         spall_end_time=spall_end_time,
-                                        expected_maxima_time=expected_maxima_time,
-                                        expected_minima_time=expected_minima_time,
-                                        maxima_search_window=maxima_search_window,
-                                        minima_search_window=minima_search_window,
                                         analysis_model=analysis_model,
                                         plot_path=individual_plot_path,
                                         **{k: v for k, v in spade_params_with_skip.items() if k not in ['plot_individual', 'density', 'acoustic_velocity', 'analysis_model']}
@@ -1753,6 +1586,9 @@ class AnalysisThread(QThread):
                         angle_thresh_deg = self.spade_params.get('hel_angle_threshold_deg', 45.0)
                         min_hel_velocity = self.spade_params.get('minimum_HEL_velocity_expected', 10.0)
                         hel_detection_min_points = self.spade_params.get('hel_detection_min_points', 3)
+                        hel_msg = f"  [HEL] Using time window=[{hel_start:.1f}, {hel_end if hel_end is not None else 'None'}] ns, min_velocity={min_hel_velocity:.1f} m/s, min_points={hel_detection_min_points}"
+                        self.progress_signal.emit(hel_msg)
+                        print(hel_msg)  # Also print to terminal
                         
                         # Step 1: Load data and filter by relative uncertainty
                         valid_mask = ~np.isnan(velocity_filtered)
@@ -2826,19 +2662,19 @@ class AnalysisThread(QThread):
                     'Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy', 
                     'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power'
                 ]
-            for col_name in df.columns:
-                col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
-                for possible in possible_names:
-                    possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
-                    # Check for exact match first, then substring match
-                    if col_name == possible or possible_normalized in col_normalized:
-                        laser_energy_col = col_name
-                        # Check if it's in mJ
-                        if "mj" in col_name.lower() or "(mj)" in col_name.lower():
-                            energy_in_mj = True
+                for col_name in df.columns:
+                    col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                    for possible in possible_names:
+                        possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                        # Check for exact match first, then substring match
+                        if col_name == possible or possible_normalized in col_normalized:
+                            laser_energy_col = col_name
+                            # Check if it's in mJ
+                            if "mj" in col_name.lower() or "(mj)" in col_name.lower():
+                                energy_in_mj = True
+                            break
+                    if laser_energy_col:
                         break
-                if laser_energy_col:
-                    break
             if laser_energy_col is None:
                 self.progress_signal.emit("⚠ Laser energy column not found in parameter file - skipping HEL vs Laser Energy plot")
                 self.progress_signal.emit(f"   Available columns: {', '.join(df.columns.tolist()[:10])}...")
@@ -2985,7 +2821,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
             
             # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             
             # Get material column
             material_col = None
@@ -3170,7 +3006,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
             
             # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             
             # Get material column
             material_col = None
@@ -3409,7 +3245,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
             
             # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             
             # Get material column first
             material_col = None
@@ -3660,7 +3496,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
             
             # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             
             # Get material column first
             material_col = None
@@ -4071,7 +3907,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"   After alignment filter: {len(valid_data)} traces")
             
             # 2. Skip Unknown material if configured (same as all_velocity_traces_plot)
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             
             # Get material column first
             material_col = None
@@ -4269,7 +4105,7 @@ class AnalysisThread(QThread):
             else:
                 valid_data[material_col] = df.loc[valid_data.index, material_col]
             
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             if skip_unknown:
                 before_filter = len(valid_data)
                 valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
@@ -4581,7 +4417,7 @@ class AnalysisThread(QThread):
             else:
                 valid_data[material_col] = df.loc[valid_data.index, material_col]
             
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             if skip_unknown:
                 before_filter = len(valid_data)
                 valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
@@ -4805,7 +4641,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ No valid data after 2-sigma filtering - skipping row/column pair by material plot")
                 return
             
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             if skip_unknown:
                 before_filter = len(valid_data)
                 valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
@@ -5062,7 +4898,7 @@ class AnalysisThread(QThread):
                 (valid_data['max_velocity_ms'] <= upper_bound)
             ].copy()
             
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
             if skip_unknown:
                 valid_data = valid_data[valid_data[material_col] != 'Unknown'].copy()
             
@@ -5698,7 +5534,12 @@ class AnalysisThread(QThread):
             )
 
             # Option to skip Unknown material traces
-            skip_unknown = self.spade_params.get('skip_unknown_material_traces', False)
+            skip_unknown = self._should_skip_unknown_materials()
+            if skip_unknown:
+                has_labeled_material = any(trace['material'] != 'Unknown' for trace in trace_data)
+                if not has_labeled_material:
+                    skip_unknown = False
+                    self.progress_signal.emit("⚠️  No parameter data matched current files; rendering 'Unknown' traces to avoid empty combined plot.")
             
             # List to track IQ detection failures
             iq_detection_failures = []
@@ -5825,45 +5666,42 @@ class AnalysisThread(QThread):
                     tolerance = 0.01  # 0.01 m/s tolerance for floating point comparison
                     
                     # Find the first point where velocity reaches or exceeds threshold
-                    # This must be a rising crossing (trace starts below threshold and crosses it)
                     t0_idx = None
                     for j, v in enumerate(velocity_clean):
                         if not np.isnan(v) and v >= (align_threshold - tolerance):
                             t0_idx = j
                             break
                     
-                    # Check if trace crosses threshold from below (not starting above and decreasing)
-                    if t0_idx is None or t0_idx == 0:
-                        # No threshold crossing found, or trace starts at threshold (likely bad data)
-                        traces_rejected_local += 1
-                        reason = 'No threshold crossing found'
-                        rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
+                    fallback_reason = None
+                    if t0_idx is None:
+                        # Fall back to earliest valid point
+                        t0_idx = 0
                         max_vel = np.nanmax(velocity_clean) if len(velocity_clean) > 0 else 0
                         min_vel = np.nanmin(velocity_clean) if len(velocity_clean) > 0 else 0
-                        self.progress_signal.emit(f"Skipping {trace['base_name']} in all-traces plot (no threshold crossing from below at {align_threshold} m/s, velocity range: {min_vel:.1f} to {max_vel:.1f} m/s)")
-                        continue
+                        fallback_reason = (
+                            f"No threshold crossing at {align_threshold} m/s "
+                            f"(velocity range {min_vel:.1f}-{max_vel:.1f} m/s); aligning to earliest valid point."
+                        )
+                    else:
+                        has_point_below = any(
+                            (not np.isnan(velocity_clean[j])) and velocity_clean[j] < (align_threshold - tolerance)
+                            for j in range(max(t0_idx, 1))
+                        )
+                        if not has_point_below:
+                            fallback_reason = (
+                                f"Trace starts at/above {align_threshold} m/s; aligning to first available sample."
+                            )
+                            # Prefer earliest point < threshold if it exists elsewhere
+                            below_candidates = np.where(~np.isnan(velocity_clean) & (velocity_clean < (align_threshold - tolerance)))[0]
+                            if len(below_candidates) > 0:
+                                t0_idx = below_candidates[0]
                     
-                    # Verify that trace started below threshold (crossing from below)
-                    # Check if there's at least one point before t0_idx that's below threshold
-                    has_point_below = False
-                    for j in range(t0_idx):
-                        if not np.isnan(velocity_clean[j]) and velocity_clean[j] < (align_threshold - tolerance):
-                            has_point_below = True
-                            break
-                    
-                    if not has_point_below:
-                        # Trace starts at or above threshold - likely bad data (e.g., IQ detection failed, starts late)
-                        traces_rejected_local += 1
-                        reason = 'Does not cross threshold from below'
-                        rejection_reasons_local[reason] = rejection_reasons_local.get(reason, 0) + 1
-                        max_vel = np.nanmax(velocity_clean) if len(velocity_clean) > 0 else 0
-                        min_vel = np.nanmin(velocity_clean) if len(velocity_clean) > 0 else 0
-                        self.progress_signal.emit(f"Skipping {trace['base_name']} in all-traces plot (trace starts at/above threshold {align_threshold} m/s, does not cross from below, velocity range: {min_vel:.1f} to {max_vel:.1f} m/s)")
-                        continue
+                    if fallback_reason:
+                        self.progress_signal.emit(f"[Combined Plot] {trace['base_name']}: {fallback_reason}")
                     
                     # Align the trace
-                        t0 = time_clean[t0_idx]
-                        time_clean = time_clean - t0
+                    t0 = time_clean[t0_idx]
+                    time_clean = time_clean - t0
 
                     # Verify alignment: check that t=0 is actually at the alignment point
                     if abs(time_clean[t0_idx]) > 1e-6:  # Should be very close to 0 after alignment
@@ -7913,15 +7751,12 @@ class HELIXAnalysisToolbox(QMainWindow):
                 self.signal_start_time.setValue(params['signal_start_time'])
             if hasattr(self, 'smoothing_characteristic_time') and 'smoothing_characteristic_time' in params:
                 self.smoothing_characteristic_time.setValue(params['smoothing_characteristic_time'])
-            if hasattr(self, 'save_velocity_plot') and 'save_velocity_plot' in params:
-                if hasattr(self.save_velocity_plot, 'setChecked'):
-                    self.save_velocity_plot.setChecked(params['save_velocity_plot'])
-            if hasattr(self, 'save_iq_amplitude') and 'save_iq_amplitude' in params:
-                if hasattr(self.save_iq_amplitude, 'setChecked'):
-                    self.save_iq_amplitude.setChecked(params['save_iq_amplitude'])
-            if hasattr(self, 'save_error_plot') and 'save_error_plot' in params:
-                if hasattr(self.save_error_plot, 'setChecked'):
-                    self.save_error_plot.setChecked(params['save_error_plot'])
+            if hasattr(self, 'save_combined_plot') and 'save_combined_plot' in params:
+                if hasattr(self.save_combined_plot, 'setChecked'):
+                    self.save_combined_plot.setChecked(params['save_combined_plot'])
+            if hasattr(self, 'save_iq_start_time_plot') and 'save_iq_start_time_plot' in params:
+                if hasattr(self.save_iq_start_time_plot, 'setChecked'):
+                    self.save_iq_start_time_plot.setChecked(params['save_iq_start_time_plot'])
             if hasattr(self, 'uncert_mult') and 'uncert_mult' in params:
                 self.uncert_mult.setValue(params['uncert_mult'])
             if hasattr(self, 'spall_calculation') and 'spall_calculation' in params:
@@ -9447,51 +9282,19 @@ class HELIXAnalysisToolbox(QMainWindow):
         image_layout.setSpacing(10)
         
         # Description
-        desc_label = QLabel("Select which ALPSS output images to generate:")
+        desc_label = QLabel("Only the combined ALPSS summary plot and optional IQ start-time diagnostic are available in the current fast-plot workflow.")
         desc_label.setWordWrap(True)
         image_layout.addWidget(desc_label)
         
-        # Image checkboxes
-        self.save_velocity_plot = QCheckBox("Velocity vs Time Plot")
-        self.save_velocity_plot.setChecked(True)
-        self.save_velocity_plot.setToolTip("Generate velocity vs time plot with uncertainty bands")
-        image_layout.addWidget(self.save_velocity_plot)
-        
-        self.save_stft_plot = QCheckBox("STFT Spectrogram")
-        self.save_stft_plot.setChecked(True)
-        self.save_stft_plot.setToolTip("Generate Short-Time Fourier Transform spectrogram")
-        image_layout.addWidget(self.save_stft_plot)
-        
-        self.save_filtered_plot = QCheckBox("Filtered Signal Plot")
-        self.save_filtered_plot.setChecked(True)
-        self.save_filtered_plot.setToolTip("Generate plot showing original vs filtered signal")
-        image_layout.addWidget(self.save_filtered_plot)
-        
-        self.save_phase_plot = QCheckBox("Phase Plot")
-        self.save_phase_plot.setChecked(True)
-        self.save_phase_plot.setToolTip("Generate phase vs time plot")
-        image_layout.addWidget(self.save_phase_plot)
-        
-        self.save_amplitude_plot = QCheckBox("Amplitude Plot")
-        self.save_amplitude_plot.setChecked(True)
-        self.save_amplitude_plot.setToolTip("Generate amplitude vs time plot")
-        image_layout.addWidget(self.save_amplitude_plot)
+        self.save_combined_plot = QCheckBox("Combined ALPSS Summary Plot")
+        self.save_combined_plot.setChecked(True)
+        self.save_combined_plot.setToolTip("Generate the 5-panel summary plot (velocity, noise, ROI spectrograms, IQ analysis).")
+        image_layout.addWidget(self.save_combined_plot)
         
         self.save_iq_start_time_plot = QCheckBox("IQ Start Time Detection Plot")
-        # Default off so selecting IQ Analysis does not implicitly save this diagnostic plot
         self.save_iq_start_time_plot.setChecked(False)
-        self.save_iq_start_time_plot.setToolTip("Generate IQ analysis start time detection plot with red line marking detected start time")
+        self.save_iq_start_time_plot.setToolTip("Generate IQ analysis start time detection plot with threshold overlays.")
         image_layout.addWidget(self.save_iq_start_time_plot)
-        
-        self.save_peak_detection_plot = QCheckBox("Peak Detection Plot")
-        self.save_peak_detection_plot.setChecked(True)
-        self.save_peak_detection_plot.setToolTip("Generate plot showing detected peaks and pullback")
-        image_layout.addWidget(self.save_peak_detection_plot)
-        
-        self.save_uncertainty_plot = QCheckBox("Uncertainty Analysis Plot")
-        self.save_uncertainty_plot.setChecked(True)
-        self.save_uncertainty_plot.setToolTip("Generate uncertainty analysis plots")
-        image_layout.addWidget(self.save_uncertainty_plot)
         
         # Select all/none buttons
         select_buttons_layout = QHBoxLayout()
@@ -9580,23 +9383,13 @@ class HELIXAnalysisToolbox(QMainWindow):
         
     def select_all_alpss_images(self):
         """Select all ALPSS output images"""
-        self.save_velocity_plot.setChecked(True)
-        self.save_stft_plot.setChecked(True)
-        self.save_filtered_plot.setChecked(True)
-        self.save_phase_plot.setChecked(True)
-        self.save_amplitude_plot.setChecked(True)
-        self.save_peak_detection_plot.setChecked(True)
-        self.save_uncertainty_plot.setChecked(True)
+        self.save_combined_plot.setChecked(True)
+        self.save_iq_start_time_plot.setChecked(True)
         
     def deselect_all_alpss_images(self):
         """Deselect all ALPSS output images"""
-        self.save_velocity_plot.setChecked(False)
-        self.save_stft_plot.setChecked(False)
-        self.save_filtered_plot.setChecked(False)
-        self.save_phase_plot.setChecked(False)
-        self.save_amplitude_plot.setChecked(False)
-        self.save_peak_detection_plot.setChecked(False)
-        self.save_uncertainty_plot.setChecked(False)
+        self.save_combined_plot.setChecked(False)
+        self.save_iq_start_time_plot.setChecked(False)
         
     def select_all_output_files_func(self):
         """Select all ALPSS output files"""
@@ -9792,6 +9585,21 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.hel_angle_threshold_deg.setValue(45.0)
         hel_layout.addWidget(self.hel_angle_threshold_deg, 1, 1)
 
+        hel_layout.addWidget(QLabel("Min HEL Velocity (m/s):"), 1, 2)
+        self.minimum_hel_velocity = QDoubleSpinBox()
+        self.minimum_hel_velocity.setRange(0.0, 2000.0)
+        self.minimum_hel_velocity.setDecimals(2)
+        self.minimum_hel_velocity.setValue(15.0)
+        self.minimum_hel_velocity.setToolTip("Reject HEL detections below this free-surface velocity.")
+        hel_layout.addWidget(self.minimum_hel_velocity, 1, 3)
+
+        hel_layout.addWidget(QLabel("Min Consecutive Points:"), 2, 0)
+        self.hel_detection_min_points = QSpinBox()
+        self.hel_detection_min_points.setRange(1, 10000)
+        self.hel_detection_min_points.setValue(50)
+        self.hel_detection_min_points.setToolTip("Minimum number of consecutive low-slope points required to accept HEL plateau.")
+        hel_layout.addWidget(self.hel_detection_min_points, 2, 1)
+
         # Initially hidden unless HEL Detection is enabled
         self.hel_group.setVisible(self.experiment_hel_detection.isChecked())
         layout.addWidget(self.hel_group)
@@ -9852,6 +9660,37 @@ class HELIXAnalysisToolbox(QMainWindow):
         filter_layout.addWidget(self.polyorder, 1, 3)
         
         layout.addWidget(filter_group)
+
+        # Spall detection window parameters
+        spall_group = QGroupBox("Spall Window & Thresholds")
+        spall_layout = QGridLayout(spall_group)
+        spall_layout.setSpacing(10)
+
+        spall_layout.addWidget(QLabel("Spall Start Time (ns):"), 0, 0)
+        self.spall_start_time_ns = QDoubleSpinBox()
+        self.spall_start_time_ns.setRange(-1000.0, 10000.0)
+        self.spall_start_time_ns.setDecimals(2)
+        self.spall_start_time_ns.setValue(10.0)
+        self.spall_start_time_ns.setToolTip("Lower bound of the velocity window (relative to t=0) for spall fitting.")
+        spall_layout.addWidget(self.spall_start_time_ns, 0, 1)
+
+        spall_layout.addWidget(QLabel("Spall End Time (ns):"), 0, 2)
+        self.spall_end_time_ns = QDoubleSpinBox()
+        self.spall_end_time_ns.setRange(-1000.0, 10000.0)
+        self.spall_end_time_ns.setDecimals(2)
+        self.spall_end_time_ns.setValue(100.0)
+        self.spall_end_time_ns.setToolTip("Upper bound of the velocity window (relative to t=0) for spall fitting.")
+        spall_layout.addWidget(self.spall_end_time_ns, 0, 3)
+
+        spall_layout.addWidget(QLabel("Threshold Velocity (m/s):"), 1, 0)
+        self.threshold_velocity_ms = QDoubleSpinBox()
+        self.threshold_velocity_ms.setRange(0.0, 1000.0)
+        self.threshold_velocity_ms.setDecimals(2)
+        self.threshold_velocity_ms.setValue(10.0)
+        self.threshold_velocity_ms.setToolTip("Minimum velocity required before searching for spall peaks (also used for alignment warnings).")
+        spall_layout.addWidget(self.threshold_velocity_ms, 1, 1)
+
+        layout.addWidget(spall_group)
         
         # Output options
         output_group = QGroupBox("Output Options")
@@ -10707,6 +10546,18 @@ Output Files:
             self.hel_derivative_threshold.setValue(config_dict['hel_derivative_threshold'])
         if 'hel_smoothing_window' in config_dict:
             self.hel_smoothing_window.setValue(config_dict['hel_smoothing_window'])
+        if 'minimum_HEL_velocity_expected' in config_dict:
+            self.minimum_hel_velocity.setValue(config_dict['minimum_HEL_velocity_expected'])
+        if 'hel_detection_min_points' in config_dict:
+            self.hel_detection_min_points.setValue(int(config_dict['hel_detection_min_points']))
+
+        # Spall window parameters
+        if 'spall_start_time_ns' in config_dict:
+            self.spall_start_time_ns.setValue(config_dict['spall_start_time_ns'])
+        if 'spall_end_time_ns' in config_dict:
+            self.spall_end_time_ns.setValue(config_dict['spall_end_time_ns'])
+        if 'threshold_velocity_ms' in config_dict:
+            self.threshold_velocity_ms.setValue(config_dict['threshold_velocity_ms'])
     
     # ========== End Config File Management ==========
             
@@ -11145,14 +10996,8 @@ Output Files:
             'plot_figsize': (self.plot_width.value(), self.plot_height.value()),
             'plot_dpi': self.plot_dpi.value(),
             # Image selection parameters (globally gated by Save ALPSS Plots dropdown)
-            'save_velocity_plot': self.save_velocity_plot.isChecked() and plots_enabled,
-            'save_stft_plot': self.save_stft_plot.isChecked() and plots_enabled,
-            'save_filtered_plot': self.save_filtered_plot.isChecked() and plots_enabled,
-            'save_phase_plot': self.save_phase_plot.isChecked() and plots_enabled,
-            'save_amplitude_plot': self.save_amplitude_plot.isChecked() and plots_enabled,
+            'save_combined_plot': self.save_combined_plot.isChecked() and plots_enabled,
             'save_iq_start_time_plot': self.save_iq_start_time_plot.isChecked() and plots_enabled,
-            'save_peak_detection_plot': self.save_peak_detection_plot.isChecked() and plots_enabled,
-            'save_uncertainty_plot': self.save_uncertainty_plot.isChecked() and plots_enabled,
             # Output file selection parameters
             'save_velocity_csv': self.save_velocity_csv.isChecked(),
             'save_velocity_smooth_csv': self.save_velocity_smooth_csv.isChecked(),
@@ -11199,6 +11044,12 @@ Output Files:
             'hel_start_time_ns': self.hel_start_time_ns.value(),
             'hel_end_time_ns': self.hel_end_time_ns.value(),
             'hel_angle_threshold_deg': self.hel_angle_threshold_deg.value(),
+            'minimum_HEL_velocity_expected': self.minimum_hel_velocity.value(),
+            'hel_detection_min_points': self.hel_detection_min_points.value(),
+            # Spall window parameters
+            'spall_start_time_ns': self.spall_start_time_ns.value(),
+            'spall_end_time_ns': self.spall_end_time_ns.value(),
+            'threshold_velocity_ms': self.threshold_velocity_ms.value(),
             # Axis limits for combined plots
             'auto_calculate_limits': self.auto_calculate_limits.isChecked(),
             'x_min_main': self.x_min_main.value(),
@@ -11217,6 +11068,27 @@ Output Files:
             'uncert_alpha': self.uncert_alpha.value(),
             'zoom_window_ns': self.zoom_window_ns.value(),
         }
+
+    def _apply_runtime_spade_overrides(self, spade_params):
+        """Ensure critical SPADE settings respect the current GUI selections."""
+        overrides = {
+            'analysis_model': self.analysis_model.currentText(),
+            'spall_start_time_ns': self.spall_start_time_ns.value(),
+            'spall_end_time_ns': self.spall_end_time_ns.value(),
+            'threshold_velocity_ms': self.threshold_velocity_ms.value(),
+            'hel_start_time_ns': self.hel_start_time_ns.value(),
+            'hel_end_time_ns': self.hel_end_time_ns.value(),
+        }
+        spade_params.update(overrides)
+        if hasattr(self, 'progress_text') and self.progress_text:
+            try:
+                self.progress_text.appendPlainText(
+                    "✓ Applied GUI overrides to SPADE parameters: "
+                    + ", ".join(f"{k}={v}" for k, v in overrides.items())
+                )
+            except Exception:
+                pass
+        return spade_params
         
     def run_analysis(self):
         """Run the analysis"""
@@ -11260,6 +11132,9 @@ Output Files:
             # Use GUI parameters
             spade_params = self.get_spade_params()
             self.progress_text.appendPlainText("✓ Using SPADE parameters from GUI")
+        
+        spade_params = self._apply_runtime_spade_overrides(spade_params)
+        self.spade_params = spade_params.copy()
         
         # Get parameter file data if available
         param_data = self.get_param_file_data()
