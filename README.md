@@ -39,6 +39,9 @@ HELIX Toolbox is a comprehensive graphical user interface (GUI) that combines AL
 - MAD (Median Absolute Deviation) statistical outlier filtering
 - Command-line interface for batch processing
 - Comprehensive diagnostic tools
+- **GUI parameter overrides**: GUI selections now properly override config file values for HEL time windows and SPADE analysis models
+- **Improved plot generation**: Fixed all velocity traces plot and streamlined ALPSS plot options
+- **Enhanced debugging**: Added parameter logging to verify GUI selections are being used
 
 ---
 
@@ -316,11 +319,17 @@ export QT_QPA_PLATFORM=offscreen
    - **ALPSS Parameters**: Signal processing, filtering, and smoothing options
    - **SPADE Parameters**: Material properties and analysis models
    - **Advanced Options**: Gaussian notch filter, uncertainty multipliers
+   - **GUI Overrides**: GUI parameter selections automatically override config file values for:
+     - HEL time window (`hel_start_time_ns`, `hel_end_time_ns`)
+     - SPADE analysis model (`hybrid_5_segment` vs `max_min`)
+     - Spall analysis window (`spall_start_time_ns`, `spall_end_time_ns`)
+     - Threshold velocity (`threshold_velocity_ms`)
 
 4. **Run Analysis**
-   - Monitor real-time progress
+   - Monitor real-time progress with debug messages showing active parameters
    - View generated plots and results
    - Access comprehensive output files
+   - Debug messages confirm which parameters are being used (e.g., `[HEL] Using time window=[X, Y] ns`, `[SPALL] Using analysis_model='hybrid_5_segment'`)
 
 ---
 
@@ -492,12 +501,26 @@ The master config file (`helix_master_config.json`) contains three main sections
 - `experiment_velocity_shots`: Enable velocity shots analysis
 - `experiment_spall_analysis`: Enable spall strength analysis
 - `experiment_hel_detection`: Enable HEL detection
+- `analysis_model`: Spall analysis method - `"hybrid_5_segment"` (5-segment strain computation) or `"max_min"` (peak/valley detection)
+- `spall_start_time_ns`: Start time for spall analysis window (ns, relative to t=0 after alignment)
+- `spall_end_time_ns`: End time for spall analysis window (ns, relative to t=0 after alignment)
+- `threshold_velocity_ms`: Velocity threshold for shock arrival detection (m/s)
 - `align_velocity_threshold_ms`: Velocity threshold for trace alignment (m/s)
 - `minimum_HEL_velocity_expected`: Minimum HEL velocity to accept (m/s)
 - `hel_detection_min_points`: Minimum consecutive points for HEL detection
+- `hel_start_time_ns`: Start time for HEL analysis window (ns, relative to t=0 after alignment)
+- `hel_end_time_ns`: End time for HEL analysis window (ns, relative to t=0 after alignment)
 - `mad_filter_enabled`: Enable MAD outlier filter
 - `mad_filter_threshold`: MAD filter threshold (typically 2.0-3.5)
 - `skip_unknown_material_traces`: Skip traces with unknown material
+
+**Note:** When using the GUI, the following parameters will override config file values:
+- `analysis_model` (SPADE analysis method selection)
+- `spall_start_time_ns` and `spall_end_time_ns` (spall analysis window)
+- `threshold_velocity_ms` (shock arrival threshold)
+- `hel_start_time_ns` and `hel_end_time_ns` (HEL analysis window)
+
+This ensures your GUI selections are always respected, even when loading a config file.
 
 ---
 
@@ -776,6 +799,8 @@ In `spade_config`:
     "hel_end_time_ns": null
 }
 ```
+
+**Note:** When using the GUI, the HEL time window parameters (`hel_start_time_ns` and `hel_end_time_ns`) set in the GUI will override any values from the config file. This ensures your GUI selections are always respected.
 
 ### Output
 
