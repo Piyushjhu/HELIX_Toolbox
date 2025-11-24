@@ -33,6 +33,31 @@ def gaussian_window(window_length, std):
     return np.exp(-0.5 * (n / std) ** 2)
 
 
+def _resolve_plot_saving_flags(inputs):
+    """Derive normalized plot-saving flags from legacy/new config values."""
+    dropdown_value_raw = inputs.get("save_all_plots", "no")
+    dropdown_value = str(dropdown_value_raw).strip().lower() if dropdown_value_raw is not None else "no"
+
+    save_all_raw = inputs.get("save_all_plots_enabled", dropdown_value_raw)
+    save_all_value = str(save_all_raw).strip().lower() if save_all_raw is not None else "no"
+
+    if save_all_value in ("subfolder", "main_dir", "yes", "true", "1"):
+        save_all_flag = "yes"
+    else:
+        save_all_flag = "no"
+
+    save_subfolder_raw = inputs.get("save_plots_in_subfolder")
+    if save_subfolder_raw is None:
+        save_in_subfolder = dropdown_value == "subfolder"
+    else:
+        if isinstance(save_subfolder_raw, str):
+            save_in_subfolder = save_subfolder_raw.strip().lower() in ("1", "true", "yes", "subfolder")
+        else:
+            save_in_subfolder = bool(save_subfolder_raw)
+
+    return save_all_flag, save_in_subfolder
+
+
 # main function to link together all the sub-functions
 def alpss_main(**inputs):
     print(f"[{datetime.now()}] DEBUG: alpss_main function called")
@@ -122,8 +147,7 @@ def alpss_main(**inputs):
         fig = None
         
         # Check if user wants to save plots (dropdown authoritative)
-        save_plots = inputs.get("save_all_plots_enabled", inputs.get("save_all_plots", "no"))  # Try new key first, fallback to old
-        save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
+        save_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
         print(f"[{datetime.now()}] DEBUG PLOT PARAMS: save_all_plots_enabled='{save_plots}', save_plots_in_subfolder={save_in_subfolder}")
         if save_plots == "yes":
             # Generate individual plots using simple_plotting
@@ -1168,8 +1192,7 @@ def simple_plotting(
     os.makedirs(inputs["out_files_dir"], exist_ok=True)
     
     # Check if user wants to save all plots in subfolder (dropdown authoritative)
-    save_all_plots = inputs.get("save_all_plots_enabled", inputs.get("save_all_plots", "no"))  # Try new key first, fallback to old
-    save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
+    save_all_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
     base_filename = inputs["filename"][0:-4]  # Remove file extension
     
     if save_all_plots == "yes":
@@ -1655,8 +1678,7 @@ def saving(
     print(f"[{datetime.now()}] Entered saving function")
     
     # Check if user wants to save all plots in subfolder
-    save_all_plots = inputs.get("save_all_plots_enabled", inputs.get("save_all_plots", "no"))  # Try new key first, fallback to old
-    save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
+    save_all_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
     base_filename = inputs["filename"][0:-4]  # Remove file extension
     
     if save_all_plots == "yes":
@@ -2184,8 +2206,7 @@ def spall_doi_finder(**inputs):
     ax1.tick_params(axis='both', labelsize=20)
 
     # Save IQ amplitude plot as a separate figure (only if plots are enabled)
-    save_all_plots = inputs.get("save_all_plots_enabled", inputs.get("save_all_plots", "no"))  # Try new key first, fallback to old
-    save_in_subfolder = inputs.get("save_plots_in_subfolder", False)
+    save_all_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
     save_iq_start_time_plot = inputs.get('save_iq_start_time_plot', False)
     
     if save_all_plots == "yes" and save_iq_start_time_plot:
