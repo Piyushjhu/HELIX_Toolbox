@@ -73,7 +73,7 @@
         "experiment_hel_detection": false,
         "density": 8960.0,
         "acoustic_velocity": 3950.0,
-        "analysis_model": "max_min",
+        "analysis_model": "hybrid",
         "hel_start_time_ns": -5.0,
         "hel_end_time_ns": 8.0,
         "hel_angle_threshold_deg": 45.0,
