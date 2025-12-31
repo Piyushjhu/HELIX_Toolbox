@@ -515,8 +515,12 @@ class AnalysisThread(QThread):
             results['DNS_Classification'] = 'Valid Spall' if results['Spall_OK'] else 'Failed'
             
             # Generate plot if plot_path is provided
+            # Note: SPADE's calculate_spall_parameters now uses hybrid approach internally
+            # (spall strength from max_min, strain rate from hybrid_5_segment)
+            # The plot will show hybrid_5_segment lines if available
             if plot_path:
-                if analysis_model == 'hybrid_5_segment':
+                # Check if we have hybrid_5_segment lines_info (from strain rate calculation)
+                if spade_lines_info and spade_intersections:
                     self.progress_signal.emit("  Hybrid 5-segment plot saved directly by SPADE (GUI overlay skipped to preserve SPADE styling).")
                 else:
                     self.progress_signal.emit(f"  [DEBUG] Plot path provided for {base_name}: {plot_path}")
@@ -527,7 +531,7 @@ class AnalysisThread(QThread):
                             results.get('Spall_Strength_GPa', spall_strength),
                             results.get('Spall_Strength_Unc_GPa', spall_unc),
                             base_name,
-                            analysis_model=analysis_model,
+                            analysis_model='hybrid',  # Use 'hybrid' to indicate mixed approach
                             lines_info=spade_lines_info,
                             intersections=spade_intersections
                         )
@@ -582,8 +586,9 @@ class AnalysisThread(QThread):
                        [vel_window[peak_idx], vel_window[valley_idx]], 
                        'r--', linewidth=2, alpha=0.5, label='Pullback')
 
-            # Overlay hybrid 5-segment fit if requested
-            if analysis_model == 'hybrid_5_segment' and lines_info and intersections:
+            # Overlay hybrid 5-segment fit if available (from strain rate calculation)
+            # Note: We now always use hybrid_5_segment for strain rate, so lines_info should be available
+            if lines_info and intersections:
                 self._overlay_hybrid_segments(ax, time_window, lines_info, intersections)
             
             # Format title with uncertainty if available
@@ -994,8 +999,12 @@ class AnalysisThread(QThread):
                                 threshold_velocity = self.spade_params.get('threshold_velocity_ms', 30.0)
                                 spall_start_time = self.spade_params.get('spall_start_time_ns', 10.0)
                                 spall_end_time = self.spade_params.get('spall_end_time_ns', 100.0)
-                                analysis_model = self.spade_params.get('analysis_model', 'max_min')
-                                spall_msg = f"  [SPALL] Using analysis_model='{analysis_model}', window=[{spall_start_time:.1f}, {spall_end_time:.1f}] ns, threshold={threshold_velocity:.1f} m/s"
+                                # Note: analysis_model is no longer user-selectable
+                                # Spall strength is always calculated using 'max_min' method
+                                # Strain rate is always calculated using 'hybrid_5_segment' method
+                                # The parameter is kept for backward compatibility with config files but ignored in calculations
+                                analysis_model = 'hybrid'  # Placeholder - actual calculations use hybrid approach
+                                spall_msg = f"  [SPALL] Using hybrid approach: spall strength from 'max_min', strain rate from 'hybrid_5_segment', window=[{spall_start_time:.1f}, {spall_end_time:.1f}] ns, threshold={threshold_velocity:.1f} m/s"
                                 self.progress_signal.emit(spall_msg)
                                 print(spall_msg)  # Also print to terminal
                                 
@@ -1191,8 +1200,12 @@ class AnalysisThread(QThread):
                                 threshold_velocity = self.spade_params.get('threshold_velocity_ms', 30.0)
                                 spall_start_time = self.spade_params.get('spall_start_time_ns', 10.0)
                                 spall_end_time = self.spade_params.get('spall_end_time_ns', 100.0)
-                                analysis_model = self.spade_params.get('analysis_model', 'max_min')
-                                spall_msg = f"  [SPALL] Using analysis_model='{analysis_model}', window=[{spall_start_time:.1f}, {spall_end_time:.1f}] ns, threshold={threshold_velocity:.1f} m/s"
+                                # Note: analysis_model is no longer user-selectable
+                                # Spall strength is always calculated using 'max_min' method
+                                # Strain rate is always calculated using 'hybrid_5_segment' method
+                                # The parameter is kept for backward compatibility with config files but ignored in calculations
+                                analysis_model = 'hybrid'  # Placeholder - actual calculations use hybrid approach
+                                spall_msg = f"  [SPALL] Using hybrid approach: spall strength from 'max_min', strain rate from 'hybrid_5_segment', window=[{spall_start_time:.1f}, {spall_end_time:.1f}] ns, threshold={threshold_velocity:.1f} m/s"
                                 self.progress_signal.emit(spall_msg)
                                 print(spall_msg)  # Also print to terminal
                                 
@@ -4204,12 +4217,13 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
 
     def generate_row_column_vs_peak_velocity_heatmap(self, spade_output_dir):
-        """Create heatmap of Flyer Row/Column vs Peak Velocity"""
+        """Create heatmap of Flyer Row/Column vs Peak Velocity with energy-bin subplots"""
         self.progress_signal.emit("Generating Flyer Row/Column vs Peak Velocity heatmap...")
         
         try:
             import matplotlib.pyplot as plt
             import numpy as np
+            from math import ceil, sqrt
             
             velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
             if not os.path.exists(velocity_shots_path):
@@ -4234,7 +4248,41 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Peak velocity column (max_velocity_ms) not found - skipping heatmap")
                 return
             
+            # Find laser energy column
+            laser_energy_col = None
+            energy_in_mj = False
+            if 'Laser_Target_Energy (mJ)' in df.columns:
+                laser_energy_col = 'Laser_Target_Energy (mJ)'
+                energy_in_mj = True
+                self.progress_signal.emit(f"   Found laser energy column: '{laser_energy_col}'")
+            else:
+                possible_names = [
+                    'Laser_Target_Energy (mJ)', 'Laser Target Energy (mJ)',
+                    'Laser_Target_Energy', 'Laser Target Energy',
+                    'Laser energy (J)', 'Laser_energy_J', 'laser_energy', 'Laser Energy',
+                    'Energy (J)', 'Energy_J', 'energy', 'Laser Power', 'laser_power'
+                ]
+                for col_name in df.columns:
+                    col_normalized = col_name.lower().replace('_', " ").replace('-', " ")
+                    for possible in possible_names:
+                        possible_normalized = possible.lower().replace('_', " ").replace('-', " ")
+                        if col_name == possible or possible_normalized in col_normalized:
+                            laser_energy_col = col_name
+                            if "mj" in col_name.lower() or "(mj)" in col_name.lower():
+                                energy_in_mj = True
+                            break
+                    if laser_energy_col:
+                        break
+                if laser_energy_col:
+                    self.progress_signal.emit(f"   Found laser energy column: '{laser_energy_col}'")
+                else:
+                    self.progress_signal.emit("   ⚠ Laser energy column not found - will show only combined heatmap")
+            
+            # Prepare base data
             subset_columns = [row_col, col_col, 'max_velocity_ms'] + [c for c in ['aligned_ok'] if c in df.columns]
+            if laser_energy_col:
+                subset_columns.append(laser_energy_col)
+            
             valid_data = df[subset_columns].copy()
             valid_data = valid_data.dropna(subset=[row_col, col_col, 'max_velocity_ms'])
             
@@ -4265,78 +4313,267 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ No valid data after 2-sigma filtering - skipping heatmap")
                 return
             
-            grouped = valid_data.groupby([row_col, col_col])['max_velocity_ms']
-            mean_table = grouped.mean().unstack()
-            count_table = grouped.count().unstack().reindex_like(mean_table)
-            max_table = grouped.max().unstack().reindex_like(mean_table)
-            min_table = grouped.min().unstack().reindex_like(mean_table)
+            # Helper function to create energy bins (same algorithm as MAD filter)
+            def create_energy_bins(energies, energy_bin_width=30.0):
+                """Create energy bins using iterative mean-based clustering"""
+                sorted_energies = sorted(energies.unique())
+                energy_bins = []
+                remaining_energies = sorted_energies.copy()
+                
+                while len(remaining_energies) > 0:
+                    current_bin = [remaining_energies.pop(0)]
+                    changed = True
+                    while changed:
+                        changed = False
+                        bin_mean = np.mean(current_bin)
+                        to_remove = []
+                        for energy in remaining_energies:
+                            if abs(energy - bin_mean) <= energy_bin_width:
+                                current_bin.append(energy)
+                                to_remove.append(energy)
+                                changed = True
+                        for energy in to_remove:
+                            remaining_energies.remove(energy)
+                    energy_bins.append(current_bin)
+                
+                return energy_bins
             
-            if mean_table.empty:
-                self.progress_signal.emit("⚠ Pivot table is empty - skipping heatmap")
-                return
+            # Helper function to create a single heatmap
+            def create_heatmap_subplot(ax, data_subset, row_col, col_col, title, cmap, vmin=None, vmax=None):
+                """Create a heatmap subplot from data subset with local color range
+                Returns: (heatmap, data_points_used, total_data_points)
+                """
+                total_data_points = len(data_subset)
+                if total_data_points == 0:
+                    ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes, fontsize=12)
+                    ax.set_title(title, fontsize=12, fontweight='bold')
+                    return None, 0, 0
+                
+                # Filter to only rows with valid row, column, and velocity data
+                valid_for_grouping = data_subset.dropna(subset=[row_col, col_col, 'max_velocity_ms'])
+                data_points_used = len(valid_for_grouping)
+                
+                if data_points_used == 0:
+                    ax.text(0.5, 0.5, 'No valid data', ha='center', va='center', transform=ax.transAxes, fontsize=12)
+                    ax.set_title(title, fontsize=12, fontweight='bold')
+                    return None, 0, total_data_points
+                
+                grouped = valid_for_grouping.groupby([row_col, col_col])['max_velocity_ms']
+                mean_table = grouped.mean().unstack()
+                count_table = grouped.count().unstack().reindex_like(mean_table)
+                max_table = grouped.max().unstack().reindex_like(mean_table)
+                min_table = grouped.min().unstack().reindex_like(mean_table)
+                
+                if mean_table.empty:
+                    ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes, fontsize=12)
+                    ax.set_title(title, fontsize=12, fontweight='bold')
+                    return None, 0, total_data_points
+                
+                rows = list(mean_table.index.astype(str))
+                columns = list(mean_table.columns.astype(str))
+                data = mean_table.values.astype(float)
+                
+                # Calculate local min/max for this subplot if not provided
+                if vmin is None or vmax is None:
+                    valid_data_values = data[~np.isnan(data)]
+                    if len(valid_data_values) > 0:
+                        local_vmin = np.nanmin(data)
+                        local_vmax = np.nanmax(data)
+                    else:
+                        local_vmin = None
+                        local_vmax = None
+                else:
+                    local_vmin = vmin
+                    local_vmax = vmax
+                
+                masked_data = np.ma.masked_invalid(data)
+                heatmap = ax.imshow(masked_data, cmap=cmap, aspect='auto', origin='lower', vmin=local_vmin, vmax=local_vmax)
+                
+                for i in range(data.shape[0]):
+                    for j in range(data.shape[1]):
+                        value = data[i, j]
+                        if not np.isnan(value):
+                            count_val = count_table.values[i, j] if not np.isnan(count_table.values[i, j]) else np.nan
+                            max_val = max_table.values[i, j] if not np.isnan(max_table.values[i, j]) else np.nan
+                            min_val = min_table.values[i, j] if not np.isnan(min_table.values[i, j]) else np.nan
+                            text_color = 'white' if (local_vmax is not None and value > 0.8 * local_vmax) or (local_vmax is None and np.nanmax(data) > 0 and value > 0.8 * np.nanmax(data)) else 'black'
+                            label_lines = [f"{value:.1f}"]
+                            if not np.isnan(count_val):
+                                label_lines.append(f"n={int(count_val)}")
+                            ax.text(j, i, "\n".join(label_lines), ha='center', va='center', color=text_color, fontsize=7)
+                
+                ax.set_xticks(np.arange(len(columns)))
+                ax.set_xticklabels(columns, rotation=45, ha='right', fontsize=8)
+                ax.set_yticks(np.arange(len(rows)))
+                ax.set_yticklabels(rows, fontsize=8)
+                ax.set_xlabel('Flyer Column', fontsize=10, fontweight='bold')
+                ax.set_ylabel('Flyer Row', fontsize=10, fontweight='bold')
+                ax.set_title(title, fontsize=11, fontweight='bold')
+                
+                return heatmap, data_points_used, total_data_points
             
-            rows = list(mean_table.index.astype(str))
-            columns = list(mean_table.columns.astype(str))
-            data = mean_table.values.astype(float)
+            # Create energy bins if laser energy column exists
+            energy_bins = []
+            if laser_energy_col and laser_energy_col in valid_data.columns:
+                valid_data[laser_energy_col] = pd.to_numeric(valid_data[laser_energy_col], errors='coerce')
+                laser_energies = valid_data[laser_energy_col].dropna()
+                
+                if len(laser_energies) > 0:
+                    energy_bin_width = 30.0  # ±30 mJ bins
+                    energy_bins = create_energy_bins(laser_energies, energy_bin_width)
+                    self.progress_signal.emit(f"   Created {len(energy_bins)} energy bin(s) from {len(laser_energies.unique())} unique energy levels")
+                    for bin_idx, energy_bin in enumerate(energy_bins):
+                        bin_mean = np.mean(energy_bin)
+                        bin_min = min(energy_bin)
+                        bin_max = max(energy_bin)
+                        self.progress_signal.emit(f"      Bin {bin_idx+1}: mean={bin_mean:.1f} mJ, range=[{bin_min:.1f}, {bin_max:.1f}] mJ")
+                else:
+                    self.progress_signal.emit("   ⚠ No valid laser energy values found - will show only combined heatmap")
+            else:
+                if laser_energy_col:
+                    self.progress_signal.emit(f"   ⚠ Laser energy column '{laser_energy_col}' not in valid data - will show only combined heatmap")
             
-            fig = plt.figure(figsize=(9, 9))
-            # Main heatmap axes - optimized to reduce white space
-            ax = fig.add_axes([0.1, 0.1, 0.7, 0.8])
-            cmap = plt.get_cmap('viridis')
-            masked_data = np.ma.masked_invalid(data)
-            heatmap = ax.imshow(masked_data, cmap=cmap, aspect='auto', origin='lower')
+            # Determine number of subplots: 1 (combined) + number of energy bins with data
+            num_subplots = 1 + len(energy_bins)
+            self.progress_signal.emit(f"   Creating {num_subplots} subplot(s): 1 combined + {len(energy_bins)} energy-bin heatmap(s)")
             
-            for i in range(data.shape[0]):
-                for j in range(data.shape[1]):
-                    value = data[i, j]
-                    if not np.isnan(value):
-                        count_val = count_table.values[i, j] if not np.isnan(count_table.values[i, j]) else np.nan
-                        max_val = max_table.values[i, j] if not np.isnan(max_table.values[i, j]) else np.nan
-                        min_val = min_table.values[i, j] if not np.isnan(min_table.values[i, j]) else np.nan
-                        text_color = 'white' if np.nanmax(data) > 0 and value > 0.8 * np.nanmax(data) else 'black'
-                        label_lines = [f"{value:.1f} m/s"]
-                        if not np.isnan(count_val):
-                            label_lines.append(f"n={int(count_val)}")
-                        if not np.isnan(max_val):
-                            label_lines.append(f"max={max_val:.1f}")
-                        if not np.isnan(min_val):
-                            label_lines.append(f"min={min_val:.1f}")
-                        ax.text(j, i, "\n".join(label_lines), ha='center', va='center', color=text_color, fontsize=9)
+            # Calculate grid dimensions
+            if num_subplots == 1:
+                nrows, ncols = 1, 1
+            else:
+                ncols = min(3, ceil(sqrt(num_subplots)))
+                nrows = ceil(num_subplots / ncols)
             
-            ax.set_xticks(np.arange(len(columns)))
-            ax.set_xticklabels(columns, rotation=45, ha='right')
-            ax.set_yticks(np.arange(len(rows)))
-            ax.set_yticklabels(rows)
-            ax.set_xlabel('Flyer Column', fontsize=14, fontweight='bold')
-            ax.set_ylabel('Flyer Row', fontsize=14, fontweight='bold')
-            ax.set_title('Peak Velocity Heatmap by Flyer Row/Column', fontsize=16, fontweight='bold')
+            # Create figure with subplots
+            fig_width = max(12, ncols * 4)
+            fig_height = max(10, nrows * 4)
+            fig, axes = plt.subplots(nrows, ncols, figsize=(fig_width, fig_height))
             
-            # Colorbar positioned right after heatmap
-            cbar = fig.colorbar(heatmap, ax=ax, pad=0.02, fraction=0.046)
-            cbar.set_label('Peak Velocity (m/s)', fontsize=12)
+            # Handle single subplot case
+            if num_subplots == 1:
+                axes = [axes]
+            else:
+                # Convert to list of axes for consistent indexing
+                if nrows == 1:
+                    # Single row: axes is already a 1D array
+                    axes = [axes] if ncols == 1 else list(axes) if hasattr(axes, '__iter__') else [axes]
+                else:
+                    # Multiple rows: axes is 2D, need to flatten
+                    axes = axes.flatten() if hasattr(axes, 'flatten') else list(axes)
             
-            # Legend/explanation axes on right, positioned after colorbar (compact)
-            legend_text_ax = fig.add_axes([0.82, 0.75, 0.16, 0.20])
-            legend_text_ax.axis('off')
-            legend_text = (
-                "Cell labels show:\\n"
-                " - Avg peak velocity (m/s)\\n"
-                " - n = traces contributing\\n"
-                " - max/min = velocity bounds\\n"
-                "Example format:\\n"
-                "  R1C1 -> \\\"5200 m/s\\\\n"
-                "          n=3\\\\n"
-                "          max=5450\\\\n"
-                "          min=4980\\\"\\n"
-                "(values update per cell)"
+            self.progress_signal.emit(f"   Grid layout: {nrows} rows × {ncols} columns, {len(axes)} axes available")
+            
+            # Use colormap that matches other scatter plots (plasma is similar aesthetic to tab10/tab20)
+            # Alternative options: 'plasma', 'inferno', 'magma', 'cividis'
+            cmap = plt.get_cmap('plasma')
+            
+            # Subplot (1,1): Combined heatmap (all energy levels) - uses its own local range
+            ax_combined = axes[0]
+            total_input_data = len(valid_data)
+            heatmap_combined, data_used_combined, total_combined = create_heatmap_subplot(
+                ax_combined, valid_data, row_col, col_col,
+                'Peak Velocity Heatmap (All Energy Levels)', cmap, None, None
             )
-            legend_text_ax.text(0, 1, legend_text, va='top', fontsize=10.5)
             
+            # Update title with actual data usage
+            if heatmap_combined is not None and data_used_combined > 0:
+                if data_used_combined != total_combined:
+                    title_combined = f'Peak Velocity Heatmap (All Energy Levels)\nUsed: {data_used_combined}/{total_combined} data points'
+                else:
+                    title_combined = f'Peak Velocity Heatmap (All Energy Levels)\n({data_used_combined} data points)'
+                ax_combined.set_title(title_combined, fontsize=11, fontweight='bold')
+            
+            if data_used_combined != total_combined:
+                excluded = total_combined - data_used_combined
+                self.progress_signal.emit(f"   ⚠ Combined heatmap: {excluded} data point(s) excluded (missing row/column/velocity data)")
+            
+            # Additional subplots: One per energy bin
+            subplot_idx = 1
+            bins_with_data = 0
+            for bin_idx, energy_bin in enumerate(energy_bins):
+                if subplot_idx >= len(axes):
+                    self.progress_signal.emit(f"   ⚠ Reached maximum subplot limit ({len(axes)}), skipping remaining bins")
+                    break
+                
+                bin_mean = np.mean(energy_bin)
+                energy_bin_width = 30.0
+                
+                # Filter data for this energy bin
+                bin_data = valid_data[
+                    (valid_data[laser_energy_col] >= bin_mean - energy_bin_width) &
+                    (valid_data[laser_energy_col] <= bin_mean + energy_bin_width)
+                ].copy()
+                
+                if len(bin_data) > 0:
+                    bins_with_data += 1
+                    energy_unit = 'mJ' if energy_in_mj else 'J'
+                    total_bin_data = len(bin_data)
+                    title = f'Energy: {bin_mean:.0f}±{energy_bin_width:.0f} {energy_unit} (n={total_bin_data})'
+                    ax_bin = axes[subplot_idx]
+                    self.progress_signal.emit(f"   Creating heatmap for bin {bin_idx+1}: {title}")
+                    # Each bin uses its own local color range (pass None, None)
+                    heatmap_bin, data_used_bin, total_bin = create_heatmap_subplot(
+                        ax_bin, bin_data, row_col, col_col,
+                        title, cmap, None, None
+                    )
+                    
+                    # Update title with actual data usage
+                    if heatmap_bin is not None and data_used_bin > 0:
+                        if data_used_bin != total_bin:
+                            title_updated = f'Energy: {bin_mean:.0f}±{energy_bin_width:.0f} {energy_unit}\nUsed: {data_used_bin}/{total_bin} data points'
+                        else:
+                            title_updated = f'Energy: {bin_mean:.0f}±{energy_bin_width:.0f} {energy_unit}\n({data_used_bin} data points)'
+                        ax_bin.set_title(title_updated, fontsize=11, fontweight='bold')
+                    
+                    if data_used_bin != total_bin:
+                        excluded = total_bin - data_used_bin
+                        self.progress_signal.emit(f"      ⚠ Bin {bin_idx+1}: {excluded} data point(s) excluded (missing row/column/velocity data)")
+                    
+                    subplot_idx += 1
+                else:
+                    self.progress_signal.emit(f"   ⚠ Bin {bin_idx+1} ({bin_mean:.0f}±{energy_bin_width:.0f} mJ) has no data - skipping")
+            
+            self.progress_signal.emit(f"   Created {bins_with_data} energy-bin heatmap(s) with data")
+            
+            # Hide unused subplots
+            for idx in range(subplot_idx, len(axes)):
+                axes[idx].axis('off')
+            
+            # Add individual colorbars for each subplot (since each has its own range)
+            # We'll add colorbars to all subplots that have data
+            heatmaps_created = []
+            if heatmap_combined is not None:
+                heatmaps_created.append((axes[0], heatmap_combined))
+            
+            # Collect all heatmaps from energy bins
+            for idx in range(1, subplot_idx):
+                if idx < len(axes):
+                    # Get the heatmap from the axes (it's stored in the axes' images)
+                    ax_imgs = axes[idx].images
+                    if len(ax_imgs) > 0:
+                        heatmaps_created.append((axes[idx], ax_imgs[0]))
+            
+            # Add colorbar to each subplot
+            for ax, heatmap in heatmaps_created:
+                cbar = fig.colorbar(heatmap, ax=ax, orientation='vertical', pad=0.02, fraction=0.046)
+                cbar.set_label('Peak Velocity (m/s)', fontsize=10, fontweight='bold')
+            
+            # Add legend/explanation
+            legend_text = (
+                "Cell labels show:\n"
+                " - Avg peak velocity (m/s)\n"
+                " - n = traces contributing"
+            )
+            fig.text(0.99, 0.01, legend_text, ha='right', va='bottom', fontsize=9, 
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+            
+            plt.tight_layout()
             plot_path = os.path.join(spade_output_dir, 'flyer_row_column_peak_velocity_heatmap.png')
             plt.savefig(plot_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
             plt.close()
             
             self.progress_signal.emit(f"✅ Generated Flyer Row/Column vs Peak Velocity heatmap: {plot_path}")
+            self.progress_signal.emit(f"   Created {subplot_idx} subplot(s): 1 combined + {subplot_idx-1} energy-bin heatmap(s)")
         
         except Exception as e:
             self.progress_signal.emit(f"Error generating Flyer Row/Column vs Peak Velocity heatmap: {str(e)}")
@@ -7810,10 +8047,8 @@ class HELIXAnalysisToolbox(QMainWindow):
                 self.spade_density.setValue(params['density'])
             if hasattr(self, 'spade_acoustic_velocity') and 'acoustic_velocity' in params:
                 self.spade_acoustic_velocity.setValue(params['acoustic_velocity'])
-            if hasattr(self, 'analysis_model') and 'analysis_model' in params:
-                index = self.analysis_model.findText(params['analysis_model'])
-                if index >= 0:
-                    self.analysis_model.setCurrentIndex(index)
+            # Note: analysis_model is no longer user-selectable
+            # Calculations always use hybrid approach (max_min for spall strength, hybrid_5_segment for strain rate)
             if hasattr(self, 'prominence_factor') and 'prominence_factor' in params:
                 self.prominence_factor.setValue(params['prominence_factor'])
             if hasattr(self, 'peak_distance_ns') and 'peak_distance_ns' in params:
@@ -9544,18 +9779,17 @@ class HELIXAnalysisToolbox(QMainWindow):
         
         layout.addWidget(material_group)
         
-        # Analysis model
-        model_group = QGroupBox("Analysis Model")
-        model_layout = QGridLayout(model_group)
-        model_layout.setSpacing(10)  # Increase spacing between elements
-        
-        model_layout.addWidget(QLabel("Analysis Model:"), 0, 0)
-        self.analysis_model = QComboBox()
-        self.analysis_model.addItems(["hybrid_5_segment", "max_min"])
-        self.analysis_model.setCurrentText("hybrid_5_segment")
-        model_layout.addWidget(self.analysis_model, 0, 1)
-        
-        layout.addWidget(model_group)
+        # Analysis method info (no longer user-selectable)
+        # Note: Calculations now use hybrid approach:
+        # - Spall strength: always calculated using 'max_min' method
+        # - Strain rate: always calculated using 'hybrid_5_segment' method
+        info_group = QGroupBox("Spall Analysis Method")
+        info_layout = QVBoxLayout(info_group)
+        info_label = QLabel("ℹ️ Calculations use hybrid approach:\n• Spall strength: calculated using 'max_min' method (peak/valley detection)\n• Strain rate: calculated using 'hybrid_5_segment' method (5-segment line fitting)")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        info_layout.addWidget(info_label)
+        layout.addWidget(info_group)
 
         # HEL Detection parameters
         self.hel_group = QGroupBox("HEL Detection Parameters")
@@ -10001,8 +10235,10 @@ Material Properties:
 - acoustic_velocity: Acoustic velocity in m/s
 
 Analysis Model:
-- hybrid_5_segment: Advanced 5-segment analysis model
-- max_min: Simple maximum/minimum analysis
+- NOTE: The system now uses a hybrid approach by default:
+  * Spall strength: calculated using 'max_min' method (peak/valley detection)
+  * Strain rate: calculated using 'hybrid_5_segment' method (5-segment line fitting)
+- The analysis_model dropdown is kept for backward compatibility but no longer controls the actual calculations
 
 Signal Processing:
 - signal_length_ns: Custom signal length in nanoseconds (None for full signal)
@@ -11027,7 +11263,9 @@ Output Files:
         return {
             'density': self.spade_density.value(),
             'acoustic_velocity': self.spade_acoustic_velocity.value(),
-            'analysis_model': self.analysis_model.currentText(),
+            # Note: analysis_model is no longer user-selectable - always uses hybrid approach
+            # (max_min for spall strength, hybrid_5_segment for strain rate)
+            'analysis_model': 'hybrid',  # Placeholder for backward compatibility with config files
             'signal_length_ns': signal_length_ns,
             'prominence_factor': self.prominence_factor.value(),
             'peak_distance_ns': self.peak_distance_ns.value(),
@@ -11072,7 +11310,7 @@ Output Files:
     def _apply_runtime_spade_overrides(self, spade_params):
         """Ensure critical SPADE settings respect the current GUI selections."""
         overrides = {
-            'analysis_model': self.analysis_model.currentText(),
+            # Note: analysis_model is no longer user-selectable - always uses hybrid approach
             'spall_start_time_ns': self.spall_start_time_ns.value(),
             'spall_end_time_ns': self.spall_end_time_ns.value(),
             'threshold_velocity_ms': self.threshold_velocity_ms.value(),

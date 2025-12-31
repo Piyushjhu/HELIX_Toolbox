@@ -613,20 +613,55 @@ def calculate_spall_parameters(
             'uncertainty': df_final['uncertainty']
         })
 
-        logger.debug(f"Calling analysis model: '{analysis_model}'")
-
-        if analysis_model == 'hybrid_5_segment':
-            model_kwargs = {k: v for k, v in kwargs.items() if k in ['prominence_factor', 'peak_distance_ns']}
-            results_model, lines_info, intersections = _calculate_hybrid_5_segment_features(
-                df_final['time_shifted'], df_final['velocity_smoothed'], density, acoustic_velocity, uncertainty_smoothed=df_final['uncertainty'], **model_kwargs)
+        # NEW BEHAVIOR: Use separate methods for spall strength and strain rate
+        # - Spall strength: always use max_min (default)
+        # - Strain rate: always use hybrid_5_segment (default)
+        # The analysis_model parameter is kept for backward compatibility but no longer controls the actual calculations
         
-        elif analysis_model == 'max_min':
-            results_model, lines_info, intersections = _calculate_max_min_features(
+        logger.debug(f"Using hybrid approach: spall strength from 'max_min', strain rate from 'hybrid_5_segment'")
+        
+        # Calculate spall strength using max_min method
+        try:
+            results_max_min, lines_info_max_min, intersections_max_min = _calculate_max_min_features(
                 df_final['time_shifted'], df_final['velocity_smoothed'], density, acoustic_velocity, uncertainty_smoothed=df_final['uncertainty'])
+        except Exception as e:
+            logger.warning(f"Failed to calculate spall strength using max_min: {e}")
+            results_max_min = {}
+            lines_info_max_min = []
+            intersections_max_min = []
         
+        # Calculate strain rate using hybrid_5_segment method
+        try:
+            model_kwargs = {k: v for k, v in kwargs.items() if k in ['prominence_factor', 'peak_distance_ns']}
+            results_5seg, lines_info_5seg, intersections_5seg = _calculate_hybrid_5_segment_features(
+                df_final['time_shifted'], df_final['velocity_smoothed'], density, acoustic_velocity, uncertainty_smoothed=df_final['uncertainty'], **model_kwargs)
+        except Exception as e:
+            logger.warning(f"Failed to calculate strain rate using hybrid_5_segment: {e}")
+            results_5seg = {}
+            lines_info_5seg = []
+            intersections_5seg = []
+        
+        # Combine results: spall strength from max_min, strain rate from hybrid_5_segment
+        results_model = {}
+        
+        # Copy all results from max_min first
+        results_model.update(results_max_min)
+        
+        # Override strain rate and its uncertainty with values from hybrid_5_segment
+        if 'Strain Rate (s^-1)' in results_5seg:
+            results_model['Strain Rate (s^-1)'] = results_5seg['Strain Rate (s^-1)']
+        if 'Strain Rate Uncertainty (s^-1)' in results_5seg:
+            results_model['Strain Rate Uncertainty (s^-1)'] = results_5seg['Strain Rate Uncertainty (s^-1)']
+        
+        # Use lines_info and intersections from hybrid_5_segment for plotting (more detailed)
+        # Fall back to max_min if hybrid_5_segment failed
+        if lines_info_5seg and intersections_5seg:
+            lines_info = lines_info_5seg
+            intersections = intersections_5seg
         else:
-            raise ValueError(f"Unknown analysis_model: '{analysis_model}'. Must be 'hybrid_5_segment' or 'max_min'.")
-            
+            lines_info = lines_info_max_min
+            intersections = intersections_max_min
+        
         results.update(results_model)
         status = 'Success'
 
