@@ -36,12 +36,12 @@ class HelixApp:
     def __init__(self):
         # Shared state across pages
         self.girder_client = None  # HelixGirderClient or None
-        self.input_files: list[str] = []
-        self.output_dir: str = os.path.join(tempfile.gettempdir(), "helix_output")
-        self.alpss_params: dict = {}
-        self.spade_params: dict = {}
-        self.analysis_mode: str = "both"
-        self.pipeline_result: dict | None = None
+        self.input_files = []
+        self.output_dir = os.path.join(tempfile.gettempdir(), "helix_output")
+        self.alpss_params = {}
+        self.spade_params = {}
+        self.analysis_mode = "both"
+        self.pipeline_result = None
 
         # Build pages
         self.connection_page = ConnectionPage(self)

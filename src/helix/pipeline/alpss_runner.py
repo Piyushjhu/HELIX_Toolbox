@@ -42,8 +42,7 @@ def run_alpss_batch(
         gc.collect()
 
         params = alpss_params.copy()
-        params["filename"] = basename
-        params["exp_data_dir"] = os.path.dirname(input_file)
+        params["filepath"] = os.path.abspath(input_file)
         params["out_files_dir"] = output_dir
 
         # Attach experiment metadata if available

@@ -12,8 +12,8 @@ readme = "README.md"
 packages = [{include = "helix", from = "src"}]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.13"
-alpss = ">=1.4.0"
+python = ">=3.9,<3.11"
+alpss = {path = "../ALPSS", develop = true}
 numpy = ">=1.21"
 scipy = ">=1.7"
 pandas = ">=1.3"
