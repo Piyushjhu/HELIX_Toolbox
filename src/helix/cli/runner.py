@@ -40,6 +40,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--input-files", nargs="+", help="Explicit PDV input files.")
     parser.add_argument("--input-dir", help="Directory of PDV input files.")
     parser.add_argument("--input-pattern", default="*.csv", help="Glob pattern (default: *.csv).")
+    parser.add_argument("--girder-folder", help="Download input files from a Girder folder ID.")
+    parser.add_argument("--girder-url", default=None, help="Girder API URL (default: data.htmdec.org).")
+    parser.add_argument("--girder-key", default=None, help="Girder API key (or set HTMDEC_GIRDER_API_KEY env var).")
+    parser.add_argument("--girder-upload-folder", help="Upload results to this Girder folder ID.")
     parser.add_argument("--param-folder", help="Experiment metadata folder.")
     parser.add_argument(
         "--analysis-mode", choices=["both", "alpss_only", "spade_only"],
@@ -92,6 +96,19 @@ def main():
         sys.exit(1)
     output_dir = os.path.abspath(output_dir)
 
+    # ---- Girder download ----
+    girder_client = None
+    if args.girder_folder:
+        from helix.girder.client import HelixGirderClient
+        girder_client = HelixGirderClient(api_url=args.girder_url, api_key=args.girder_key)
+        girder_client.connect()
+        import tempfile
+        girder_input_dir = os.path.join(tempfile.gettempdir(), "helix_girder_input")
+        print(f"Downloading files from Girder folder {args.girder_folder}...")
+        downloaded = girder_client.download_folder(args.girder_folder, girder_input_dir, pattern=input_pattern)
+        print(f"Downloaded {len(downloaded)} file(s) from Girder")
+        input_files_arg = downloaded
+
     # ---- Resolve input files ----
     input_files = []
     if analysis_mode != "spade_only":
@@ -129,6 +146,20 @@ def main():
 
     n_ok = len(result.get("successful_files", []))
     n_fail = len(result.get("failed_files", []))
+
+    # ---- Girder upload ----
+    if args.girder_upload_folder and girder_client:
+        print(f"Uploading results to Girder folder {args.girder_upload_folder}...")
+        girder_client.upload_results(output_dir, args.girder_upload_folder)
+        print("Upload complete.")
+    elif args.girder_upload_folder and not girder_client:
+        from helix.girder.client import HelixGirderClient
+        girder_client = HelixGirderClient(api_url=args.girder_url, api_key=args.girder_key)
+        girder_client.connect()
+        print(f"Uploading results to Girder folder {args.girder_upload_folder}...")
+        girder_client.upload_results(output_dir, args.girder_upload_folder)
+        print("Upload complete.")
+
     if n_fail:
         print(f"\n{n_ok} succeeded, {n_fail} failed.")
         sys.exit(1)

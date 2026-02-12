@@ -13,7 +13,11 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import uniform_filter1d
 
-from alpss.analysis.hel import hel_detection, HELResult
+try:
+    from alpss.analysis.hel import hel_detection, HELResult
+    _HEL_AVAILABLE = True
+except ImportError:
+    _HEL_AVAILABLE = False
 
 logger = logging.getLogger("helix")
 
@@ -175,8 +179,8 @@ def generate_velocity_summary(
         else:
             row["Peak_Shock_Stress_GPa"] = np.nan
 
-        # HEL detection (delegated to ALPSS)
-        if hel_enabled:
+        # HEL detection (delegated to ALPSS >= 1.5.0)
+        if hel_enabled and _HEL_AVAILABLE:
             hel_result = hel_detection(
                 time_clean, vel_clean, unc_clean,
                 density=rho if np.isfinite(rho) else None,
