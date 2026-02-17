@@ -21,7 +21,6 @@ Example usage (separate config files):
         --analysis-mode both \
         --spade-mode auto
 """
-
 import argparse
 import glob
 import os
@@ -302,11 +301,59 @@ def _resolve_file_list(
 ) -> List[str]:
     """Resolve input files from explicit paths or directory/pattern."""
     if explicit_files:
-        return [os.path.abspath(path) for path in explicit_files if os.path.exists(path)]
+        existing_files = [os.path.abspath(path) for path in explicit_files if os.path.exists(path)]
+        missing_files = [os.path.abspath(path) for path in explicit_files if not os.path.exists(path)]
+        if missing_files:
+            print("[WARN] Some explicit input files do not exist:")
+            for f in missing_files:
+                print(f"  - {f}")
+        return existing_files
 
     if directory:
-        search_glob = os.path.join(os.path.abspath(directory), pattern or "*.csv")
-        return sorted(glob.glob(search_glob))
+        abs_directory = os.path.abspath(directory)
+        if not os.path.isdir(abs_directory):
+            print(f"[ERROR] Input directory does not exist: {abs_directory}")
+            return []
+        
+        # Handle pattern - ensure it works with glob
+        if not pattern:
+            pattern = "*.csv"
+        
+        # Construct search glob pattern
+        search_glob = os.path.join(abs_directory, pattern)
+        
+        # Debug output
+        print(f"[INFO] Searching for files in: {abs_directory}")
+        print(f"[INFO] Using pattern: {pattern}")
+        print(f"[INFO] Full glob pattern: {search_glob}")
+        
+        matched_files = sorted(glob.glob(search_glob))
+        
+        if not matched_files:
+            # Provide helpful diagnostics
+            print(f"[WARN] No files matched pattern '{pattern}' in directory: {abs_directory}")
+            # List what files actually exist in the directory
+            try:
+                existing_files = os.listdir(abs_directory)
+                csv_files = [f for f in existing_files if f.lower().endswith('.csv')]
+                if csv_files:
+                    print(f"[INFO] Found {len(csv_files)} CSV files in directory (but pattern didn't match):")
+                    for f in csv_files[:10]:  # Show first 10
+                        print(f"  - {f}")
+                    if len(csv_files) > 10:
+                        print(f"  ... and {len(csv_files) - 10} more CSV files")
+                else:
+                    print(f"[INFO] No CSV files found in directory. Total files: {len(existing_files)}")
+                    if existing_files:
+                        print("[INFO] Sample files in directory:")
+                        for f in existing_files[:10]:
+                            print(f"  - {f}")
+            except Exception as e:
+                print(f"[WARN] Could not list directory contents: {e}")
+        else:
+            print(f"[INFO] Found {len(matched_files)} file(s) matching pattern")
+        
+        return matched_files
 
     return []
 
@@ -562,9 +609,37 @@ def main():
 
     # Resolve input files
     if analysis_mode != "spade_only":
+        print("\n" + "=" * 70)
+        print("RESOLVING PDV INPUT FILES")
+        print("=" * 70)
+        if input_files:
+            print(f"Using explicit input files: {len(input_files)} file(s) specified")
+        elif input_dir:
+            print(f"Searching directory: {input_dir}")
+            print(f"Using pattern: {input_pattern}")
+        else:
+            print("ERROR: No input files or input directory specified!")
+        print("=" * 70 + "\n")
+        
         resolved_input_files = _resolve_file_list(input_files, input_dir, input_pattern)
         if not resolved_input_files:
-            raise RuntimeError("No PDV input files found for ALPSS processing.")
+            error_msg = "No PDV input files found for ALPSS processing.\n\n"
+            if input_files:
+                error_msg += f"Explicit files specified: {input_files}\n"
+                error_msg += "Please verify these file paths exist.\n"
+            elif input_dir:
+                error_msg += f"Directory: {input_dir}\n"
+                error_msg += f"Pattern: {input_pattern}\n"
+                error_msg += "Please verify:\n"
+                error_msg += "  1. The directory path is correct\n"
+                error_msg += "  2. The directory contains CSV files\n"
+                error_msg += "  3. The pattern matches your file naming convention\n"
+            else:
+                error_msg += "No input files or input directory was specified.\n"
+                error_msg += "Please provide either --input-files or --input-dir in config or command line.\n"
+            raise RuntimeError(error_msg)
+        
+        print(f"\n✓ Successfully resolved {len(resolved_input_files)} input file(s)\n")
     else:
         resolved_input_files = []
 

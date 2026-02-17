@@ -1134,8 +1134,6 @@ class AnalysisThread(QThread):
             # Overlay hybrid 5-segment fit if available (from strain rate calculation)
             # Note: We now always use hybrid_5_segment for strain rate, so lines_info should be available
             if lines_info and intersections:
-                print(f"  [PLOT] {base_name}: Overlaying 5-segment lines - lines_info type: {type(lines_info)}, len: {len(lines_info) if lines_info else 0}, intersections len: {len(intersections) if intersections else 0}")
-                sys.stdout.flush()
                 self._overlay_hybrid_segments(ax, time_window, lines_info, intersections)
             else:
                 print(f"  [PLOT] {base_name}: No 5-segment lines to overlay - lines_info={lines_info}, intersections={intersections}")
