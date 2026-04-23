@@ -25,9 +25,10 @@
 12. [Spall Detection](#spall-detection)
 13. [MAD Filter](#mad-filter)
 14. [Algorithm Reference Documents](#algorithm-reference-documents)
-15. [Troubleshooting](#troubleshooting)
-16. [Credits](#credits)
-17. [Citation](#citation)
+15. [Examples](#examples)
+16. [Troubleshooting](#troubleshooting)
+17. [Credits](#credits)
+18. [Citation](#citation)
 
 ---
 
@@ -1046,6 +1047,30 @@ Detailed step-by-step algorithm documentation lives alongside this README:
 | [supplementary/references/SPALL_STRENGTH_CALCULATION.tex](supplementary/references/SPALL_STRENGTH_CALCULATION.tex) | Derivation and uncertainty propagation for the acoustic spall-strength formula |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and feature changes |
 | [supplementary/README.md](supplementary/README.md) | Description of optional / non-runtime files |
+
+---
+
+## Examples
+
+The [`examples/`](examples/) folder contains four Jupyter notebooks that walk
+through common HELIX Toolbox workflows, from a full end-to-end run to
+fine-grained post-processing:
+
+| Notebook | What it shows |
+|----------|---------------|
+| [01_full_pipeline_cli.ipynb](examples/01_full_pipeline_cli.ipynb) | Raw PDV CSVs → velocity → spall strength via CLI + YAML config |
+| [02_alpss_signal_processing.ipynb](examples/02_alpss_signal_processing.ipynb) | ALPSS only: IQ extraction, velocity trace, uncertainty bands |
+| [03_spade_spall_hel_analysis.ipynb](examples/03_spade_spall_hel_analysis.ipynb) | SPADE only: spall strength, strain rate, shock stress, HEL detection |
+| [04_postprocessing_paper_plots.ipynb](examples/04_postprocessing_paper_plots.ipynb) | Regenerate paper plots from existing SPADE summary CSVs |
+
+**Quick start:**
+```bash
+pip install jupyter
+jupyter notebook examples/
+```
+
+Place any reference figures in [`examples/figures/`](examples/figures/) to
+display them in the notebooks alongside your own results.
 
 ---
 

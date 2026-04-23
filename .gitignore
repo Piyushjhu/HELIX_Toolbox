@@ -159,3 +159,7 @@ ALPSS/output_data/
 SPADE/spall_analysis_release/executables/
 *.exe
 *.app
+
+# Examples — keep notebooks and figures/README but ignore generated outputs
+examples/figures/example_*/
+examples/**/*_output/
