@@ -47,20 +47,93 @@ def cleanup_matplotlib():
     plt.clf()  # Clear current figure
     plt.cla()  # Clear current axes
 
+# ---------------------------------------------------------------------------
+# Configuration I/O
+#
+# Both YAML (.yml / .yaml) and JSON (.json) are supported. The format is chosen
+# automatically from the file extension, so existing JSON configs keep working
+# unchanged while users can migrate to commented YAML at their own pace.
+#
+# YAML support requires the optional PyYAML dependency. If it is not installed,
+# JSON still works, and attempting to load/save a YAML file will return a clear
+# error telling the user to `pip install pyyaml`.
+# ---------------------------------------------------------------------------
+try:
+    import yaml as _yaml  # PyYAML
+except ImportError:  # pragma: no cover - optional dep
+    _yaml = None
+
+
+def _config_format(file_path):
+    """Return 'yaml' or 'json' based on file extension (defaults to 'json')."""
+    ext = os.path.splitext(str(file_path))[1].lower()
+    if ext in (".yml", ".yaml"):
+        return "yaml"
+    return "json"
+
+
 def save_config_to_file(config_dict, file_path):
-    """Save configuration dictionary to JSON file"""
+    """Save configuration dictionary to a JSON or YAML file.
+
+    The output format is chosen from the file extension:
+      * ``.json``          -> JSON (indent=4)
+      * ``.yml`` / ``.yaml`` -> YAML (block style, keys preserved)
+
+    Note: saving to YAML uses PyYAML's plain dumper, so any comments from a
+    previously-loaded YAML template are **not** preserved. Edit the YAML
+    template directly if you want to keep comments.
+    """
+    fmt = _config_format(file_path)
     try:
-        with open(file_path, 'w') as f:
-            json.dump(config_dict, f, indent=4)
+        if fmt == "yaml":
+            if _yaml is None:
+                return False, (
+                    "YAML support requires PyYAML. Install it with "
+                    "`pip install pyyaml`, or save as .json instead."
+                )
+            with open(file_path, "w") as f:
+                _yaml.safe_dump(
+                    config_dict,
+                    f,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    indent=2,
+                    allow_unicode=True,
+                )
+        else:
+            with open(file_path, "w") as f:
+                json.dump(config_dict, f, indent=4)
         return True, f"Configuration saved to {file_path}"
     except Exception as e:
         return False, f"Error saving config: {str(e)}"
 
+
 def load_config_from_file(file_path):
-    """Load configuration dictionary from JSON file"""
+    """Load a configuration dictionary from a JSON or YAML file.
+
+    Returns a ``(ok, config_dict, message)`` tuple. The parser is chosen from
+    the file extension (``.yml`` / ``.yaml`` -> YAML, anything else -> JSON).
+    """
+    fmt = _config_format(file_path)
     try:
-        with open(file_path, 'r') as f:
-            config_dict = json.load(f)
+        if fmt == "yaml":
+            if _yaml is None:
+                return False, {}, (
+                    "YAML support requires PyYAML. Install it with "
+                    "`pip install pyyaml`, or use a .json config instead."
+                )
+            with open(file_path, "r") as f:
+                config_dict = _yaml.safe_load(f)
+            if config_dict is None:
+                config_dict = {}
+            if not isinstance(config_dict, dict):
+                return False, {}, (
+                    f"YAML file {file_path} did not parse into a mapping "
+                    f"(got {type(config_dict).__name__})."
+                )
+        else:
+            with open(file_path, "r") as f:
+                config_dict = json.load(f)
         return True, config_dict, f"Configuration loaded from {file_path}"
     except Exception as e:
         return False, {}, f"Error loading config: {str(e)}"
@@ -255,22 +328,61 @@ class AnalysisThread(QThread):
         
         if not self.param_data:
             return {}
-        
+
+        def _pdv_basename(raw):
+            """Strip any directory prefix + common extensions from a PDV_FileName.
+
+            Parameter files sometimes store the full Windows/POSIX path that the
+            acquisition PC wrote (e.g. ``C:\\Users\\Administrator\\Desktop\\PDV_DATA\\<name>``).
+            We normalise to the bare filename so matching works regardless of
+            whether just the filename or the full path was recorded.
+            """
+            s = "" if raw is None else str(raw).strip()
+            if not s or s.lower() == "nan":
+                return ""
+            if "\\" in s:
+                s = s.rsplit("\\", 1)[-1]
+            if "/" in s:
+                s = s.rsplit("/", 1)[-1]
+            s = s.strip().strip('"').strip("'")
+            for _ext in (".csv", ".txt", ".dat", ".bin", ".h5", ".hdf5", ".trc"):
+                if s.lower().endswith(_ext):
+                    s = s[: -len(_ext)]
+                    break
+            return s
+
+        base_name_norm = _pdv_basename(base_name)
+
         # Strategy 1: Try exact match first (if base_name is a key in param_data)
         if base_name in self.param_data:
             return self.param_data[base_name]
-        
-        # Strategy 2: Extract PDV filename and match to PDV_FileName column (exact match)
+        if base_name_norm and base_name_norm in self.param_data:
+            return self.param_data[base_name_norm]
+
+        # Strategy 2a: Exact basename match against PDV_FileName / key
+        # Handles rows whose PDV_FileName was saved as a full path on Windows.
+        for key, param_entry in self.param_data.items():
+            if not isinstance(param_entry, dict):
+                continue
+            key_base = _pdv_basename(key)
+            param_pdv_base = _pdv_basename(param_entry.get('PDV_FileName', ''))
+            if base_name_norm and (base_name_norm == key_base or base_name_norm == param_pdv_base):
+                self.progress_signal.emit(
+                    f"PDV_FileName basename match: {base_name} -> {param_pdv_base or key_base}"
+                )
+                return param_entry
+
+        # Strategy 2b: Extract PDV filename and match to PDV_FileName column (exact match)
         pdv_pattern = re.search(r'(C\d+--\d{8}--\d{5})', base_name)
         if pdv_pattern:
             pdv_filename = pdv_pattern.group(1)
             for key, param_entry in self.param_data.items():
                 if isinstance(param_entry, dict):
-                    param_pdv = str(param_entry.get('PDV_FileName', '')).strip()
-                    if param_pdv == pdv_filename or str(key).strip() == pdv_filename:
+                    param_pdv = _pdv_basename(param_entry.get('PDV_FileName', ''))
+                    if param_pdv == pdv_filename or _pdv_basename(key) == pdv_filename:
                         self.progress_signal.emit(f"PDV_FileName exact match: {base_name} -> {key}")
                         return param_entry
-        
+
         # Strategy 3: Match by Exp_ID (material is same for all shots in an experiment)
         # This handles cases where shots from same experiment have different timestamps
         exp_id_pattern = re.search(r'([A-Z]+\d+-\d+)', base_name)
@@ -279,23 +391,24 @@ class AnalysisThread(QThread):
             # Search PDV_FileName column for any entry with this Exp_ID
             for key, param_entry in self.param_data.items():
                 if isinstance(param_entry, dict):
-                    param_pdv = str(param_entry.get('PDV_FileName', '')).strip()
+                    param_pdv = _pdv_basename(param_entry.get('PDV_FileName', ''))
                     # Check if PDV_FileName contains the Exp_ID
                     if param_pdv and exp_id in param_pdv:
-                        self.progress_signal.emit(f"Exp_ID match via PDV_FileName: {base_name} -> {key} (Exp_ID: {exp_id})")
+                        self.progress_signal.emit(f"Exp_ID match via PDV_FileName: {base_name} -> {param_pdv} (Exp_ID: {exp_id})")
                         return param_entry
                     # Also check Exp_ID column if available
                     param_exp_id = str(param_entry.get('Exp_ID', '')).strip()
                     if param_exp_id == exp_id:
                         self.progress_signal.emit(f"Exp_ID column match: {base_name} -> {key} (Exp_ID: {exp_id})")
                         return param_entry
-        
-        # Strategy 4: Partial match on key
+
+        # Strategy 4: Partial match on key (use normalised basenames on both sides)
         for key in self.param_data.keys():
-            if base_name in str(key) or str(key) in base_name:
-                self.progress_signal.emit(f"Key partial match: {base_name} -> {key}")
+            key_base = _pdv_basename(key)
+            if base_name_norm and key_base and (base_name_norm in key_base or key_base in base_name_norm):
+                self.progress_signal.emit(f"Key partial match: {base_name} -> {key_base}")
                 return self.param_data[key]
-        
+
         return {}
 
     def get_material_properties_from_config(self, material_name, default_density=None, default_acoustic_velocity=None):
@@ -2178,141 +2291,236 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
             self.finished_signal.emit(False, error_msg)
 
-    def find_hel_t0_alignment(self, time_data, velocity_data, min_velocity_threshold=10.0):
+    def find_hel_t0_alignment(self, time_data, velocity_data, min_velocity_threshold=10.0, method=None):
         """
-        Find t=0 alignment point using HEL-style detection (velocity > 0 and increasing for 10 ns).
-        
-        This method finds the first point where velocity > 0 and then verifies that velocity
-        remains non-zero and increasing (on average) for 10 ns, with additional checks to
-        ensure it's not picking up noise or pre-signal data.
-        
-        The velocity threshold is adaptive: uses 8% of peak velocity instead of a fixed value,
-        making it suitable for both high and low velocity materials.
-        
+        Find t=0 alignment at the "foot of the rise" — the point where the signal departs
+        from baseline noise and the main rise begins.
+
+        Algorithm ("signal_start", default):
+            1. Estimate a robust peak velocity (95th percentile of |v|) to calibrate thresholds.
+            2. Find the first sustained crossing of a "rise confirmation" threshold
+               (max(0.20 * peak, min_velocity_threshold)) that stays high for ~1 ns.
+               This locates a point unambiguously inside the rise, well above noise.
+            3. Estimate baseline statistics (median + 1.4826·MAD) from the pre-rise region,
+               backed off by a small margin to avoid contamination from the rise shoulder.
+            4. Backtrack from the rise-confirmation point to the last sample where the
+               velocity is still within `baseline_median + max(3·sigma, 2 m/s)`. That sample
+               is the foot of the rise, i.e. the signal start.
+
+        This is far more robust than scanning forward for the first v>0 sample, which
+        locks onto noise excursions that happen to precede the real rise.
+
+        Legacy algorithm ("first_positive") is preserved for comparison/backup.
+
         Parameters
         ----------
         time_data : array-like
-            Time data in nanoseconds
+            Time data in nanoseconds.
         velocity_data : array-like
-            Velocity data in m/s
+            Velocity data in m/s.
         min_velocity_threshold : float, optional
-            Fallback minimum velocity threshold if peak velocity is very low (default: 10.0 m/s)
-            The actual threshold used is max(8% of peak velocity, min_velocity_threshold)
-        
+            Minimum velocity floor used when scaling thresholds from peak (default: 10 m/s).
+        method : {"signal_start", "first_positive", None}, optional
+            Which algorithm to run. If None, reads ``self.spade_params['hel_t0_method']``
+            (default: "signal_start"). "first_positive" selects the legacy implementation.
+
         Returns
         -------
         tuple
-            (t0, t0_idx, time_aligned) where:
-            - t0: Time value at alignment point (ns), or None if not found
-            - t0_idx: Index of alignment point, or None if not found
-            - time_aligned: Time array aligned to t=0, or original time_data if not found
+            (t0, t0_idx, time_aligned):
+              - t0         : time at alignment point (ns), or None if not found
+              - t0_idx     : index of alignment point, or None if not found
+              - time_aligned : ``time_data - t0`` on success, original ``time_data`` otherwise
         """
         import numpy as np
-        
+
         if len(time_data) == 0 or len(velocity_data) == 0:
             return None, None, time_data
-        
-        # Calculate adaptive threshold based on peak velocity (8% of peak)
-        peak_velocity = np.nanmax(velocity_data) if len(velocity_data) > 0 else 0
+
+        time_arr = np.asarray(time_data, dtype=float)
+        vel_arr = np.asarray(velocity_data, dtype=float)
+
+        # Resolve method (arg → spade_params → default)
+        if method is None:
+            try:
+                method = self.spade_params.get('hel_t0_method', 'signal_start')
+            except AttributeError:
+                method = 'signal_start'
+        method = str(method).lower()
+
+        # Try the new robust algorithm first (unless explicitly forced to legacy)
+        if method != 'first_positive':
+            t0, t0_idx, aligned = self._find_t0_signal_start(
+                time_arr, vel_arr, min_velocity_threshold=min_velocity_threshold
+            )
+            if t0 is not None:
+                return t0, t0_idx, aligned
+            # If signal_start fails, fall through to legacy as a last resort
+
+        return self._find_t0_first_positive(
+            time_arr, vel_arr, min_velocity_threshold=min_velocity_threshold
+        )
+
+    def _find_t0_signal_start(self, time_arr, vel_arr, min_velocity_threshold=10.0):
+        """
+        Robust signal-start detector: rise confirmation + baseline backtrack.
+
+        See ``find_hel_t0_alignment`` for the algorithm description.
+        """
+        import numpy as np
+
+        if len(time_arr) < 10:
+            return None, None, time_arr
+
+        finite_mask = np.isfinite(vel_arr)
+        if np.sum(finite_mask) < 10:
+            return None, None, time_arr
+
+        # Robust peak estimate (ignore isolated spikes/outliers)
+        peak_velocity = float(np.percentile(np.abs(vel_arr[finite_mask]), 95))
+        peak_velocity = max(peak_velocity, float(min_velocity_threshold))
+
+        # Rise-confirmation threshold: unambiguously above noise
+        rise_threshold = max(0.20 * peak_velocity, float(min_velocity_threshold))
+
+        # Sustain requirement: ~1 ns worth of samples (min 3)
+        dts = np.diff(time_arr)
+        dts = dts[np.isfinite(dts) & (dts > 0)]
+        dt_median = float(np.median(dts)) if dts.size > 0 else 1.0
+        sustain_n = max(int(round(1.0 / dt_median)), 3) if dt_median > 0 else 3
+
+        # Step 1: first sustained crossing of rise_threshold
+        i_rise = None
+        upper_limit = len(vel_arr) - sustain_n
+        for i in range(max(0, sustain_n), upper_limit):
+            window = vel_arr[i:i + sustain_n]
+            if not np.all(np.isfinite(window)):
+                continue
+            # Require mean above threshold and no sample below 0.8 * threshold
+            if np.mean(window) >= rise_threshold and np.min(window) >= 0.8 * rise_threshold:
+                i_rise = i
+                break
+
+        if i_rise is None or i_rise < 3:
+            return None, None, time_arr
+
+        # Step 2: baseline from pre-rise region, with a small backoff
+        # Use samples up to (i_rise - 2 * sustain_n), but keep at least 5 samples.
+        backoff = max(2 * sustain_n, 3)
+        baseline_end_idx = max(i_rise - backoff, 5)
+        baseline_values = vel_arr[:baseline_end_idx]
+        baseline_values = baseline_values[np.isfinite(baseline_values)]
+
+        if len(baseline_values) < 5:
+            return None, None, time_arr
+
+        baseline_median = float(np.median(baseline_values))
+        baseline_mad = float(np.median(np.abs(baseline_values - baseline_median)))
+        baseline_sigma = 1.4826 * baseline_mad if baseline_mad > 0 else float(np.std(baseline_values))
+        if not np.isfinite(baseline_sigma) or baseline_sigma <= 0:
+            baseline_sigma = 1.0
+
+        # Floor the "at baseline" tolerance so we don't over-constrain very quiet traces
+        baseline_tol = max(3.0 * baseline_sigma, 2.0)
+        baseline_upper = baseline_median + baseline_tol
+
+        # Step 3: backtrack from i_rise to the last sample still within baseline
+        i_foot = None
+        for i in range(i_rise, 0, -1):
+            v = vel_arr[i]
+            if np.isfinite(v) and v <= baseline_upper:
+                i_foot = i
+                break
+
+        if i_foot is None:
+            # Rise sits above baseline for the whole pre-rise window (unlikely). Bail out.
+            return None, None, time_arr
+
+        t0 = float(time_arr[i_foot])
+        time_aligned = time_arr - t0
+        return t0, int(i_foot), time_aligned
+
+    def _find_t0_first_positive(self, time_arr, vel_arr, min_velocity_threshold=10.0):
+        """
+        Legacy alignment: first sample where v>0 and v stays positive+rising for 10 ns,
+        with adaptive thresholds (8% of peak, with floor = ``min_velocity_threshold``).
+        """
+        import numpy as np
+
+        if len(time_arr) == 0 or len(vel_arr) == 0:
+            return None, None, time_arr
+
+        peak_velocity = np.nanmax(vel_arr) if len(vel_arr) > 0 else 0
         adaptive_threshold = max(peak_velocity * 0.08, min_velocity_threshold)
-        # Also set minimum velocity increase to 4% of peak (half of threshold)
         adaptive_velocity_increase = max(peak_velocity * 0.04, min_velocity_threshold * 0.5)
-        
-        # Find first point where velocity > 0
-        hel_t0 = None
-        hel_t0_idx = None
-        
-        for candidate_idx in range(len(velocity_data)):
-            if np.isfinite(velocity_data[candidate_idx]) and velocity_data[candidate_idx] > 0:
-                # Check if velocity remains non-zero and increasing for 10 ns
-                # Calculate time window (10 ns)
-                window_duration_ns = 10.0
-                candidate_time = time_data[candidate_idx]
-                window_end_time = candidate_time + window_duration_ns
-                
-                # Find indices within the 10 ns window
-                window_mask = (time_data >= candidate_time) & (time_data <= window_end_time)
-                window_indices = np.where(window_mask)[0]
-                
-                if len(window_indices) < 2:
+
+        for candidate_idx in range(len(vel_arr)):
+            if not (np.isfinite(vel_arr[candidate_idx]) and vel_arr[candidate_idx] > 0):
+                continue
+
+            candidate_time = time_arr[candidate_idx]
+            window_end_time = candidate_time + 10.0
+            window_mask = (time_arr >= candidate_time) & (time_arr <= window_end_time)
+            window_indices = np.where(window_mask)[0]
+
+            if len(window_indices) < 2:
+                continue
+
+            velocity_segment = vel_arr[window_indices]
+            time_segment = time_arr[window_indices]
+
+            if not np.all(velocity_segment > 0):
+                continue
+
+            time_diff = time_segment[-1] - time_segment[0]
+            if time_diff <= 0:
+                continue
+            avg_slope = (velocity_segment[-1] - velocity_segment[0]) / time_diff
+
+            initial_end_time = candidate_time + 1.0
+            initial_mask = (time_arr >= candidate_time) & (time_arr <= initial_end_time)
+            initial_indices = np.where(initial_mask)[0]
+            if len(initial_indices) <= 1:
+                continue
+
+            initial_velocity_segment = vel_arr[initial_indices]
+            initial_time_segment = time_arr[initial_indices]
+            if len(initial_velocity_segment) <= 1:
+                continue
+            initial_time_diff = initial_time_segment[-1] - initial_time_segment[0]
+            if initial_time_diff <= 0:
+                continue
+
+            initial_slope = (initial_velocity_segment[-1] - initial_velocity_segment[0]) / initial_time_diff
+
+            # Continuous flat region check
+            flat_threshold = 0.1
+            flat_region_duration = 0.0
+            max_flat_duration = 0.0
+            for i in range(len(initial_velocity_segment) - 1):
+                local_dt = initial_time_segment[i + 1] - initial_time_segment[i]
+                if local_dt <= 0:
                     continue
-                
-                # Extract velocity segment
-                velocity_segment = velocity_data[window_indices]
-                time_segment = time_data[window_indices]
-                
-                # Check that all velocities in window are > 0
-                if not np.all(velocity_segment > 0):
-                    continue
-                
-                # Calculate average slope over 10 ns window
-                velocity_diff = velocity_segment[-1] - velocity_segment[0]
-                time_diff = time_segment[-1] - time_segment[0]
-                
-                if time_diff <= 0:
-                    continue
-                
-                avg_slope = velocity_diff / time_diff
-                
-                # Check initial slope (first 1 ns)
-                initial_end_time = candidate_time + 1.0
-                initial_mask = (time_data >= candidate_time) & (time_data <= initial_end_time)
-                initial_indices = np.where(initial_mask)[0]
-                
-                if len(initial_indices) > 1:
-                    initial_velocity_segment = velocity_data[initial_indices]
-                    initial_time_segment = time_data[initial_indices]
-                    
-                    if len(initial_velocity_segment) > 1:
-                        initial_velocity_diff = initial_velocity_segment[-1] - initial_velocity_segment[0]
-                        initial_time_diff = initial_time_segment[-1] - initial_time_segment[0]
-                        
-                        if initial_time_diff > 0:
-                            initial_slope = initial_velocity_diff / initial_time_diff
-                            
-                            # Check that initial slope is not close to 0 (threshold: 0.1 m/s/ns)
-                            min_initial_slope = 0.1
-                            
-                            # Calculate local slopes in the first 1 ns to detect flat regions
-                            local_slopes = []
-                            for i in range(len(initial_velocity_segment) - 1):
-                                if initial_time_segment[i+1] > initial_time_segment[i]:
-                                    local_slope = (initial_velocity_segment[i+1] - initial_velocity_segment[i]) / (initial_time_segment[i+1] - initial_time_segment[i])
-                                    local_slopes.append(local_slope)
-                            
-                            # Check if there's a continuous flat region (> 1 ns) where slope is near 0
-                            flat_region_duration = 0.0
-                            max_flat_duration = 0.0
-                            flat_threshold = 0.1
-                            
-                            if len(local_slopes) > 0:
-                                for i, local_slope in enumerate(local_slopes):
-                                    if abs(local_slope) < flat_threshold:
-                                        if i < len(initial_time_segment) - 1:
-                                            flat_region_duration += (initial_time_segment[i+1] - initial_time_segment[i])
-                                    else:
-                                        max_flat_duration = max(max_flat_duration, flat_region_duration)
-                                        flat_region_duration = 0.0
-                                max_flat_duration = max(max_flat_duration, flat_region_duration)
-                            
-                            # Additional checks - use adaptive thresholds based on peak velocity
-                            max_velocity_in_window = np.max(velocity_segment)
-                            velocity_increase = velocity_segment[-1] - velocity_segment[0]
-                            
-                            # Accept candidate if all conditions met
-                            # Use adaptive threshold: 8% of peak velocity (with fallback to min_velocity_threshold)
-                            if (avg_slope > 0 and 
-                                initial_slope >= min_initial_slope and 
-                                max_flat_duration <= 1.0 and
-                                max_velocity_in_window >= adaptive_threshold and
-                                velocity_increase >= adaptive_velocity_increase):
-                                hel_t0_idx = candidate_idx
-                                hel_t0 = time_data[hel_t0_idx]
-                                time_aligned = time_data - hel_t0
-                                return hel_t0, hel_t0_idx, time_aligned
-        
-        # No valid point found
-        return None, None, time_data
+                local_slope = (initial_velocity_segment[i + 1] - initial_velocity_segment[i]) / local_dt
+                if abs(local_slope) < flat_threshold:
+                    flat_region_duration += local_dt
+                else:
+                    max_flat_duration = max(max_flat_duration, flat_region_duration)
+                    flat_region_duration = 0.0
+            max_flat_duration = max(max_flat_duration, flat_region_duration)
+
+            max_velocity_in_window = float(np.max(velocity_segment))
+            velocity_increase = float(velocity_segment[-1] - velocity_segment[0])
+
+            if (avg_slope > 0 and
+                initial_slope >= 0.1 and
+                max_flat_duration <= 1.0 and
+                max_velocity_in_window >= adaptive_threshold and
+                velocity_increase >= adaptive_velocity_increase):
+                t0 = float(time_arr[candidate_idx])
+                return t0, int(candidate_idx), time_arr - t0
+
+        return None, None, time_arr
 
     def generate_velocity_shots_summary(self, spade_output_dir):
         """Generate velocity shots summary CSV with impact velocity calculations and combined velocity plot"""
@@ -2521,133 +2729,30 @@ class AnalysisThread(QThread):
                 hel_consecutive_points = 0  # Number of consecutive points in HEL segment
                 hel_segment_time_ns = np.nan  # Time duration of HEL segment (ns)
                 
-                # Create HEL-aligned time: t=0 at first point where velocity > 0, 
-                # but only if velocity remains non-zero and increasing (on average) for 10 ns post this point
-                # This ensures we don't pick noise points as fake start
-                hel_t0 = None
-                hel_t0_idx = None
-                
-                # Find first point where velocity > 0
-                velocity_mask = (velocity_filtered > 0) & ~np.isnan(velocity_filtered)
-                first_positive_indices = np.where(velocity_mask)[0]
-                
-                if len(first_positive_indices) > 0:
-                    # Check each candidate point to see if velocity remains non-zero and increasing for 10 ns
-                    dt = time_data[1] - time_data[0] if len(time_data) > 1 else 1.0  # Time step in ns
-                    points_for_10ns = int(np.ceil(10.0 / dt))  # Number of points in 10 ns
-                    
-                    for candidate_idx in first_positive_indices:
-                        # Check if we have enough points after this candidate
-                        if candidate_idx + points_for_10ns >= len(time_data):
-                            continue
-                        
-                        # Get velocity values for the next 10 ns
-                        end_idx = min(candidate_idx + points_for_10ns, len(velocity_filtered))
-                        velocity_segment = velocity_filtered[candidate_idx:end_idx]
-                        time_segment = time_data[candidate_idx:end_idx]
-                        
-                        # Check conditions:
-                        # 1. All velocities in segment are > 0 (non-zero)
-                        # 2. Velocity is increasing on average (positive trend)
-                        # 3. Initial slope (first 1 ns) is not close to 0 (ensures elastic rise, not flat region)
-                        if np.all(velocity_segment > 0) and len(velocity_segment) > 1:
-                            # Calculate average slope (trend) over 10 ns
-                            velocity_diff = velocity_segment[-1] - velocity_segment[0]
-                            time_diff = time_segment[-1] - time_segment[0]
-                            if time_diff > 0:
-                                avg_slope = velocity_diff / time_diff
-                                
-                                # Additional check: initial slope (first 1 ns) must not be close to 0
-                                # This ensures the elastic rise starts immediately, not a flat region
-                                points_for_1ns = int(np.ceil(1.0 / dt))  # Number of points in 1 ns
-                                if candidate_idx + points_for_1ns < len(velocity_filtered):
-                                    initial_end_idx = min(candidate_idx + points_for_1ns, len(velocity_filtered))
-                                    initial_velocity_segment = velocity_filtered[candidate_idx:initial_end_idx]
-                                    initial_time_segment = time_data[candidate_idx:initial_end_idx]
-                                    
-                                    if len(initial_velocity_segment) > 1:
-                                        initial_velocity_diff = initial_velocity_segment[-1] - initial_velocity_segment[0]
-                                        initial_time_diff = initial_time_segment[-1] - initial_time_segment[0]
-                                        
-                                        if initial_time_diff > 0:
-                                            initial_slope = initial_velocity_diff / initial_time_diff
-                                            
-                                            # Check that initial slope is not close to 0 (threshold: 0.1 m/s/ns)
-                                            # Also check that slope doesn't stay near 0 for more than 1 ns
-                                            # by checking if there's a continuous flat region
-                                            min_initial_slope = 0.1  # Minimum acceptable initial slope (m/s/ns)
-                                            
-                                            # Calculate local slopes in the first 1 ns to detect flat regions
-                                            local_slopes = []
-                                            for i in range(len(initial_velocity_segment) - 1):
-                                                if initial_time_segment[i+1] > initial_time_segment[i]:
-                                                    local_slope = (initial_velocity_segment[i+1] - initial_velocity_segment[i]) / (initial_time_segment[i+1] - initial_time_segment[i])
-                                                    local_slopes.append(local_slope)
-                                            
-                                            # Check if there's a continuous flat region (> 1 ns) where slope is near 0
-                                            flat_region_duration = 0.0
-                                            max_flat_duration = 0.0
-                                            flat_threshold = 0.1  # Consider slope < 0.1 m/s/ns as "flat"
-                                            
-                                            if len(local_slopes) > 0:
-                                                for i, local_slope in enumerate(local_slopes):
-                                                    if abs(local_slope) < flat_threshold:
-                                                        # This point is in a flat region
-                                                        if i < len(initial_time_segment) - 1:
-                                                            flat_region_duration += (initial_time_segment[i+1] - initial_time_segment[i])
-                                                    else:
-                                                        # Not flat, reset counter
-                                                        max_flat_duration = max(max_flat_duration, flat_region_duration)
-                                                        flat_region_duration = 0.0
-                                                max_flat_duration = max(max_flat_duration, flat_region_duration)  # Check final flat region
-                                            
-                                            # Additional checks to ensure we're picking actual elastic wave, not pre-signal noise:
-                                            # 4. Velocity must reach a minimum threshold within 10 ns window
-                                            # 5. Velocity must increase by a minimum amount over 10 ns
-                                            min_velocity_threshold = self.spade_params.get('minimum_HEL_velocity_expected', 10.0)  # Default: 10 m/s
-                                            min_velocity_increase = max(5.0, min_velocity_threshold * 0.5)  # At least 5 m/s or 50% of threshold
-                                            
-                                            # Check if velocity reaches minimum threshold within 10 ns
-                                            max_velocity_in_window = np.max(velocity_segment)
-                                            velocity_increase = velocity_segment[-1] - velocity_segment[0]
-                                            
-                                            # Accept candidate if:
-                                            # 1. Average slope over 10 ns is positive
-                                            # 2. Initial slope (first 1 ns) is above minimum threshold
-                                            # 3. No flat region (slope near 0) longer than 1 ns
-                                            # 4. Maximum velocity in 10 ns window reaches minimum threshold (ensures actual signal, not noise)
-                                            # 5. Velocity increases by minimum amount (ensures significant rise, not just small increase)
-                                            if (avg_slope > 0 and 
-                                                initial_slope >= min_initial_slope and 
-                                                max_flat_duration <= 1.0 and
-                                                max_velocity_in_window >= min_velocity_threshold and
-                                                velocity_increase >= min_velocity_increase):
-                                                hel_t0_idx = candidate_idx
-                                                hel_t0 = time_data[hel_t0_idx]
-                                                time_aligned_iq = time_data - hel_t0
-                                                self.progress_signal.emit(
-                                                    f"  [HEL] Using velocity > 0 detection for alignment: t=0 at {hel_t0:.2f} ns "
-                                                    f"(velocity > 0 and increasing for 10 ns, avg slope: {avg_slope:.2f} m/s/ns, "
-                                                    f"initial slope: {initial_slope:.2f} m/s/ns, max flat duration: {max_flat_duration:.2f} ns, "
-                                                    f"max velocity in window: {max_velocity_in_window:.2f} m/s, velocity increase: {velocity_increase:.2f} m/s)")
-                                                break
-                                        else:
-                                            # Initial time segment has no time difference, skip
-                                            continue
-                                    else:
-                                        # Not enough points in initial segment, skip
-                                        continue
-                                else:
-                                    # Not enough points for 1 ns check, skip
-                                    continue
-                
-                if hel_t0 is None:
+                # Create HEL-aligned time using the configured t0 detection method.
+                # Default ("signal_start") locates the foot of the main rise via a robust
+                # baseline + backtrack algorithm; "first_positive" preserves legacy behavior.
+                min_hel_velocity_for_t0 = self.spade_params.get('minimum_HEL_velocity_expected', 10.0)
+                t0_method = self.spade_params.get('hel_t0_method', 'signal_start')
+                hel_t0, hel_t0_idx, time_aligned_iq_candidate = self.find_hel_t0_alignment(
+                    time_data, velocity_filtered,
+                    min_velocity_threshold=min_hel_velocity_for_t0,
+                    method=t0_method,
+                )
+
+                if hel_t0 is not None and hel_t0_idx is not None:
+                    time_aligned_iq = time_aligned_iq_candidate
+                    self.progress_signal.emit(
+                        f"  [HEL] t=0 at {hel_t0:.2f} ns (method='{t0_method}', signal-start foot of rise)"
+                    )
+                else:
                     # Fallback: use velocity threshold alignment if no valid point found
                     time_aligned_iq = time_aligned
-                    hel_t0 = t0 if 't0' in locals() else time_data[0] if len(time_data) > 0 else 0.0
+                    hel_t0 = t0 if 't0' in locals() else (time_data[0] if len(time_data) > 0 else 0.0)
                     hel_t0_idx = t0_idx if 't0_idx' in locals() else 0
                     self.progress_signal.emit(
-                        f"  [HEL] Warning: No valid velocity > 0 with 10 ns increasing trend found, using velocity threshold alignment as fallback")
+                        f"  [HEL] Warning: signal-start detection failed; falling back to velocity threshold alignment"
+                    )
                 
                 hel_detection_enabled = (self.spade_params.get('hel_detection_enabled', False) or 
                                         self.spade_params.get('experiment_hel_detection', False))
@@ -2670,8 +2775,9 @@ class AnalysisThread(QThread):
                         hel_rdp_epsilon = self.spade_params.get('hel_rdp_epsilon', 3.0)
                         hel_slope_drop_ratio = self.spade_params.get('hel_slope_drop_ratio', 0.2)
                         hel_min_plateau_duration = self.spade_params.get('hel_min_plateau_duration', 2.0)
+                        t0_method_msg = self.spade_params.get('hel_t0_method', 'signal_start')
                         hel_msg = (f"  [HEL] Using RDP+Linear hybrid method: time window=[{hel_start:.1f}, {hel_end if hel_end is not None else 'None'}] ns "
-                                  f"(aligned to first velocity > 0 after 10 ns), min_velocity={min_hel_velocity:.1f} m/s, "
+                                  f"(aligned via t0_method='{t0_method_msg}'), min_velocity={min_hel_velocity:.1f} m/s, "
                                   f"rdp_epsilon={hel_rdp_epsilon:.1f} m/s, slope_drop_ratio={hel_slope_drop_ratio:.2f}, "
                                   f"min_plateau_duration={hel_min_plateau_duration:.1f} ns")
                         self.progress_signal.emit(hel_msg)
@@ -2775,7 +2881,8 @@ class AnalysisThread(QThread):
                                     'hel_rdp_epsilon': self.spade_params.get('hel_rdp_epsilon', 3.0),
                                     'hel_slope_drop_ratio': self.spade_params.get('hel_slope_drop_ratio', 0.2),
                                     'hel_min_plateau_duration': self.spade_params.get('hel_min_plateau_duration', 2.0),
-                                    'hel_angle_threshold_deg': self.spade_params.get('hel_angle_threshold_deg', 30.0)
+                                    'hel_angle_threshold_deg': self.spade_params.get('hel_angle_threshold_deg', 30.0),
+                                    'minimum_HEL_velocity_expected': self.spade_params.get('minimum_HEL_velocity_expected', 10.0)
                                 }
                                 
                                 # Run RDP-based HEL detection
@@ -3041,6 +3148,13 @@ class AnalysisThread(QThread):
                                     # No valid HEL segment found - RDP+Linear detection failed
                                     if not hel_ok or hel_segment_start is None:
                                         self.progress_signal.emit(f"HEL: No elastic-plastic transition detected via RDP+Linear hybrid method in {base_name}")
+                                        # Surface per-triplet diagnostics from the detector so the
+                                        # user can see exactly which rule(s) each triplet failed.
+                                        if isinstance(hel_results_rdp, dict):
+                                            diag_msgs = hel_results_rdp.get('triplet_diagnostics', None)
+                                            if diag_msgs:
+                                                for _msg in diag_msgs:
+                                                    self.progress_signal.emit(_msg)
                                         hel_consecutive_points = 0
                                         hel_segment_time_ns = np.nan
                                         
@@ -8077,6 +8191,10 @@ class AnalysisThread(QThread):
         slope_drop_ratio = config.get('hel_slope_drop_ratio', 0.2)
         min_duration = config.get('hel_min_plateau_duration', 2.0)
         angle_threshold_deg = config.get('hel_angle_threshold_deg', 30.0)
+        # Minimum plateau velocity. Used as a 5th gating condition inside the search
+        # loop so the detector does not lock onto noise-floor triplets (near v=0)
+        # before the real elastic-plastic knee. Set to 0 to disable.
+        min_hel_velocity = config.get('minimum_HEL_velocity_expected', 0.0)
         
         # Step 1: RDP Simplification (The Scout) - Get indices of simplified vertices
         rdp_indices = self.ramer_douglas_peucker_indices(time, velocity, epsilon)
@@ -8111,157 +8229,149 @@ class AnalysisThread(QThread):
         # Step 2: Iterate through candidate segments
         hel_found = False
         hel_results = None
-        best_candidate = None  # Track best candidate for diagnostics
-        best_score = -1  # Score: number of conditions passed
-        
+        best_candidate = None   # Highest-scoring candidate for diagnostics
+        best_score = -1
+
+        # Precompute RDP vertex time/velocity once (used for fallback slopes & durations)
+        rdp_times_all = time[rdp_indices]
+        rdp_vels_all = velocity[rdp_indices]
+
+        # Keep per-triplet diagnostics for the progress log (shown only when HEL not found)
+        triplet_diag_messages = []
+        rdp_points_for_candidate = np.column_stack((rdp_times_all, rdp_vels_all))
+
+        def _safe_polyfit(t_seg, v_seg):
+            """Return (slope, intercept, ok) — suppress polyfit warnings, detect NaN results."""
+            if len(t_seg) < 2 or len(v_seg) < 2:
+                return np.nan, np.nan, False
+            try:
+                with np.errstate(all='ignore'):
+                    import warnings as _warnings
+                    with _warnings.catch_warnings():
+                        _warnings.simplefilter('ignore')
+                        m, c = np.polyfit(t_seg, v_seg, 1)
+                if not (np.isfinite(m) and np.isfinite(c)):
+                    return np.nan, np.nan, False
+                return float(m), float(c), True
+            except (np.linalg.LinAlgError, ValueError, TypeError):
+                return np.nan, np.nan, False
+
         for i in range(len(rdp_indices) - 2):
             # Indices for the start, knee, and end of the potential HEL sequence
-            idx_start = rdp_indices[i]
-            idx_knee = rdp_indices[i+1]   # This is the potential HEL point
-            idx_end = rdp_indices[i+2]
-            
-            # Step 3: Extract RAW Data for these segments
-            # Segment A: Rise (from start to knee)
+            idx_start = int(rdp_indices[i])
+            idx_knee = int(rdp_indices[i + 1])   # Potential HEL point
+            idx_end = int(rdp_indices[i + 2])
+
+            # Step 3: Extract raw data segments
             t_rise = time[idx_start : idx_knee + 1]
             v_rise = velocity[idx_start : idx_knee + 1]
-            
-            # Segment B: Plateau (from knee to end)
             t_plat = time[idx_knee : idx_end + 1]
             v_plat = velocity[idx_knee : idx_end + 1]
-            
-            # Check durations first (cheap check) - use RDP segment duration, not raw data
+
             if len(t_plat) < 2:
+                triplet_diag_messages.append(
+                    f"    [HEL] triplet i={i}: plateau has <2 raw samples -> skipped"
+                )
                 continue
-            duration_plat = t_plat[-1] - t_plat[0]  # Raw data duration (for reference/diagnostics)
-            
-            # Calculate RDP segment duration (this is what we check against threshold)
-            rdp_times_seg = time[rdp_indices]
-            if len(rdp_times_seg) > i+2:
-                duration_plat_rdp = rdp_times_seg[i+2] - rdp_times_seg[i+1]  # RDP segment duration
-            else:
-                duration_plat_rdp = np.nan
-            
-            # Check RDP segment duration against minimum (this is the actual check)
+            duration_plat = float(t_plat[-1] - t_plat[0])  # raw-data duration (reference)
+
+            # RDP segment duration (the value that is actually checked)
+            duration_plat_rdp = float(rdp_times_all[i + 2] - rdp_times_all[i + 1])
+
             if not np.isfinite(duration_plat_rdp) or duration_plat_rdp < min_duration:
+                triplet_diag_messages.append(
+                    f"    [HEL] triplet i={i}: plateau duration {duration_plat_rdp:.2f} ns "
+                    f"< min {min_duration:.2f} ns -> skipped"
+                )
                 continue
-            
-            # Step 4: Linear Regression (The Gradient Check) on RAW data
-            # Fit y = mx + c to the raw data segments
-            if len(t_rise) < 2 or len(v_rise) < 2:
-                # Store candidate info even if linear fit can't be performed (for diagnostics)
-                candidate_info_failed = {
-                    'hel_time_detection': time[idx_knee],
-                    'hel_segment_start_time': time[idx_start],
-                    'hel_segment_end_time': time[idx_end],
-                    't_rise': t_rise,
-                    'v_rise': v_rise,
-                    't_plat': t_plat,
-                    'v_plat': v_plat,
-                    'duration_plat': duration_plat,
-                    'duration_plat_rdp': duration_plat_rdp,
-                    'rdp_points': np.column_stack((time[rdp_indices], velocity[rdp_indices])),
-                    'rdp_segment_gradients': rdp_segment_gradients,
-                    'rdp_segment_angles': rdp_segment_angles,
-                    'error': 'Insufficient data points for linear fit'
-                }
-                if best_candidate is None or (best_candidate.get('score', -1) < 0):
-                    best_candidate = candidate_info_failed
-                continue
-            
-            # Fit lines to raw data segments
-            m_rise = None
-            c_rise = None
-            m_plat = None
-            c_plat = None
-            try:
-                # Rise segment: fit line to get slope
-                m_rise, c_rise = np.polyfit(t_rise, v_rise, 1)
-                
-                # Plateau segment: fit line to get slope
-                m_plat, c_plat = np.polyfit(t_plat, v_plat, 1)
-            except (np.linalg.LinAlgError, ValueError):
-                # Store candidate info even if linear fit fails (for diagnostics)
-                candidate_info_failed = {
-                    'hel_time_detection': time[idx_knee],
-                    'hel_segment_start_time': time[idx_start],
-                    'hel_segment_end_time': time[idx_end],
-                    't_rise': t_rise,
-                    'v_rise': v_rise,
-                    't_plat': t_plat,
-                    'v_plat': v_plat,
-                    'duration_plat': duration_plat,
-                    'duration_plat_rdp': duration_plat_rdp,
-                    'rdp_points': np.column_stack((time[rdp_indices], velocity[rdp_indices])),
-                    'rdp_segment_gradients': rdp_segment_gradients,
-                    'rdp_segment_angles': rdp_segment_angles,
-                    'error': 'Linear fit failed (e.g., all points identical)'
-                }
-                if best_candidate is None or (best_candidate.get('score', -1) < 0):
-                    best_candidate = candidate_info_failed
-                continue
-            
-            # Step 5: Calculate RDP segment gradients
-            # Calculate gradient of RDP segments (between RDP vertices)
-            rdp_times_seg = time[rdp_indices]
-            rdp_velocities_seg = velocity[rdp_indices]
-            
-            # Calculate gradient for rise segment (RDP line from start to knee)
-            if len(rdp_times_seg) > i+1:
-                dt_rise_rdp = rdp_times_seg[i+1] - rdp_times_seg[i]
-                dv_rise_rdp = rdp_velocities_seg[i+1] - rdp_velocities_seg[i]
-                if dt_rise_rdp > 0:
-                    gradient_rise_rdp = dv_rise_rdp / dt_rise_rdp  # m/s per ns
-                    angle_rise_rdp = np.degrees(np.arctan(np.abs(gradient_rise_rdp)))
-                else:
-                    gradient_rise_rdp = np.nan
-                    angle_rise_rdp = np.nan
+
+            # Step 4: Raw-data linear fits for rise and plateau. If either fit fails,
+            # fall back to the RDP segment slope so we still get a usable slope (and a
+            # full candidate_info) for diagnostics instead of discarding the triplet.
+            m_rise_fit, c_rise_fit, rise_fit_ok = _safe_polyfit(t_rise, v_rise)
+            m_plat_fit, c_plat_fit, plat_fit_ok = _safe_polyfit(t_plat, v_plat)
+
+            # Step 5: RDP segment slopes (always finite when dt > 0)
+            dt_rise_rdp = float(rdp_times_all[i + 1] - rdp_times_all[i])
+            dv_rise_rdp = float(rdp_vels_all[i + 1] - rdp_vels_all[i])
+            if dt_rise_rdp > 0:
+                gradient_rise_rdp = dv_rise_rdp / dt_rise_rdp
+                angle_rise_rdp = float(np.degrees(np.arctan(np.abs(gradient_rise_rdp))))
             else:
                 gradient_rise_rdp = np.nan
                 angle_rise_rdp = np.nan
-            
-            # Calculate gradient for plateau segment (RDP line from knee to end)
-            if len(rdp_times_seg) > i+2:
-                dt_plat_rdp = rdp_times_seg[i+2] - rdp_times_seg[i+1]
-                dv_plat_rdp = rdp_velocities_seg[i+2] - rdp_velocities_seg[i+1]
-                if dt_plat_rdp > 0:
-                    gradient_plat_rdp = dv_plat_rdp / dt_plat_rdp  # m/s per ns
-                    angle_plat_rdp = np.degrees(np.arctan(np.abs(gradient_plat_rdp)))
-                else:
-                    gradient_plat_rdp = np.nan
-                    angle_plat_rdp = np.nan
+
+            dt_plat_rdp = float(rdp_times_all[i + 2] - rdp_times_all[i + 1])
+            dv_plat_rdp = float(rdp_vels_all[i + 2] - rdp_vels_all[i + 1])
+            if dt_plat_rdp > 0:
+                gradient_plat_rdp = dv_plat_rdp / dt_plat_rdp
+                angle_plat_rdp = float(np.degrees(np.arctan(np.abs(gradient_plat_rdp))))
             else:
                 gradient_plat_rdp = np.nan
                 angle_plat_rdp = np.nan
-            
-            # Step 6: Check conditions and score candidate
-            score = 0
+
+            # Effective slopes used for rule checks: prefer polyfit, fall back to RDP slope
+            if rise_fit_ok:
+                m_rise = m_rise_fit
+                rise_slope_src = 'polyfit'
+            else:
+                m_rise = gradient_rise_rdp
+                rise_slope_src = 'rdp_fallback'
+
+            if plat_fit_ok:
+                m_plat = m_plat_fit
+                plat_slope_src = 'polyfit'
+            else:
+                m_plat = gradient_plat_rdp
+                plat_slope_src = 'rdp_fallback'
+
+            # Intercept for the line equations (only meaningful if fit succeeded)
+            c_rise = c_rise_fit if rise_fit_ok else np.nan
+            c_plat = c_plat_fit if plat_fit_ok else np.nan
+
+            # Step 6: Condition checks (always run; slopes guaranteed to be numbers or NaN)
+            v_plat_mean = float(np.mean(v_plat)) if len(v_plat) > 0 else np.nan
+
+            m_rise_finite = np.isfinite(m_rise)
+            m_plat_finite = np.isfinite(m_plat)
+
+            rise_slope_ok = bool(m_rise_finite and m_rise > 0)
+            if rise_slope_ok and m_plat_finite:
+                plateau_slope_ok = bool(m_plat < m_rise * slope_drop_ratio)
+            else:
+                plateau_slope_ok = False
+
+            rdp_angle_ok = bool(np.isfinite(angle_plat_rdp) and angle_plat_rdp <= angle_threshold_deg)
+            duration_ok = bool(np.isfinite(duration_plat_rdp) and duration_plat_rdp >= min_duration)
+            velocity_ok = bool(
+                (min_hel_velocity <= 0.0) or
+                (np.isfinite(v_plat_mean) and abs(v_plat_mean) >= min_hel_velocity)
+            )
+
             conditions_met = {
-                'duration_ok': np.isfinite(duration_plat_rdp) and duration_plat_rdp >= min_duration,  # Use RDP segment duration
-                'rise_slope_ok': m_rise > 0,
-                'plateau_slope_ok': m_plat < (m_rise * slope_drop_ratio) if m_rise > 0 else False,
-                'rdp_angle_ok': np.isfinite(angle_plat_rdp) and angle_plat_rdp <= angle_threshold_deg
+                'duration_ok': duration_ok,
+                'rise_slope_ok': rise_slope_ok,
+                'plateau_slope_ok': plateau_slope_ok,
+                'rdp_angle_ok': rdp_angle_ok,
+                'velocity_ok': velocity_ok,
             }
-            
-            if conditions_met['duration_ok']:
-                score += 1
-            if conditions_met['rise_slope_ok']:
-                score += 1
-            if conditions_met['plateau_slope_ok']:
-                score += 1
-            if conditions_met['rdp_angle_ok']:
-                score += 1
-            
-            # Store candidate info for diagnostics (even if not all conditions met)
+            score = sum(1 for v in conditions_met.values() if v)
+
+            # Always build a full candidate_info with whatever values we have
             candidate_info = {
-                'hel_time_detection': time[idx_knee],
-                'free_surface_velocity': np.mean(v_plat),
-                'hel_segment_end_time': time[idx_end],
-                'hel_segment_start_time': time[idx_start],
+                'hel_time_detection': float(time[idx_knee]),
+                'free_surface_velocity': v_plat_mean,
+                'hel_segment_end_time': float(time[idx_end]),
+                'hel_segment_start_time': float(time[idx_start]),
                 'rise_slope': m_rise,
                 'plateau_slope': m_plat,
+                'rise_slope_source': rise_slope_src,
+                'plateau_slope_source': plat_slope_src,
+                'rise_slope_polyfit_ok': rise_fit_ok,
+                'plateau_slope_polyfit_ok': plat_fit_ok,
                 'rise_intercept': c_rise,
                 'plateau_intercept': c_plat,
-                'rdp_vertex_index': i+1,
+                'rdp_vertex_index': i + 1,
                 'hel_segment_start_idx': idx_start,
                 'hel_segment_knee_idx': idx_knee,
                 'hel_segment_end_idx': idx_end,
@@ -8271,7 +8381,7 @@ class AnalysisThread(QThread):
                 'v_plat': v_plat,
                 'duration_plat': duration_plat,
                 'duration_plat_rdp': duration_plat_rdp,
-                'rdp_points': np.column_stack((time[rdp_indices], velocity[rdp_indices])),
+                'rdp_points': rdp_points_for_candidate,
                 'rdp_gradient_rise': gradient_rise_rdp,
                 'rdp_gradient_plateau': gradient_plat_rdp,
                 'rdp_angle_rise': angle_rise_rdp,
@@ -8279,52 +8389,49 @@ class AnalysisThread(QThread):
                 'rdp_segment_gradients': rdp_segment_gradients,
                 'rdp_segment_angles': rdp_segment_angles,
                 'score': score,
-                'conditions_met': conditions_met
+                'conditions_met': conditions_met,
             }
-            
-            # Track best candidate (highest score)
+
+            # Record per-triplet diagnostic line (shown on failure)
+            fail_reasons = [name.replace('_ok', '') for name, ok in conditions_met.items() if not ok]
+            triplet_diag_messages.append(
+                f"    [HEL] triplet i={i}: m_rise={m_rise:.2f} ({rise_slope_src}), "
+                f"m_plat={m_plat:.2f} ({plat_slope_src}), "
+                f"plateau_angle={angle_plat_rdp:.1f}°, "
+                f"plateau_dur={duration_plat_rdp:.2f} ns, "
+                f"v_plat_mean={v_plat_mean:.1f} m/s, score={score}/5"
+                + (f", fail=[{', '.join(fail_reasons)}]" if fail_reasons else ", PASS")
+            )
+
+            # Track best candidate for diagnostics
             if score > best_score:
                 best_score = score
                 best_candidate = candidate_info
-            
-            # Step 7: Physics Logic Verification - all conditions must pass for HEL detection
-            
-            # Rule 1: Rise must be rising (positive slope)
-            if not conditions_met['rise_slope_ok']:
+
+            # Short-circuit: all five rules must pass to accept
+            if not (rise_slope_ok and plateau_slope_ok and duration_ok and
+                    rdp_angle_ok and velocity_ok):
                 continue
-            
-            # Rule 2: Plateau must be significantly flatter relative to the rise
-            if not conditions_met['plateau_slope_ok']:
-                continue
-            
-            # Rule 3: Plateau duration must meet minimum
-            if not conditions_met['duration_ok']:
-                continue
-            
-            # Rule 4: Plateau RDP segment angle must be below threshold
-            if not conditions_met['rdp_angle_ok']:
-                continue
-            
-            # SUCCESS: We confirmed the RDP candidate with raw data physics and RDP gradient check
+
             hel_found = True
             hel_results = candidate_info
             break  # Stop at the first valid elastic-plastic transition
-        
+
         # If HEL not found, return best candidate for diagnostics
         if not hel_found:
             if best_candidate is not None:
-                # Return best candidate with error flag for diagnostics
                 hel_results = best_candidate.copy()
-                hel_results["error"] = "No valid elastic-plastic transition found"
+                hel_results['error'] = 'No valid elastic-plastic transition found'
             else:
-                # No valid candidates at all
                 hel_results = {
-                    "error": "No valid elastic-plastic transition found", 
-                    "rdp_points": rdp_points,
-                    "rdp_segment_gradients": rdp_segment_gradients,
-                    "rdp_segment_angles": rdp_segment_angles
+                    'error': 'No valid elastic-plastic transition found',
+                    'rdp_points': rdp_points,
+                    'rdp_segment_gradients': rdp_segment_gradients,
+                    'rdp_segment_angles': rdp_segment_angles,
                 }
-        
+            if triplet_diag_messages:
+                hel_results['triplet_diagnostics'] = triplet_diag_messages
+
         return hel_found, hel_results
 
     def elastic_shock_strain_rate(self, C_L, U_hel, U_0, t_hel, t_0):
@@ -8650,15 +8757,57 @@ class AnalysisThread(QThread):
             ax3.axvline(plateau_start_time, color='orange', linestyle=':', linewidth=1.5, alpha=0.7)
             ax3.axvline(plateau_end_time, color='orange', linestyle=':', linewidth=1.5, alpha=0.7)
         
+        # Compute sensible y-limits from real gradient data so the threshold line
+        # (which blows up to ~1e16 near 90°) doesn't flatten the plot to zero.
+        _grad_vals = []
+        if rdp_points is not None and len(rdp_points) > 1:
+            rdp_t = rdp_points[:, 0]
+            rdp_v = rdp_points[:, 1]
+            for _i in range(len(rdp_t) - 1):
+                if rdp_t[_i + 1] > rdp_t[_i]:
+                    _grad_vals.append((rdp_v[_i + 1] - rdp_v[_i]) / (rdp_t[_i + 1] - rdp_t[_i]))
+        if gradient is not None and len(gradient) > 0:
+            _g = np.asarray(gradient)
+            _g = _g[np.isfinite(_g)]
+            if _g.size:
+                _grad_vals.extend(_g.tolist())
+        if _grad_vals:
+            _g_arr = np.asarray(_grad_vals, dtype=float)
+            _g_arr = _g_arr[np.isfinite(_g_arr)]
+            if _g_arr.size:
+                _g_max = float(np.nanmax(np.abs(_g_arr)))
+                _pad = max(_g_max * 1.3, 5.0)  # at least ±5 m/s/ns so near-flat traces still render
+                ax3.set_ylim(-_pad, _pad)
+                _y_lim_abs = _pad
+            else:
+                _y_lim_abs = None
+        else:
+            _y_lim_abs = None
+
         # Plot angle threshold line
         if angle_thresh_deg is not None:
-            # Convert angle threshold to gradient (slope)
-            angle_thresh_rad = np.radians(angle_thresh_deg)
+            # Convert angle threshold to gradient (slope). tan(90°) is effectively infinite
+            # so clamp the angle used for plotting to keep the threshold line on-scale.
+            _ang_for_plot = min(float(angle_thresh_deg), 89.0)
+            angle_thresh_rad = np.radians(_ang_for_plot)
             gradient_thresh = np.tan(angle_thresh_rad)
-            ax3.axhline(gradient_thresh, color='red', linestyle='--', linewidth=1.5, alpha=0.8,
-                       label=f'Angle Threshold ({angle_thresh_deg}°)', zorder=2)
-            ax3.axhline(-gradient_thresh, color='red', linestyle='--', linewidth=1.5, alpha=0.8, zorder=2)
-            
+            # Only draw the horizontal threshold lines when they fit inside the
+            # visible y-range; otherwise they just rescale the axis to ~1e16.
+            _draw_thresh = _y_lim_abs is None or gradient_thresh <= 5.0 * _y_lim_abs
+            if _draw_thresh and np.isfinite(gradient_thresh):
+                ax3.axhline(gradient_thresh, color='red', linestyle='--', linewidth=1.5, alpha=0.8,
+                           label=f'Angle Threshold ({angle_thresh_deg}°)', zorder=2)
+                ax3.axhline(-gradient_thresh, color='red', linestyle='--', linewidth=1.5, alpha=0.8, zorder=2)
+            else:
+                # Threshold is effectively vertical (≥89°) – note it instead of drawing it.
+                ax3.text(0.02, 0.95,
+                         f'Angle Threshold {angle_thresh_deg}° '
+                         f'(|slope| ≥ {gradient_thresh:.1e} — off-scale)',
+                         transform=ax3.transAxes, fontsize=9, color='red',
+                         verticalalignment='top',
+                         bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                                   edgecolor='red', alpha=0.8))
+
             # Annotate RDP segments that pass/fail threshold
             if rdp_segment_gradients is not None and rdp_segment_angles is not None and rdp_points is not None:
                 rdp_times_annot = rdp_points[:, 0]
@@ -8708,29 +8857,29 @@ class AnalysisThread(QThread):
         statuses = []
         explanations = []
         
-        # Condition 1: RDP angle threshold check
-        if rdp_segment_angles is not None and len(rdp_segment_angles) > 0 and angle_thresh_deg is not None:
-            passing_segments = sum(1 for a in rdp_segment_angles if np.isfinite(a) and a <= angle_thresh_deg)
-            total_segments = len([a for a in rdp_segment_angles if np.isfinite(a)])
-            if total_segments > 0:
-                # Find the best candidate segment (lowest angle that passes)
-                best_angle = min([a for a in rdp_segment_angles if np.isfinite(a) and a <= angle_thresh_deg], default=None)
-                if best_angle is not None:
-                    conditions.append(f'RDP segment angle ≤ {angle_thresh_deg:.0f}°')
-                    if passing_segments > 0:
-                        statuses.append('✓')
-                        explanations.append(f'Best segment: {best_angle:.1f}° (passes threshold)')
-                    else:
-                        statuses.append('✗')
-                        min_angle = min([a for a in rdp_segment_angles if np.isfinite(a)], default=None)
-                        if min_angle is not None:
-                            explanations.append(f'Min angle: {min_angle:.1f}° (fails threshold)')
-                        else:
-                            explanations.append('No valid segments found')
+        # Condition 1: RDP plateau segment angle threshold check.
+        # Report the PLATEAU angle of the chosen candidate (matches detector logic),
+        # not the minimum angle across all RDP segments (which was misleading).
+        if angle_thresh_deg is not None:
+            conditions.append(f'RDP plateau angle ≤ {angle_thresh_deg:.0f}°')
+            if rdp_angle_plateau is not None and np.isfinite(rdp_angle_plateau):
+                if rdp_angle_plateau <= angle_thresh_deg:
+                    statuses.append('✓')
+                    explanations.append(f'Candidate plateau angle: {rdp_angle_plateau:.1f}° (passes threshold)')
                 else:
-                    conditions.append(f'RDP segment angle ≤ {angle_thresh_deg:.0f}°')
                     statuses.append('✗')
-                    explanations.append('No segments pass angle threshold')
+                    explanations.append(f'Candidate plateau angle: {rdp_angle_plateau:.1f}° > {angle_thresh_deg:.0f}° (fails threshold)')
+            else:
+                # No candidate triplet was available (trace too simple, etc.)
+                statuses.append('?')
+                if rdp_segment_angles is not None and len(rdp_segment_angles) > 0:
+                    finite_angles = [a for a in rdp_segment_angles if np.isfinite(a)]
+                    if finite_angles:
+                        explanations.append(f'No candidate triplet; segment angle range: {min(finite_angles):.1f}°–{max(finite_angles):.1f}°')
+                    else:
+                        explanations.append('No candidate triplet found')
+                else:
+                    explanations.append('No candidate triplet found')
         
         # Condition 2: Rise slope > 0 (from raw data fit)
         if rise_slope_fit is not None and np.isfinite(rise_slope_fit):
@@ -15342,8 +15491,8 @@ Output Files:
     def browse_alpss_config(self):
         """Browse for ALPSS config file"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select ALPSS Config File", "", 
-            "JSON Files (*.json);;All Files (*)"
+            self, "Select ALPSS Config File", "",
+            "Config Files (*.yml *.yaml *.json);;YAML Files (*.yml *.yaml);;JSON Files (*.json);;All Files (*)"
         )
         if file_path:
             self.alpss_config_path.setText(file_path)
@@ -15351,8 +15500,8 @@ Output Files:
     def browse_spade_config(self):
         """Browse for SPADE config file"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select SPADE Config File", "", 
-            "JSON Files (*.json);;All Files (*)"
+            self, "Select SPADE Config File", "",
+            "Config Files (*.yml *.yaml *.json);;YAML Files (*.yml *.yaml);;JSON Files (*.json);;All Files (*)"
         )
         if file_path:
             self.spade_config_path.setText(file_path)
@@ -15398,8 +15547,8 @@ Output Files:
     def save_alpss_config(self):
         """Save current ALPSS parameters to config file"""
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save ALPSS Config File", "alpss_config.json", 
-            "JSON Files (*.json);;All Files (*)"
+            self, "Save ALPSS Config File", "alpss_config.yml",
+            "YAML Files (*.yml *.yaml);;JSON Files (*.json);;All Files (*)"
         )
         if not file_path:
             return
@@ -15417,8 +15566,8 @@ Output Files:
     def save_spade_config(self):
         """Save current SPADE parameters to config file"""
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save SPADE Config File", "spade_config.json", 
-            "JSON Files (*.json);;All Files (*)"
+            self, "Save SPADE Config File", "spade_config.yml",
+            "YAML Files (*.yml *.yaml);;JSON Files (*.json);;All Files (*)"
         )
         if not file_path:
             return

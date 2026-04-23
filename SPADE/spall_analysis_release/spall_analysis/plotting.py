@@ -127,6 +127,164 @@ def plot_velocity_comparison(input_directory, file_pattern, output_filename,
             logging.error(f"Velocity comparison plot generation failed or was skipped, plot NOT saved: {output_filename}")
 
 
+def plot_stft_vs_phase_velocity_comparison(
+    stft_file_path, phase_velocity_file_path, output_filename,
+    title="STFT vs Phase Velocity Comparison",
+    x_min=-10.0, x_max=60.0, y_min=None, y_max=None,
+    stft_color='blue', phase_color='red', stft_label='STFT Velocity (Smooth)', phase_label='Phase Velocity (IQ)',
+    include_uncertainty=True, uncertainty_alpha=0.2
+):
+    """
+    Plots STFT velocity (with uncertainty) and Phase Velocity (IQ) on the same plot for comparison.
+    
+    Args:
+        stft_file_path (str): Path to STFT velocity CSV file (--vel-smooth-with-uncert.csv)
+        phase_velocity_file_path (str): Path to Phase Velocity CSV file (--velocity--phase.csv)
+        output_filename (str): Path to save the output plot
+        title (str): Plot title
+        x_min (float): Minimum time in ns (default: -10)
+        x_max (float): Maximum time in ns (default: 60)
+        y_min (float): Minimum velocity (auto if None)
+        y_max (float): Maximum velocity (auto if None)
+        stft_color (str): Color for STFT trace
+        phase_color (str): Color for Phase Velocity trace
+        stft_label (str): Label for STFT trace
+        phase_label (str): Label for Phase Velocity trace
+        include_uncertainty (bool): Whether to plot uncertainty bands for STFT
+        uncertainty_alpha (float): Transparency for uncertainty bands
+    """
+    logging.info(f"Generating STFT vs Phase Velocity comparison plot: {output_filename}")
+    fig, ax = plt.subplots(figsize=(12, 8))
+    plot_saved = False
+    
+    try:
+        # Load STFT data
+        stft_data = None
+        if os.path.exists(stft_file_path):
+            stft_df = pd.read_csv(stft_file_path, header=None, on_bad_lines='skip', engine='python')
+            if stft_df.shape[1] >= 3:
+                stft_df.columns = ['Time', 'Velocity', 'Uncertainty'] + [f'col_{i}' for i in range(3, stft_df.shape[1])]
+                stft_df = stft_df[['Time', 'Velocity', 'Uncertainty']]
+            elif stft_df.shape[1] == 2:
+                stft_df.columns = ['Time', 'Velocity']
+                stft_df['Uncertainty'] = np.nan
+            
+            stft_df['Time'] = pd.to_numeric(stft_df['Time'], errors='coerce')
+            stft_df['Velocity'] = pd.to_numeric(stft_df['Velocity'], errors='coerce')
+            stft_df['Uncertainty'] = pd.to_numeric(stft_df['Uncertainty'], errors='coerce')
+            stft_df.dropna(subset=['Time', 'Velocity'], inplace=True)
+            
+            # Convert time from seconds to nanoseconds if needed
+            if not stft_df.empty and stft_df['Time'].max() < 1.0:
+                stft_df['Time'] *= 1e9
+            
+            stft_data = stft_df.sort_values('Time').reset_index(drop=True)
+            logging.info(f"Loaded STFT data: {len(stft_data)} points")
+        else:
+            logging.warning(f"STFT file not found: {stft_file_path}")
+        
+        # Load Phase Velocity data
+        phase_data = None
+        if os.path.exists(phase_velocity_file_path):
+            phase_df = pd.read_csv(phase_velocity_file_path, header=None, on_bad_lines='skip', engine='python')
+            if phase_df.shape[1] >= 2:
+                phase_df.columns = ['Time', 'Velocity'] + [f'col_{i}' for i in range(2, phase_df.shape[1])]
+                phase_df = phase_df[['Time', 'Velocity']]
+            
+            phase_df['Time'] = pd.to_numeric(phase_df['Time'], errors='coerce')
+            phase_df['Velocity'] = pd.to_numeric(phase_df['Velocity'], errors='coerce')
+            phase_df.dropna(subset=['Time', 'Velocity'], inplace=True)
+            
+            # Convert time from seconds to nanoseconds if needed
+            if not phase_df.empty and phase_df['Time'].max() < 1.0:
+                phase_df['Time'] *= 1e9
+            
+            phase_data = phase_df.sort_values('Time').reset_index(drop=True)
+            logging.info(f"Loaded Phase Velocity data: {len(phase_data)} points")
+        else:
+            logging.warning(f"Phase Velocity file not found: {phase_velocity_file_path}")
+        
+        # Find common time reference (align to t=0 or use first data point)
+        if stft_data is not None and not stft_data.empty:
+            # Align STFT to t=0 (assuming first point is near signal start)
+            stft_time_aligned = stft_data['Time'].values - stft_data['Time'].iloc[0]
+            stft_velocity = stft_data['Velocity'].values
+            stft_uncertainty = stft_data['Uncertainty'].values if 'Uncertainty' in stft_data.columns else None
+            
+            # Filter to time range
+            mask_stft = (stft_time_aligned >= x_min) & (stft_time_aligned <= x_max)
+            stft_time_plot = stft_time_aligned[mask_stft]
+            stft_velocity_plot = stft_velocity[mask_stft]
+            
+            if include_uncertainty and stft_uncertainty is not None:
+                stft_uncertainty_plot = stft_uncertainty[mask_stft]
+                ax.fill_between(
+                    stft_time_plot,
+                    stft_velocity_plot - stft_uncertainty_plot,
+                    stft_velocity_plot + stft_uncertainty_plot,
+                    alpha=uncertainty_alpha, color=stft_color, label=f'{stft_label} Uncertainty'
+                )
+            
+            # STFT: Solid line, thicker (linewidth=3)
+            ax.plot(stft_time_plot, stft_velocity_plot, color=stft_color, linewidth=3, linestyle='-', label=stft_label)
+        
+        if phase_data is not None and not phase_data.empty:
+            # Align Phase Velocity to same reference (use same offset as STFT)
+            if stft_data is not None and not stft_data.empty:
+                # Use STFT's first time as reference
+                phase_time_aligned = phase_data['Time'].values - stft_data['Time'].iloc[0]
+            else:
+                # Use Phase Velocity's first time as reference
+                phase_time_aligned = phase_data['Time'].values - phase_data['Time'].iloc[0]
+            
+            phase_velocity = phase_data['Velocity'].values
+            
+            # Filter to time range
+            mask_phase = (phase_time_aligned >= x_min) & (phase_time_aligned <= x_max)
+            phase_time_plot = phase_time_aligned[mask_phase]
+            phase_velocity_plot = phase_velocity[mask_phase]
+            
+            # Phase Velocity: Dashed line, thinner (linewidth=2)
+            ax.plot(phase_time_plot, phase_velocity_plot, color=phase_color, linewidth=2, linestyle='--', label=phase_label)
+        
+        # Set axis limits
+        ax.set_xlim(x_min, x_max)
+        if y_min is not None:
+            ax.set_ylim(bottom=y_min)
+        if y_max is not None:
+            ax.set_ylim(top=y_max)
+        
+        # Labels and formatting
+        ax.set_xlabel('Time (ns)', fontsize=20)
+        ax.set_ylabel('Velocity (m/s)', fontsize=20)
+        ax.set_title(title, fontsize=22, pad=15)
+        ax.legend(loc='best', fontsize=14)
+        ax.grid(True, linestyle='--', alpha=0.6)
+        
+        # Enhance axes appearance
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color('black')
+            spine.set_linewidth(1.5)
+        ax.set_frame_on(True)
+        ax.tick_params(axis='both', which='major', direction='in', length=7, width=1.5, colors='black', top=True, right=True, labelsize=20)
+        ax.tick_params(axis='both', which='minor', direction='in', length=4, width=1.0, colors='black', top=True, right=True, labelsize=16)
+        ax.minorticks_on()
+        
+        # Save plot
+        plt.tight_layout()
+        plt.savefig(output_filename, dpi=150)
+        logging.info(f"Successfully saved STFT vs Phase Velocity comparison plot to: {output_filename}")
+        plot_saved = True
+        
+    except Exception as e:
+        logging.exception(f"Error generating STFT vs Phase Velocity comparison plot {output_filename}: {e}")
+    finally:
+        plt.close(fig)
+        if not plot_saved:
+            logging.error(f"STFT vs Phase Velocity comparison plot generation failed, plot NOT saved: {output_filename}")
+
+
 def plot_spall_vs_strain_rate(df, output_filename, title="Spall Strength vs. Strain Rate",
                                xlim=None, ylim=None, log_scale=True, show_legend=True,
                                color_map=None, marker_map=None,

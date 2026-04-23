@@ -575,11 +575,6 @@ def fwhm(
 def instantaneous_uncertainty_analysis(sdf_out, vc_out, cen, **inputs):
     # unpack needed variables
     lam = inputs["lam"]
-    smoothing_window = inputs["smoothing_window"]
-    smoothing_wid = inputs["smoothing_wid"]
-    smoothing_amp = inputs["smoothing_amp"]
-    smoothing_sigma = inputs["smoothing_sigma"]
-    smoothing_mu = inputs["smoothing_mu"]
     fs = sdf_out["fs"]
     time = sdf_out["time"]
     time_f = vc_out["time_f"]
@@ -587,6 +582,32 @@ def instantaneous_uncertainty_analysis(sdf_out, vc_out, cen, **inputs):
     time_start_idx = vc_out["time_start_idx"]
     time_end_idx = vc_out["time_end_idx"]
     carrier_band_time = inputs["carrier_band_time"]
+    
+    # Determine smoothing window size (points) from time-based window if provided
+    # This matches the logic in velocity_calculation
+    smoothing_window_ns = inputs.get("smoothing_window_ns", None)
+    smoothing_window = inputs.get("smoothing_window", None)
+    
+    if smoothing_window is None:
+        if smoothing_window_ns is not None and smoothing_window_ns > 0:
+            # Convert time-based window (ns) to number of points
+            # Ensure it's odd for both Gaussian and Savitzky-Golay
+            smoothing_window = int(smoothing_window_ns * fs * 1e-9)  # Convert ns to seconds, then to points
+            if smoothing_window % 2 == 0:
+                smoothing_window += 1  # Make odd
+            # Ensure minimum window size
+            if smoothing_window < 3:
+                smoothing_window = 3
+        else:
+            raise ValueError(
+                "Either 'smoothing_window_ns' or 'smoothing_window' must be provided. "
+                "smoothing_window_ns is recommended for time-based control."
+            )
+    
+    smoothing_wid = inputs["smoothing_wid"]
+    smoothing_amp = inputs["smoothing_amp"]
+    smoothing_sigma = inputs["smoothing_sigma"]
+    smoothing_mu = inputs["smoothing_mu"]
 
     # take only real component of the filtered voltage signal
     voltage_filt = np.real(voltage_filt)
@@ -638,15 +659,25 @@ def instantaneous_uncertainty_analysis(sdf_out, vc_out, cen, **inputs):
 
     # calculate the frequency and velocity uncertainty
     # https://doi.org/10.1063/12.0000870
-    # take the characteristic time to be the fwhm of the gaussian weights used for smoothing the velocity signal
-    tau = fwhm(
-        smoothing_window,
-        smoothing_wid,
-        smoothing_amp,
-        smoothing_sigma,
-        smoothing_mu,
-        fs,
-    )
+    # Calculate characteristic time (tau) based on the actual smoothing method used
+    smoothing_type = inputs.get("smoothing_type", "gaussian").lower().strip()
+    
+    if smoothing_type == "savgol":
+        # For Savitzky-Golay, use the window size as the characteristic time
+        # The effective time resolution is approximately the window duration
+        # This represents the time span over which the polynomial fit is applied
+        tau = smoothing_window / fs
+    else:
+        # For Gaussian smoothing, use the FWHM of the Gaussian weights
+        # This represents the effective time resolution of the Gaussian filter
+        tau = fwhm(
+            smoothing_window,
+            smoothing_wid,
+            smoothing_amp,
+            smoothing_sigma,
+            smoothing_mu,
+            fs,
+        )
     freq_uncert_scaling = (1 / np.pi) * (np.sqrt(6 / (fs * (tau**3))))
     freq_uncert = inst_noise * freq_uncert_scaling
     vel_uncert = freq_uncert * (lam / 2)
@@ -1847,26 +1878,45 @@ def spall_doi_finder(**inputs):
     amplitude_mV = amplitude * 1e3
     time_us = time_adjusted * 1e6
 
-    # Plot with matched array lengths and square aspect ratio
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
-    ax1.plot(time_us, amplitude_mV, label='Complex Amplitude')
-    
-    # Create the actual step function used for detection
-    # Before start time: amplitude is above threshold (normal)
-    # After start time: amplitude drops below threshold (detected)
-    step_function = np.where(time_us < t_start_detected_iq * 1e6, initial_amplitude * 1e3, threshold * 1e3)
-    ax1.plot(time_us, step_function, 'r--', linewidth=2, label='Detection Threshold')
-    ax1.axhline(y=threshold * 1e3, color='orange', linestyle=':', alpha=0.7, label=f'Threshold ({threshold*1e3:.1f} mV)')
-    ax1.axvline(x=t_start_detected_iq * 1e6, color='red', linestyle='-', linewidth=2, 
-                label=f'Start Time (IQ): {t_start_detected_iq*1e6:.1f} μs')
-    ax1.set_ylabel('Amplitude (mV)', fontsize=20)
-    ax1.set_xlabel('Time (μs)', fontsize=20)
-    ax1.legend(fontsize=12)
-    ax1.tick_params(axis='both', labelsize=20)
-
-    # Save IQ amplitude plot as a separate figure (only if plots are enabled)
+    # Resolve plot flags ONCE (prevents repeated logic + accidental plot creation in batch runs)
     save_all_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
     save_iq_start_time_plot = inputs.get('save_iq_start_time_plot', False)
+    display_plots = str(inputs.get("display_plots", "no")).strip().lower() == "yes"
+
+    # NOTE: The following diagnostic IQ figure was previously created for EVERY file and never closed,
+    # which causes large memory growth in long batch runs and can get the process SIGKILL'ed by macOS.
+    # Only create it when the user explicitly requests interactive display, and always close it.
+    if display_plots:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
+        ax1.plot(time_us, amplitude_mV, label="Complex Amplitude")
+
+        # Create the actual step function used for detection
+        # Before start time: amplitude is above threshold (normal)
+        # After start time: amplitude drops below threshold (detected)
+        step_function = np.where(
+            time_us < t_start_detected_iq * 1e6,
+            initial_amplitude * 1e3,
+            threshold * 1e3,
+        )
+        ax1.plot(time_us, step_function, "r--", linewidth=2, label="Detection Threshold")
+        ax1.axhline(
+            y=threshold * 1e3,
+            color="orange",
+            linestyle=":",
+            alpha=0.7,
+            label=f"Threshold ({threshold*1e3:.1f} mV)",
+        )
+        ax1.axvline(
+            x=t_start_detected_iq * 1e6,
+            color="red",
+            linestyle="-",
+            linewidth=2,
+            label=f"Start Time (IQ): {t_start_detected_iq*1e6:.1f} μs",
+        )
+        ax1.set_ylabel("Amplitude (mV)", fontsize=20)
+        ax1.set_xlabel("Time (μs)", fontsize=20)
+        ax1.legend(fontsize=12)
+        ax1.tick_params(axis="both", labelsize=20)
     
     if save_all_plots == "yes" and save_iq_start_time_plot:
         if save_in_subfolder:
@@ -1904,12 +1954,18 @@ def spall_doi_finder(**inputs):
         plt.close(fig_iq)
 
     # Adjust phase plotting similarly
-    ax2.plot(time_us, phase, label='Phase', color='green')
-    ax2.set_xlabel('Time (μs)', fontsize=20)
-    ax2.set_ylabel('Phase (radians)', fontsize=20)
-    ax2.legend(fontsize=12)
-    ax2.tick_params(axis='both', labelsize=20)
-    plt.tight_layout()
+    if display_plots:
+        ax2.plot(time_us, phase, label="Phase", color="green")
+        ax2.set_xlabel("Time (μs)", fontsize=20)
+        ax2.set_ylabel("Phase (radians)", fontsize=20)
+        ax2.legend(fontsize=12)
+        ax2.tick_params(axis="both", labelsize=20)
+        plt.tight_layout()
+        # In headless runs (Agg backend), show() is non-interactive; still close the figure to free memory.
+        try:
+            plt.show()
+        finally:
+            plt.close(fig)
 
     # Add IQ results to output dictionary
     sdf_out = {
@@ -2054,13 +2110,19 @@ def spall_doi_finder(**inputs):
         t_start_detected_old = t_start_detected
         
 
-    cen=carrier_frequency # measured frequency 
-    cen_idx = np.argmin(np.abs(f - cen))
-    mag_cen = mag[cen_idx,:]
-    fig, ax = plt.subplots(1,1)
-    ax.plot(t, mag_cen)
-    plt.tight_layout()
-    plt.show()
+    # Optional diagnostic plot of magnitude at the measured carrier frequency.
+    # This used to be created unconditionally and never closed (major memory leak in batch runs).
+    if display_plots:
+        cen = carrier_frequency  # measured frequency
+        cen_idx = np.argmin(np.abs(f - cen))
+        mag_cen = mag[cen_idx, :]
+        fig_cen, ax_cen = plt.subplots(1, 1)
+        ax_cen.plot(t, mag_cen)
+        plt.tight_layout()
+        try:
+            plt.show()
+        finally:
+            plt.close(fig_cen)
 
     print(f"t_start_detected_old: {t_start_detected_old}")
     print(f"t_start_detected_iq: {t_start_detected_iq}")
@@ -2184,34 +2246,95 @@ def stft(voltage, fs, **inputs):
 def smoothing(
     velocity_pad,
     smoothing_window,
-    smoothing_wid,
-    smoothing_amp,
-    smoothing_sigma,
-    smoothing_mu,
+    smoothing_type="gaussian",
+    smoothing_wid=None,
+    smoothing_amp=None,
+    smoothing_sigma=None,
+    smoothing_mu=None,
+    savgol_polyorder=3,
 ):
-    # if the smoothing window is not an odd integer exit the program
+    """
+    Smooth velocity data using either Gaussian weighted moving average or Savitzky-Golay filter.
+    
+    Parameters:
+    -----------
+    velocity_pad : array
+        Padded velocity signal to smooth
+    smoothing_window : int
+        Number of points in the smoothing window (must be odd)
+    smoothing_type : str
+        Type of smoothing: "gaussian" or "savgol" (default: "gaussian")
+    smoothing_wid : float, optional
+        Width parameter for Gaussian smoothing (only used if smoothing_type="gaussian")
+    smoothing_amp : float, optional
+        Amplitude parameter for Gaussian smoothing (only used if smoothing_type="gaussian")
+    smoothing_sigma : float, optional
+        Sigma parameter for Gaussian smoothing (only used if smoothing_type="gaussian")
+    smoothing_mu : float, optional
+        Mu parameter for Gaussian smoothing (only used if smoothing_type="gaussian")
+    savgol_polyorder : int, optional
+        Polynomial order for Savitzky-Golay filter (default: 3, only used if smoothing_type="savgol")
+    
+    Returns:
+    --------
+    velocity_f_smooth : array
+        Smoothed velocity signal
+    """
+    # Ensure smoothing_window is odd and valid
     if (smoothing_window % 2 != 1) or (smoothing_window >= len(velocity_pad) / 2):
         raise Exception(
             'Input variable "smoothing_window" must be an odd integer and less than half the length of '
             "the velocity signal"
         )
+    
+    # Normalize smoothing_type to lowercase
+    smoothing_type = str(smoothing_type).lower().strip()
+    
+    if smoothing_type == "savgol":
+        # Use Savitzky-Golay filter (better for preserving sharp features like HEL knee)
+        # Ensure polyorder is less than window_length
+        polyorder = min(int(savgol_polyorder), smoothing_window - 1)
+        if polyorder < 1:
+            polyorder = 1
+        
+        velocity_f_smooth_full = savgol_filter(
+            velocity_pad,
+            window_length=smoothing_window,
+            polyorder=polyorder
+        )
+        
+        # Savitzky-Golay returns same length as input, but Gaussian returns len - window + 1
+        # For consistency with existing code, crop Savitzky-Golay output to match Gaussian behavior
+        # Gaussian removes (window - 1) points from the end, so we do the same for Savitzky-Golay
+        velocity_f_smooth = velocity_f_smooth_full[:len(velocity_pad) - smoothing_window + 1]
+        
+    else:  # Default to Gaussian smoothing
+        # Default Gaussian parameters if not provided
+        if smoothing_wid is None:
+            smoothing_wid = 3.0
+        if smoothing_amp is None:
+            smoothing_amp = 1.0
+        if smoothing_sigma is None:
+            smoothing_sigma = 1.0
+        if smoothing_mu is None:
+            smoothing_mu = 0.0
+        
+        # number of points to either side of the point of interest
+        half_space = int(np.floor(smoothing_window / 2))
 
-    # number of points to either side of the point of interest
-    half_space = int(np.floor(smoothing_window / 2))
+        # weights to be applied to each sliding window as calculated from a normal distribution
+        weights = gauss(
+            np.linspace(-smoothing_wid, smoothing_wid, smoothing_window),
+            smoothing_amp,
+            smoothing_sigma,
+            smoothing_mu,
+        )
 
-    # weights to be applied to each sliding window as calculated from a normal distribution
-    weights = gauss(
-        np.linspace(-smoothing_wid, smoothing_wid, smoothing_window),
-        smoothing_amp,
-        smoothing_sigma,
-        smoothing_mu,
-    )
-
-    # iterate over the domain and calculate the gaussian weighted moving average
-    velocity_f_smooth = np.zeros(len(velocity_pad) - smoothing_window + 1)
-    for i in range(half_space, len(velocity_f_smooth) + half_space):
-        vel_pad_win = velocity_pad[i - half_space : i + half_space + 1]
-        velocity_f_smooth[i - half_space] = np.average(vel_pad_win, weights=weights)
+        # iterate over the domain and calculate the gaussian weighted moving average
+        velocity_f_smooth = np.zeros(len(velocity_pad) - smoothing_window + 1)
+        for i in range(half_space, len(velocity_f_smooth) + half_space):
+            vel_pad_win = velocity_pad[i - half_space : i + half_space + 1]
+            velocity_f_smooth[i - half_space] = np.average(vel_pad_win, weights=weights)
 
     # return the smoothed velocity
     return velocity_f_smooth
@@ -2243,9 +2366,33 @@ def velocity_calculation(
     # Unwrap the phase angle of the filtered voltage signal
     phas = np.unwrap(np.angle(voltage_filt), axis=0)
 
+    # Determine smoothing window size (points) from time-based window if provided
+    # This needs to be calculated early because num_derivative also uses it
+    smoothing_type = inputs.get("smoothing_type", "gaussian").lower().strip()
+    smoothing_window_ns = inputs.get("smoothing_window_ns", None)
+    
+    if smoothing_window_ns is not None and smoothing_window_ns > 0:
+        # Convert time-based window (ns) to number of points
+        # Ensure it's odd for both Gaussian and Savitzky-Golay
+        smoothing_window_points = int(smoothing_window_ns * fs * 1e-9)  # Convert ns to seconds, then to points
+        if smoothing_window_points % 2 == 0:
+            smoothing_window_points += 1  # Make odd
+        # Ensure minimum window size
+        if smoothing_window_points < 3:
+            smoothing_window_points = 3
+    else:
+        # Use point-based window from config (backward compatibility)
+        smoothing_window_points = inputs.get("smoothing_window")
+        if smoothing_window_points is None:
+            raise ValueError(
+                "Either 'smoothing_window_ns' or 'smoothing_window' must be provided. "
+                "smoothing_window_ns is recommended for time-based control."
+            )
+
     # Take the numerical derivative using the central difference method with a 9-point stencil
+    # Note: num_derivative uses smoothing_window for padding, not for actual smoothing
     dpdt, dpdt_pad = num_derivative(
-        phas, inputs["smoothing_window"], time_start_idx, time_end_idx, fs
+        phas, smoothing_window_points, time_start_idx, time_end_idx, fs
     )
 
     # Convert the derivative into velocity
@@ -2255,14 +2402,22 @@ def velocity_calculation(
     # Crop the time array
     time_f = time[time_start_idx:time_end_idx]
 
-    # Smooth the padded velocity signal using a moving average with Gaussian weights
+    # Ensure smoothing window doesn't exceed half the signal length (check after we have velocity_pad)
+    if smoothing_window_points >= len(velocity_pad) / 2:
+        smoothing_window_points = int(len(velocity_pad) / 2)
+        if smoothing_window_points % 2 == 0:
+            smoothing_window_points -= 1
+
+    # Smooth the padded velocity signal using selected method
     velocity_f_smooth = smoothing(
         velocity_pad=velocity_pad,
-        smoothing_window=inputs["smoothing_window"],
-        smoothing_wid=inputs["smoothing_wid"],
-        smoothing_amp=inputs["smoothing_amp"],
-        smoothing_sigma=inputs["smoothing_sigma"],
-        smoothing_mu=inputs["smoothing_mu"],
+        smoothing_window=smoothing_window_points,
+        smoothing_type=smoothing_type,
+        smoothing_wid=inputs.get("smoothing_wid", 3.0),
+        smoothing_amp=inputs.get("smoothing_amp", 1.0),
+        smoothing_sigma=inputs.get("smoothing_sigma", 1.0),
+        smoothing_mu=inputs.get("smoothing_mu", 0.0),
+        savgol_polyorder=inputs.get("savgol_polyorder", 3),
     )
 
     # Return a dictionary of the outputs

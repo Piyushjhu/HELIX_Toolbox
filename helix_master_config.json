@@ -1,28 +1,28 @@
 {
     "cli_settings": {
-        "input_dir": "/Users/piyushwanchoo/Documents/Post_Doc/500_micron_shots/PDV",
+        "input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/PDV_files",
         "input_files": null,
         "input_pattern": "*.csv",
-        "output_dir": "/Users/piyushwanchoo/Documents/Post_Doc/500_micron_shots/Output/SPADE_manual",
-        "param_folder": "/Users/piyushwanchoo/Documents/Post_Doc/500_micron_shots/Parameters",
-        "analysis_mode": "spade_only",
-        "spade_mode": "manual",
+        "output_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Output",
+        "param_folder": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Parameters",
+        "analysis_mode": "both",
+        "spade_mode": "auto",
         "spade_input_files": null,
-        "spade_input_dir": "/Users/piyushwanchoo/Documents/Post_Doc/500_micron_shots/Output",
+        "spade_input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Output",
         "spade_input_pattern": "*--vel-smooth-with-uncert.csv"
     },
     "alpss_config": {
         "save_data": "yes",
         "display_plots": "no",
-        "save_all_plots": "subfolder",
+        "save_all_plots": "no",
         "spall_calculation": "no",
         "header_lines": 22,
         "start_time_user": "none",
         "start_time_correction": 0,
-        "time_to_skip": 2e-06,
-        "time_to_take": 3e-06,
-        "t_before": 5e-08,
-        "t_after": 8e-07,
+        "time_to_skip": 0e-06,
+        "time_to_take": 4e-06,
+        "t_before": 2e-08,
+        "t_after": 2e-07,
         "iq_threshold_factor": 0.8,
         "use_robust_iq_detection": true,
         "iq_smoothing_window_ns": 5.0,
@@ -31,7 +31,7 @@
         "freq_min": 1200000000.0,
         "freq_max": 3000000000.0,
         "smoothing_type": "savgol",
-        "smoothing_window_ns": 20,
+        "smoothing_window_ns":6.0,
         "smoothing_window": null,
         "smoothing_wid": 3.0,
         "smoothing_amp": 1.0,
@@ -83,53 +83,54 @@
         "analysis_model": "hybrid",
         "spall_detection_method": "5-segment",
         "hel_start_time_ns": 0,
-        "hel_end_time_ns": 30,
-        "hel_angle_threshold_deg": 80.0,
-        "hel_detection_min_points": 20,
-        "minimum_HEL_velocity_expected": 10.0,
-        "hel_rdp_epsilon": 2,
-        "hel_slope_drop_ratio": 0.85,
+        "hel_end_time_ns": 20,
+        "hel_angle_threshold_deg": 86.0,
+        "hel_detection_min_points": 10,
+        "minimum_HEL_velocity_expected": 40.0,
+        "hel_rdp_epsilon": 1.25,
+        "hel_slope_drop_ratio": 0.9,
         "hel_min_plateau_duration": 0.5,
         "use_hel_t0_alignment_for_plots": true,
+        "hel_t0_method": "signal_start",
         "mad_filter_enabled": true,
         "mad_filter_threshold": 2.0,
         "signal_length": "Full Signal (None)",
         "prominence_factor": 0.01,
         "peak_distance_ns": 10.0,
         "spall_start_time_ns": 0.0,
-        "spall_end_time_ns": 80.0,
+        "spall_end_time_ns": 90.0,
         "threshold_velocity_ms": 5.0,
         "spall_rdp_epsilon": 5.0,
         "min_pullback_velocity": 10.0,
         "min_recomp_ratio": 0.03,
-        "min_recomp_velocity_ratio": 1.03,
+        "min_recomp_velocity_ratio": 1.1,
         "min_recomp_time_ns": 2.5,
         "spade_smooth_window": 11,
         "polyorder": 1,
-        "skip_smoothing": true,
+        "skip_smoothing": false,
         "plot_individual": true,
         "save_summary": true,
         "show_plots": false,
         "x_min_main": 0.0,
-        "x_max_main": 150.0,
+        "x_max_main": 120.0,
         "y_min_main": 0.0,
-        "y_max_main": 300.0,
+        "y_max_main": 800.0,
         "x_min_zoom": 0.0,
-        "x_max_zoom": 60.0,
+        "x_max_zoom": 80.0,
         "y_min_zoom": 0.0,
-        "y_max_zoom": 150.0,
+        "y_max_zoom": 800.0,
         "auto_calculate_limits": false,
         "generate_all_velocity_plot": true,
         "align_velocity_threshold_ms": 10.0,
         "uncertainty_threshold_ms": 10.0,
         "include_uncert_bands": true,
         "uncert_alpha": 0.2,
-        "zoom_window_ns": 50,
+        "zoom_window_ns": 80,
         "skip_unknown_material_traces": true
     },
     "post_processing_config": {
         "enabled": false,
-        "spade_output_dir": "/Users/piyushwanchoo/Documents/Post_Doc/TiVShots/Output/SPADE_analysis",
+        "spade_output_dir": "Users/piyushwanchoo/Documents/Post_Doc/500_micron_shots/Output",
         "plots": {
             "hel_vs_peak_velocity": true,
             "hel_vs_hel_strain_rate": true,
@@ -189,16 +190,46 @@
             "C_L": 6000.0
         },
         "Ti": {
-            "density": 4500.0,
-            "bulk_wave_speed": 5500.0,
-            "C0": 5500.0,
-            "C_L": 6100.0
+            "density": 4510.0,
+            "bulk_wave_speed": 5020.0,
+            "C0": 5020.0,
+            "C_L": 6070.0
         },
         "Titanium": {
-            "density": 4500.0,
-            "bulk_wave_speed": 5500.0,
-            "C0": 5500.0,
-            "C_L": 6100.0
+            "density": 4510.0,
+            "bulk_wave_speed": 5020.0,
+            "C0": 5020.0,
+            "C_L": 6070.0
+        },
+        "Ti_Grade2": {
+            "density": 4510.0,
+            "bulk_wave_speed": 5020.0,
+            "C0": 5020.0,
+            "C_L": 6070.0
+        },
+        "CP-Ti": {
+            "density": 4510.0,
+            "bulk_wave_speed": 5020.0,
+            "C0": 5020.0,
+            "C_L": 6070.0
+        },
+        "Ti64": {
+            "density": 4430.0,
+            "bulk_wave_speed": 5130.0,
+            "C0": 5130.0,
+            "C_L": 6130.0
+        },
+        "Ti-6Al-4V": {
+            "density": 4430.0,
+            "bulk_wave_speed": 5130.0,
+            "C0": 5130.0,
+            "C_L": 6130.0
+        },
+        "Ti6Al4V": {
+            "density": 4430.0,
+            "bulk_wave_speed": 5130.0,
+            "C0": 5130.0,
+            "C_L": 6130.0
         },
         "V": {
             "density": 6100.0,
@@ -210,7 +241,20 @@
             "density": 6100.0,
             "bulk_wave_speed": 5200.0,
             "C0": 5200.0,
-            "C_L": 6000.0
+            "C_L": 6000.0 
+        },
+        "Mg": {
+            "density": 1738.0,
+            "bulk_wave_speed": 4490.0,
+            "C0": 4490.0,
+            "C_L": 5770.0
+        },
+        "Magnesium": {
+            "density": 1738.0,
+            "bulk_wave_speed": 4490.0,
+            "C0": 4490.0,
+            "C_L": 5770.0
         }
+    
     }
 }

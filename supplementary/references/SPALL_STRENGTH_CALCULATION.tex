@@ -1,0 +1,256 @@
+% LaTeX section on Spall Strength Calculation (HELIX Toolbox)
+% Compatible with siunitx and standard document classes
+
+\section{Spall Strength Detection}
+This section provides a comprehensive mathematical description of the spall strength detection and calculation algorithm implemented in the HELIX Toolbox for Photonic Doppler Velocimetry (PDV) data analysis. Spallation is the process of tensile fracture in materials under shock loading, typically occurring when release waves from free surfaces interact and generate tensile stress sufficient to cause failure.
+
+The detection algorithm uses a \textbf{5-Segment Linear Model} with a horizontal plateau constraint to robustly identify the characteristic ``checkmark'' velocity signature: plateau $\rightarrow$ pullback (release) $\rightarrow$ recompression. This approach is more robust to noise than simple peak/minimum detection and provides physically consistent estimates of spall strength and strain rate.
+
+%==============================================================================
+\section{Physical Background}
+%==============================================================================
+
+\subsection{What is Spallation?}
+Spallation (or spall) is the tensile fracture of a material when it is subjected to shock loading. When a compressive shock wave reflects from a free surface, it produces a tensile wave. If two such release waves interact, they can generate sufficient tensile stress to nucleate and grow voids, leading to fracture. In velocity-time traces from PDV measurements, spallation manifests as a characteristic ``checkmark'' or ``pullback'' signature:
+
+\begin{itemize}
+    \item \textbf{Plateau (Pre-Pullback)}: Velocity remains near its maximum as the shock wave sustains the compressive state
+    \item \textbf{Pullback (Release)}: Velocity decreases as the release wave arrives and the material expands
+    \item \textbf{Recompression (Post-Pullback)}: Velocity increases again as the spall plane closes and the two halves of the specimen re-impact
+\end{itemize}
+
+If the recompression is absent or too weak, the trace is classified as ``Did Not Spall'' (DNS), indicating no clear spallation event.
+
+\subsection{Spall Strength Calculation}
+The spall strength $\sigma_{\text{spall}}$ is the maximum tensile stress the material sustained before fracture. Under the acoustic approximation, it is related to the pullback velocity $\Delta u_p$ by:
+\begin{equation}
+\sigma_{\text{spall}} = \frac{1}{2} \rho c \Delta u_p \times 10^{-9} \quad \text{(GPa)}
+\end{equation}
+where:
+\begin{itemize}
+    \item $\rho$ is the material density (\si{\kilogram\per\cubic\meter})
+    \item $c$ is the bulk acoustic velocity (\si{\meter\per\second})
+    \item $\Delta u_p$ is the pullback velocity (\si{\meter\per\second}), defined as the free-surface velocity drop from the plateau to the pullback minimum
+\end{itemize}
+
+The factor of $1/2$ arises from the free-surface condition: the particle velocity change is half the free-surface velocity change. The result is reported in GPa ($\times 10^{-9}$ Pa).
+
+\subsection{Pullback Velocity}
+The pullback velocity is the difference between the plateau velocity and the velocity at the pullback minimum:
+\begin{equation}
+\Delta u_p = \left| v_{\text{plateau}} - v_{P3} \right|
+\end{equation}
+where $v_{\text{plateau}}$ is the mean velocity of the plateau region and $v_{P3}$ is the velocity at the first minimum after the plateau (point P3 in the 5-segment model).
+
+%==============================================================================
+\section{Time Zero and Trace Alignment}
+%==============================================================================
+
+\subsection{Overview}
+Establishing a reliable time zero ($t=0$) is critical for spall analysis. The algorithm uses the same HEL-based alignment as the HEL detection module for consistency.
+
+\subsection{Alignment Method}
+The time zero detection follows these steps:
+\begin{enumerate}
+    \item \textbf{Primary (HEL alignment)}: Find first point where velocity exceeds a minimum threshold (default: \SI{10}{m/s}) and verify sustained increase over a \SI{10}{ns} window
+    \item \textbf{Fallback}: Use first point where velocity $\geq$ threshold velocity (default: \SI{5}{m/s})
+\end{enumerate}
+
+The aligned time array is:
+\begin{equation}
+t_{\text{aligned}} = (t - t_0) \times 10^9 \quad \text{(ns)}
+\end{equation}
+
+\subsection{Time Window}
+Spall analysis is performed within a configurable window $[t_{\text{start}}, t_{\text{end}}]$ (default: $[0, 80]$ ns). Points outside this window or with NaN velocity (e.g., after uncertainty filtering) are excluded.
+
+%==============================================================================
+\section{5-Segment Linear Model (Horizontal Plateau)}
+%==============================================================================
+
+\subsection{Overview}
+The 5-segment model fits five linear segments to the velocity trace to extract key feature points (P1, P2, P3, P4) and compute spall strength and strain rate. The \textbf{horizontal plateau} constraint fixes the plateau (segments 1--2) to a constant velocity, preventing P1/P2 from shifting due to noise.
+
+\subsection{Plateau Region}
+\begin{enumerate}
+    \item Find the global maximum: $v_{\max} = \max(v)$, $t_{\max} = t_{\argmax(v)}$
+    \item Define plateau threshold: $v_{\text{th}} = v_{\max} \times \tau_{\text{plateau}}$, with $\tau_{\text{plateau}}$ (default: 0.95)
+    \item All points with $v \geq v_{\text{th}}$ form the plateau region
+    \item Plateau mean velocity: $v_{\text{plateau}} = \text{mean}(v_{\text{plateau points}})$
+\end{enumerate}
+
+\subsection{Segment Definitions}
+The five segments are:
+\begin{itemize}
+    \item \textbf{Segment 1 (Rise)}: From $(0, 0)$ to the first plateau point P1. Slope $m_1 = v_{\text{first}} / t_{\text{first}}$, intercept $c_1 = 0$
+    \item \textbf{Segment 2 (Plateau)}: Horizontal line at $v_{\text{plateau}}$: $m_2 = 0$, $c_2 = v_{\text{plateau}}$
+    \item \textbf{Segment 3 (Release)}: From P2 (last plateau point) to P3 (pullback minimum). Slope:
+    \begin{equation}
+    m_3 = \frac{v_{P3} - v_{\text{plateau}}}{t_{P3} - t_{P2}}
+    \end{equation}
+    \item \textbf{Segment 4 (Recompression)}: From P3 to P4 (first maximum after P3)
+    \item \textbf{Segment 5 (Tail)}: From P4 to the next minimum (or end of data)
+\end{itemize}
+
+\subsection{P3 (Pullback Minimum) Detection}
+P3 is the first local minimum after the plateau. The algorithm:
+\begin{enumerate}
+    \item Applies light smoothing to post-plateau data (e.g., uniform filter, 20\% of data length)
+    \item Uses \texttt{find\_peaks} on $(-v)$ to identify valleys with minimum prominence ($\max(v_{\max} \times 0.01, 2$ m/s))
+    \item Validates each candidate:
+    \begin{itemize}
+        \item Within $\pm 1$ ns, the candidate must be the true minimum
+        \item At $t + 10$ ns, velocity must not drop by more than $\max(2 \text{ m/s}, 5\% \times |v_{P3}|)$ (else still on a downward slope)
+    \end{itemize}
+\end{enumerate}
+
+\subsection{P4 (Recompression Maximum) Detection}
+P4 is the global maximum of the velocity after P3:
+\begin{equation}
+\text{idx}_{P4} = \argmax_{j > \text{idx}_{P3}} v_j
+\end{equation}
+
+%==============================================================================
+\section{DNS (Did Not Spall) Validation}
+%==============================================================================
+
+\subsection{Overview}
+A trace is classified as ``Did Not Spall'' (DNS) if it does not exhibit a clear spallation signature. Two checks are applied.
+
+\subsection{DNS Check 1: P3 Too Close to Zero}
+If the pullback minimum is negligibly small:
+\begin{equation}
+|v_{P3}| \leq 10 \text{ m/s} \quad \Rightarrow \quad \text{DNS}
+\end{equation}
+This indicates no meaningful pullback.
+
+\subsection{DNS Check 2: Recompression Validation}
+Four conditions must be satisfied for a valid spall:
+\begin{enumerate}
+    \item \textbf{Basic order}: $v_{P4} > v_{P3}$
+    \item \textbf{Velocity ratio}: $v_{P4} \geq v_{P3} \times r_{\text{vel}}$, with $r_{\text{vel}}$ (default: 1.03)
+    \item \textbf{Time separation}: $\Delta t_{P3 \to P4} = t_{P4} - t_{P3} \geq \Delta t_{\min}$ (default: \SI{2.5}{ns})
+    \item \textbf{Rebound magnitude}: Rebound must be a minimum fraction of pullback:
+    \begin{equation}
+    (v_{P4} - v_{P3}) \geq (v_{\text{plateau}} - v_{P3}) \times r_{\text{rebound}}
+    \end{equation}
+    where $r_{\text{rebound}}$ (default: 0.03) is the minimum rebound ratio
+\end{enumerate}
+
+\subsubsection{Configuration Parameters}
+\begin{itemize}
+    \item \texttt{min\_recomp\_velocity\_ratio} ($r_{\text{vel}}$): Minimum ratio $v_{P4}/v_{P3}$ (default: 1.03)
+    \item \texttt{min\_recomp\_time\_ns} ($\Delta t_{\min}$): Minimum time between P3 and P4 (default: \SI{2.5}{ns})
+    \item \texttt{min\_recomp\_ratio} ($r_{\text{rebound}}$): Minimum rebound as fraction of pullback (default: 0.03)
+\end{itemize}
+
+%==============================================================================
+\section{Spall Strength and Uncertainty}
+%==============================================================================
+
+\subsection{Spall Strength}
+Once a valid spall is detected:
+\begin{equation}
+\sigma_{\text{spall}} = \frac{1}{2} \rho c \, \Delta u_p \times 10^{-9} \quad \text{(GPa)}
+\end{equation}
+with $\Delta u_p = |v_{\text{plateau}} - v_{P3}|$.
+
+\subsection{Uncertainty Propagation}
+If velocity uncertainties $\delta v_{\text{plateau}}$ and $\delta v_{P3}$ are available at P2 and P3:
+\begin{equation}
+\delta(\Delta u_p) = \sqrt{(\delta v_{\text{plateau}})^2 + (\delta v_{P3})^2}
+\end{equation}
+assuming independent uncertainties. The spall strength uncertainty is:
+\begin{equation}
+\delta\sigma_{\text{spall}} = \frac{1}{2} \rho c \, \delta(\Delta u_p) \times 10^{-9} \quad \text{(GPa)}
+\end{equation}
+
+%==============================================================================
+\section{Strain Rate}
+%==============================================================================
+
+\subsection{Definition}
+The strain rate $\dot{\varepsilon}$ quantifies the rate of tensile deformation during the release phase (from plateau to pullback minimum). Under the acoustic approximation:
+\begin{equation}
+\dot{\varepsilon} = \frac{1}{2c} \left| \frac{dU}{dt} \right|
+\end{equation}
+where $dU/dt$ is the velocity gradient during release and $c$ is the acoustic velocity.
+
+\subsection{Calculation}
+The velocity gradient is given by the slope of segment 3 (release line). With time in nanoseconds, the slope $m_3$ has units m/s/ns, so:
+\begin{equation}
+\left| \frac{dU}{dt} \right| = |m_3| \times 10^9 \quad \text{(m/s/s)}
+\end{equation}
+Therefore:
+\begin{equation}
+\dot{\varepsilon} = \frac{|m_3| \times 10^9}{2c} \quad \text{(s}^{-1}\text{)}
+\end{equation}
+where $m_3 = (v_{P3} - v_{\text{plateau}}) / (t_{P3} - t_{P2})$.
+
+\subsection{Uncertainty}
+If the uncertainty in $v_{P3}$ is $\delta v_{P3}$ and the time span is $\Delta t_{P2 \to P3}$, the slope uncertainty is approximately:
+\begin{equation}
+\delta m_3 \approx \frac{\delta v_{P3}}{\Delta t_{P2 \to P3} \times 10^{-9}}
+\end{equation}
+and the strain rate uncertainty:
+\begin{equation}
+\delta\dot{\varepsilon} \approx \frac{\delta m_3 \times 10^9}{2c}
+\end{equation}
+
+%==============================================================================
+\section{Peak Shock Stress (EOS Method)}
+%==============================================================================
+
+\subsection{Overview}
+The peak shock stress $\sigma_{\text{shock}}$ is the maximum compressive stress reached during the shock loading phase. It is calculated using the Hugoniot equation of state (EOS) rather than the simple acoustic formula.
+
+\subsection{Hugoniot EOS}
+The shock velocity $U$ and particle velocity $u_p$ are related by the linear Hugoniot:
+\begin{equation}
+U = c + S \, u_p
+\end{equation}
+where $c$ is the bulk sound speed and $S$ is the slope parameter (material-dependent, e.g., $S \approx 1.49$ for copper).
+
+\subsection{Particle Velocity}
+The plateau (free-surface) velocity $v_{\text{plateau}}$ is related to the particle velocity by:
+\begin{equation}
+u_p = \frac{v_{\text{plateau}}}{2}
+\end{equation}
+(free-surface velocity is twice the particle velocity at the free surface).
+
+\subsection{Peak Shock Stress Formula}
+\begin{equation}
+\sigma_{\text{shock}} = \rho U u_p \times 10^{-9} = \rho (c + S u_p) u_p \times 10^{-9} \quad \text{(GPa)}
+\end{equation}
+
+\subsection{Uncertainty Propagation}
+If the plateau velocity uncertainty is $\delta v_{\text{plateau}}$:
+\begin{equation}
+\delta u_p = \frac{\delta v_{\text{plateau}}}{2}
+\end{equation}
+The shock stress uncertainty is:
+\begin{equation}
+\delta\sigma_{\text{shock}} = \rho (c + 2 S u_p) \, \delta u_p \times 10^{-9} \quad \text{(GPa)}
+\end{equation}
+This follows from $\partial\sigma/\partial u_p = \rho(c + 2Su_p)$ when $U = c + Su_p$.
+
+%==============================================================================
+\section{Summary of Key Formulas}
+%==============================================================================
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\hline
+Quantity & Formula \\
+\hline
+Pullback velocity & $\Delta u_p = |v_{\text{plateau}} - v_{P3}|$ \\
+Spall strength & $\sigma_{\text{spall}} = \frac{1}{2} \rho c \Delta u_p \times 10^{-9}$ GPa \\
+Strain rate & $\dot{\varepsilon} = \frac{|m_3| \times 10^9}{2c}$ s$^{-1}$ \\
+Particle velocity & $u_p = v_{\text{plateau}} / 2$ \\
+Shock velocity & $U = c + S u_p$ \\
+Peak shock stress & $\sigma_{\text{shock}} = \rho U u_p \times 10^{-9}$ GPa \\
+\hline
+\end{tabular}
+\caption{Summary of spall analysis formulas.}
+\end{table}
