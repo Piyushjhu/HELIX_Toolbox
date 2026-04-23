@@ -1,0 +1,517 @@
+# =============================================================================
+# HELIX Toolbox — Master Configuration File (YAML)
+# =============================================================================
+# This file controls every aspect of a HELIX Toolbox run — both the GUI and
+# the CLI (helix_cli_runner.py) read it.  All sections are optional overrides;
+# any key you omit falls back to the hard-coded default in the code.
+#
+# Usage (CLI):
+#   python helix_cli_runner.py --config helix_master_config.yml
+#
+# Usage (GUI):
+#   Load → "Use Config File" → browse to this file.
+#
+# Format notes:
+#   • Comments start with #
+#   • null  = Python None  (leave a field empty / unset)
+#   • true/false (lower-case) = Python True/False
+#   • Scientific notation is fine: 1.28e11, 1.55e-6
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. CLI SETTINGS
+#    Paths and top-level mode switches used by helix_cli_runner.py.
+#    All paths may be absolute or relative to the directory from which you run
+#    the script.
+# -----------------------------------------------------------------------------
+cli_settings:
+
+  # Directory containing raw PDV oscilloscope CSV files (used in ALPSS step).
+  input_dir: /path/to/pdv/files
+
+  # Explicit list of files to process.  Set to null to use input_dir + input_pattern.
+  # Example:  input_files: [file1.csv, file2.csv]
+  input_files: null
+
+  # Glob pattern applied inside input_dir to select files.
+  input_pattern: "*.csv"
+
+  # Root output directory.  Sub-folders are created automatically:
+  #   <output_dir>/ALPSS_output/   → ALPSS results
+  #   <output_dir>/SPADE_analysis/ → SPADE results and plots
+  output_dir: /path/to/output
+
+  # Folder containing experiment parameter files (CSV/Excel).
+  # Must have a column matching PDV filenames so metadata (material, laser
+  # energy, waveplate angle, row/column …) is attached to each trace.
+  # Set to null to skip parameter enrichment.
+  param_folder: /path/to/parameter/folder
+
+  # Analysis mode:
+  #   both       — run ALPSS then SPADE (full pipeline, default)
+  #   alpss_only — stop after ALPSS velocity extraction
+  #   spade_only — run SPADE only (requires pre-existing velocity files)
+  analysis_mode: both
+
+  # SPADE input mode:
+  #   auto   — SPADE reads the velocity files produced by ALPSS in this run
+  #   manual — SPADE reads files listed in spade_input_dir / spade_input_files
+  spade_mode: auto
+
+  # Used only when spade_mode: manual
+  spade_input_files: null
+  spade_input_dir: /path/to/existing/velocity/files
+  spade_input_pattern: "*--vel-smooth-with-uncert.csv"
+
+
+# -----------------------------------------------------------------------------
+# 2. ALPSS CONFIGURATION
+#    Controls raw PDV signal → velocity extraction (ALPSS package).
+# -----------------------------------------------------------------------------
+alpss_config:
+
+  # ── Output control ──────────────────────────────────────────────────────────
+  save_data: "yes"          # Save CSV outputs (yes/no)
+  display_plots: "no"       # Show interactive plots during processing (yes/no)
+  # Plot saving options:
+  #   no         — no individual ALPSS plots
+  #   subfolder  — save plots to <output>/<file>_plots/ subdirectory (recommended)
+  #   main_dir   — save plots alongside CSVs in the main output directory
+  save_all_plots: "no"
+  spall_calculation: "no"   # Run ALPSS built-in spall calculation (use SPADE instead)
+
+  # ── Input file format ───────────────────────────────────────────────────────
+  # Number of header lines to skip in each oscilloscope CSV file.
+  header_lines: 22
+
+  # Manual start time (seconds).  "none" = auto-detect from signal.
+  start_time_user: "none"
+
+  # Offset added to the detected start time (seconds).  Use to fine-tune t=0.
+  start_time_correction: 0
+
+  # Time to skip from the beginning of the trace before extracting signal (s).
+  time_to_skip: 0.0
+
+  # Duration of signal to extract starting from the detected start time (s).
+  # 4e-6 = 4 µs, for example.
+  time_to_take: 4.0e-06
+
+  # Time window before the detected IQ start to include in the output (s).
+  t_before: 2.0e-08
+
+  # Time window after the detected IQ start to include in the output (s).
+  t_after: 2.0e-07
+
+  # ── IQ (signal-onset) detection ─────────────────────────────────────────────
+  # Use the robust IQ detection pipeline (recommended).
+  use_robust_iq_detection: true
+
+  # IQ detection threshold relative to the peak signal amplitude.
+  # Lower values → earlier start detected; raise if false triggers occur.
+  iq_threshold_factor: 0.8
+
+  # Smoothing window (ns) applied to the IQ magnitude before onset detection.
+  iq_smoothing_window_ns: 5.0
+
+  # Skip this many ns at the very beginning of the trace (avoids edge artefacts).
+  iq_skip_start_ns: 1.0
+
+  # Minimum number of ns the signal must stay above the threshold after the
+  # candidate onset for the detection to be accepted (persistence filter).
+  iq_persistence_ns: 0.5
+
+  # ── Frequency / spectrogram ─────────────────────────────────────────────────
+  freq_min: 1.2e9     # Lower edge of the frequency band of interest (Hz)
+  freq_max: 3.0e9     # Upper edge of the frequency band of interest (Hz)
+
+  # Oscilloscope sample rate (samples/s).  128e9 = 128 GS/s.
+  sample_rate: 1.28e11
+
+  nperseg: 512    # STFT window length (samples)
+  noverlap: 400   # STFT overlap (samples); must be < nperseg
+  nfft: 2560      # FFT size; larger = finer frequency resolution
+  window: "hann"  # STFT window function (hann, hamming, blackman …)
+
+  # Size of the Gaussian blur kernel applied to the spectrogram image.
+  blur_kernel_x: 3
+  blur_kernel_y: 3
+  blur_sigx: 0.0   # 0 = auto from kernel size
+  blur_sigy: 0.0
+
+  # Duration (s) used to estimate the carrier frequency band.
+  carrier_band_time: 2.5e-07
+
+  # ── Velocity smoothing ──────────────────────────────────────────────────────
+  # Smoothing algorithm applied to the raw extracted velocity:
+  #   savgol   — Savitzky-Golay (best for noise + derivative preservation)
+  #   gaussian — Gaussian convolution (smooth but loses sharp features)
+  smoothing_type: "savgol"
+
+  # Window length in nanoseconds (takes precedence over smoothing_window if set).
+  # The code converts this to samples using sample_rate.  Recommended: 5–10 ns.
+  smoothing_window_ns: 6.0
+
+  # Window length in samples (used only when smoothing_window_ns is null).
+  smoothing_window: null
+
+  # Gaussian-specific parameters (only relevant when smoothing_type: gaussian).
+  smoothing_wid: 3.0
+  smoothing_amp: 1.0
+  smoothing_sigma: 1.0
+  smoothing_mu: 0.0
+
+  # Polynomial order for Savitzky-Golay smoothing (2 or 3 recommended).
+  savgol_polyorder: 3
+
+  # ── Peak/pullback detection neighbours ──────────────────────────────────────
+  pb_neighbors: 400       # Search radius (samples) for pullback detection
+  pb_idx_correction: 0    # Manual sample offset for pullback index
+  rc_neighbors: 400       # Search radius (samples) for recompression detection
+  rc_idx_correction: 0    # Manual sample offset for recompression index
+
+  # ── Carrier removal (Gaussian notch filter) ─────────────────────────────────
+  # If the oscilloscope signal contains a strong carrier tone, enable this notch
+  # filter to remove it before IQ extraction.
+  use_notch_filter: false
+  order: 6                   # Butterworth filter order
+  wid: 1.5e9                 # Notch half-width (Hz); adjust to match carrier width
+
+  # ── Uncertainty parameters ──────────────────────────────────────────────────
+  uncert_mult: 10.0     # Multiplier applied to raw velocity uncertainty estimate.
+                        # Increase for more conservative error bars.
+
+  # ── Material properties (used for ALPSS built-in spall calc) ────────────────
+  C0: 3950.0            # Bulk wave speed (m/s)
+  density: 8960.0       # Density (kg/m³)
+  lam: 1.55e-06         # PDV laser wavelength (m); 1550 nm = 1.55e-6
+  theta: 0.0            # PDV probe tilt angle (degrees); 0 = normal incidence
+
+  # Uncertainty inputs for the ALPSS spall calculation:
+  delta_rho: 9.0        # Density uncertainty (kg/m³)
+  delta_C0: 23.0        # Wave speed uncertainty (m/s)
+  delta_lam: 8.0e-18    # Wavelength uncertainty (m)
+  delta_theta: 5.0      # Angle uncertainty (degrees)
+
+  # Colormap for spectrogram plots.
+  cmap: "viridis"
+
+  # ── Selective CSV output ────────────────────────────────────────────────────
+  save_velocity_csv: false               # Raw (unsmoothed) velocity
+  save_velocity_smooth_csv: true         # Smoothed velocity
+  save_velocity_uncert_csv: false        # Raw uncertainty
+  save_velocity_smooth_uncert_csv: true  # Smoothed velocity + uncertainty (used by SPADE)
+  save_results_csv: true                 # Summary of ALPSS results per file
+  save_noise_csv: true                   # Noise fraction trace
+  save_combined_plot: true               # Combined overview plot per file
+  save_iq_start_time_plot: false         # IQ onset detection diagnostic plot
+
+
+# -----------------------------------------------------------------------------
+# 3. SPADE CONFIGURATION
+#    Controls spall-strength / HEL / velocity-shots analysis (SPADE module).
+# -----------------------------------------------------------------------------
+spade_config:
+
+  # ── Experiment modules ───────────────────────────────────────────────────────
+  experiment_velocity_shots: true    # Process velocity traces and save summary
+  experiment_spall_analysis: true    # Run spall strength analysis
+  experiment_hel_detection: true     # Run HEL (Hugoniot Elastic Limit) detection
+
+  # ── Material defaults (overridden per-trace from material_properties section) ──
+  density: 8960.0          # Density (kg/m³)
+  acoustic_velocity: 3950.0 # Bulk wave speed (m/s) used for spall strength
+
+  # ── Spall analysis model ─────────────────────────────────────────────────────
+  # analysis_model selects how spall strength and strain rate are computed:
+  #   max_min        — velocity peak & valley directly from the trace
+  #   hybrid_5_segment — 5-segment linear fit for both strength and strain rate
+  #   hybrid         — max_min for spall strength, 5-segment for strain rate (default)
+  analysis_model: "hybrid"
+
+  # spall_detection_method controls the spall-detection algorithm:
+  #   rdp            — RDP topology check (checkmark shape) + 5-segment fitting
+  #   5-segment      — skip RDP; use horizontal-plateau 5-segment only (faster)
+  spall_detection_method: "5-segment"
+
+  # ── Spall analysis window (ns, relative to aligned t=0) ──────────────────────
+  # Only data inside this window is searched for the spall signature.
+  spall_start_time_ns: 0.0
+  spall_end_time_ns: 90.0
+
+  # Velocity threshold (m/s) used to identify shock arrival (t=0 alignment).
+  # Decrease if weak shocks are being missed; increase if noise triggers falsely.
+  threshold_velocity_ms: 5.0
+
+  # Velocity threshold (m/s) used when aligning multiple traces to a common t=0
+  # for the combined velocity-traces plot.
+  align_velocity_threshold_ms: 10.0
+
+  # ── Spall RDP parameters (only when spall_detection_method: rdp) ─────────────
+  # RDP simplification epsilon (m/s): larger = coarser simplification.
+  spall_rdp_epsilon: 5.0
+
+  # ── Rebound / recompression gating ──────────────────────────────────────────
+  # These thresholds prevent false spall detections from post-shock ringing.
+  #
+  # Minimum pullback depth (m/s): ignores candidates shallower than this.
+  min_pullback_velocity: 10.0
+
+  # Minimum rebound / pullback ratio: rebound must recover at least this
+  # fraction of the pullback depth.  0.03 = 3%.
+  min_recomp_ratio: 0.03
+
+  # Minimum velocity ratio: rebound peak must exceed valley by this factor.
+  # 1.1 means the rebound must be at least 10% above the valley.
+  min_recomp_velocity_ratio: 1.1
+
+  # Minimum sustained duration of the rebound (ns).
+  min_recomp_time_ns: 2.5
+
+  # ── HEL detection ─────────────────────────────────────────────────────────────
+  # Time window (ns, relative to t=0) searched for the elastic precursor plateau.
+  hel_start_time_ns: 0
+  hel_end_time_ns: 20
+
+  # Minimum plateau velocity to accept as a valid HEL (m/s).
+  # Increase if spurious low-velocity detections occur.
+  minimum_HEL_velocity_expected: 40.0
+
+  # Minimum number of consecutive raw-data points that must lie in the plateau.
+  hel_detection_min_points: 10
+
+  # RDP epsilon (m/s) for knee-point detection in the HEL signal.
+  hel_rdp_epsilon: 1.25
+
+  # Required fractional drop from rise slope to plateau slope.
+  # 0.9 → plateau slope must be < 10% of the rise slope.
+  hel_slope_drop_ratio: 0.9
+
+  # Minimum plateau duration (ns) for a valid HEL.
+  hel_min_plateau_duration: 0.5
+
+  # Legacy gradient-angle threshold (degrees) — fallback only.
+  hel_angle_threshold_deg: 86.0
+
+  # Method used to locate t=0 for HEL detection:
+  #   signal_start  — first point where velocity > 0 and increasing for ~2 ns
+  #   threshold     — first point where velocity >= threshold_velocity_ms
+  hel_t0_method: "signal_start"
+
+  # Whether to use the HEL-based t=0 for x-axis alignment in plots.
+  use_hel_t0_alignment_for_plots: true
+
+  # ── Peak / prominence detection ───────────────────────────────────────────────
+  # Fraction of peak velocity used as the prominence threshold.
+  prominence_factor: 0.01
+
+  # Minimum separation between detected peaks (ns).
+  peak_distance_ns: 10.0
+
+  # ── SPADE smoothing (applied before feature detection) ───────────────────────
+  spade_smooth_window: 11    # Savitzky-Golay window length (samples, must be odd)
+  polyorder: 1               # Savitzky-Golay polynomial order
+  skip_smoothing: false      # Set true to disable additional smoothing in SPADE
+
+  # ── MAD outlier filter ────────────────────────────────────────────────────────
+  # Removes outlier peak-velocity values per material / laser-energy bracket.
+  mad_filter_enabled: true
+  # Threshold for the modified Z-score.  Lower = more aggressive removal.
+  #   2.0 — aggressive    2.5 — moderate    3.0 — standard    3.5 — conservative
+  mad_filter_threshold: 2.0
+
+  # ── Velocity uncertainty cutoff ───────────────────────────────────────────────
+  # Traces whose velocity uncertainty exceeds this value (m/s) are flagged.
+  uncertainty_threshold_ms: 10.0
+
+  # ── Individual trace plots ────────────────────────────────────────────────────
+  plot_individual: true         # Save one plot per trace (spall + HEL)
+  save_summary: true            # Save velocity_shots_summary.csv
+  show_plots: false             # Show interactive plots (set true for debugging)
+
+  # Axis limits for individual trace main panel (ns, m/s):
+  x_min_main: 0.0
+  x_max_main: 120.0
+  y_min_main: 0.0
+  y_max_main: 800.0
+
+  # Axis limits for zoom panel:
+  x_min_zoom: 0.0
+  x_max_zoom: 80.0
+  y_min_zoom: 0.0
+  y_max_zoom: 800.0
+
+  # Set true to compute axis limits automatically from data.
+  auto_calculate_limits: false
+
+  # Duration (ns) of the zoom window in individual trace plots.
+  zoom_window_ns: 80
+
+  # ── Combined velocity-traces plot ─────────────────────────────────────────────
+  generate_all_velocity_plot: true
+
+  # Whether to shade velocity uncertainty bands on the combined plot.
+  include_uncert_bands: true
+  uncert_alpha: 0.2           # Opacity of uncertainty shading (0–1)
+
+  # ── Bookkeeping ───────────────────────────────────────────────────────────────
+  # Skip traces whose material is not found in material_properties.
+  skip_unknown_material_traces: true
+
+  # Signal duration to consider; null = use full trace.
+  # Example string: "Full Signal (None)"  or a numeric ns value.
+  signal_length: "Full Signal (None)"
+
+
+# -----------------------------------------------------------------------------
+# 4. POST-PROCESSING CONFIGURATION
+#    Generate publication plots from *existing* SPADE outputs without rerunning
+#    ALPSS or SPADE.  Useful for tweaking figures after a completed analysis.
+# -----------------------------------------------------------------------------
+post_processing_config:
+
+  # Set true to activate post-processing mode (ALPSS + SPADE are skipped).
+  enabled: false
+
+  # Path to an existing SPADE output directory that contains
+  # velocity_shots_summary.csv (and optionally enhanced_spall_summary.csv).
+  spade_output_dir: /path/to/spade/output
+
+  # Select which plots to generate (true = generate, false = skip).
+  plots:
+    hel_vs_peak_velocity: true
+    hel_vs_hel_strain_rate: true
+    hel_vs_laser_energy: true
+    flyer_row_column_peak_velocity_heatmap: true
+    flyer_row_column_pair_peak_velocity: true
+    flyer_row_column_pair_peak_velocity_by_material: true
+    peak_velocity_pattern_analysis: true
+    shock_stress_vs_laser_energy: true
+    shock_stress_vs_waveplate_angle: true
+    shock_stress_vs_peak_velocity: true
+    row_column_vs_peak_shock_stress: true
+    laser_energy_vs_waveplate_angle: true
+
+
+# -----------------------------------------------------------------------------
+# 5. MATERIAL PROPERTIES
+#    SPADE uses these properties per trace (matched by the material name stored
+#    in the parameter file).
+#
+#    Keys:
+#      density        — initial density (kg/m³)
+#      bulk_wave_speed / C0 — bulk/acoustic wave speed (m/s)
+#      C_L            — longitudinal wave speed (m/s); used for HEL strain rate
+#
+#    You can add custom materials here using the same structure.
+# -----------------------------------------------------------------------------
+material_properties:
+
+  Cu:
+    density: 8960.0
+    bulk_wave_speed: 3950.0
+    C0: 3950.0
+    C_L: 4700.0
+
+  Copper:  # alias for Cu
+    density: 8960.0
+    bulk_wave_speed: 3950.0
+    C0: 3950.0
+    C_L: 4700.0
+
+  Zn:
+    density: 7140.0
+    bulk_wave_speed: 3700.0
+    C0: 3700.0
+    C_L: 4200.0
+
+  Zinc:  # alias for Zn
+    density: 7140.0
+    bulk_wave_speed: 3700.0
+    C0: 3700.0
+    C_L: 4200.0
+
+  Brass:
+    density: 8520.0
+    bulk_wave_speed: 3800.0
+    C0: 3800.0
+    C_L: 4500.0
+
+  Aluminum:
+    density: 2700.0
+    bulk_wave_speed: 5240.0
+    C0: 5240.0
+    C_L: 6000.0
+
+  Al:  # alias for Aluminum
+    density: 2700.0
+    bulk_wave_speed: 5240.0
+    C0: 5240.0
+    C_L: 6000.0
+
+  Ti:  # CP-Titanium / Grade 2
+    density: 4510.0
+    bulk_wave_speed: 5020.0
+    C0: 5020.0
+    C_L: 6070.0
+
+  Titanium:
+    density: 4510.0
+    bulk_wave_speed: 5020.0
+    C0: 5020.0
+    C_L: 6070.0
+
+  Ti_Grade2:
+    density: 4510.0
+    bulk_wave_speed: 5020.0
+    C0: 5020.0
+    C_L: 6070.0
+
+  CP-Ti:
+    density: 4510.0
+    bulk_wave_speed: 5020.0
+    C0: 5020.0
+    C_L: 6070.0
+
+  Ti64:  # Ti-6Al-4V
+    density: 4430.0
+    bulk_wave_speed: 5130.0
+    C0: 5130.0
+    C_L: 6130.0
+
+  Ti-6Al-4V:
+    density: 4430.0
+    bulk_wave_speed: 5130.0
+    C0: 5130.0
+    C_L: 6130.0
+
+  Ti6Al4V:
+    density: 4430.0
+    bulk_wave_speed: 5130.0
+    C0: 5130.0
+    C_L: 6130.0
+
+  V:  # Vanadium
+    density: 6100.0
+    bulk_wave_speed: 5200.0
+    C0: 5200.0
+    C_L: 6000.0
+
+  Vanadium:
+    density: 6100.0
+    bulk_wave_speed: 5200.0
+    C0: 5200.0
+    C_L: 6000.0
+
+  Mg:  # Magnesium
+    density: 1738.0
+    bulk_wave_speed: 4490.0
+    C0: 4490.0
+    C_L: 5770.0
+
+  Magnesium:
+    density: 1738.0
+    bulk_wave_speed: 4490.0
+    C0: 4490.0
+    C_L: 5770.0

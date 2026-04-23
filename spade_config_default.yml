@@ -1,0 +1,144 @@
+# =============================================================================
+# SPADE Configuration — Default Template (YAML)
+# =============================================================================
+# This file controls the SPADE analysis stage: cleaned velocity traces →
+# spall strength, strain rate, HEL, shock stress, and summary plots.
+#
+# Use this when running SPADE independently (--spade-config flag) or load it
+# from the GUI using "Use Config File → SPADE Config".
+#
+# Comments in this file explain every parameter so you can safely copy and
+# modify values for each experiment without looking elsewhere.
+# =============================================================================
+
+# ── Experiment modules ────────────────────────────────────────────────────────
+# Each module can be toggled independently.
+experiment_velocity_shots: true    # Process traces, align, build combined plot
+experiment_spall_analysis: true    # Extract spall strength, strain rate, shock stress
+experiment_hel_detection: true     # Detect the Hugoniot Elastic Limit plateau
+
+# ── Material defaults ─────────────────────────────────────────────────────────
+# These are used when no material match is found in material_properties.
+density: 8960.0           # Density (kg/m³)
+acoustic_velocity: 3950.0 # Bulk wave speed (m/s)
+
+# ── Spall analysis model ──────────────────────────────────────────────────────
+# Selects how spall strength and strain rate are computed:
+#   max_min        — velocity peak & valley read directly from the trace
+#   hybrid_5_segment — 5-segment linear fit for both quantities
+#   hybrid         — max_min for spall strength + 5-segment for strain rate (recommended)
+analysis_model: "hybrid"
+
+# ── Spall detection algorithm ─────────────────────────────────────────────────
+# Selects the underlying spall-detection pipeline:
+#   rdp       — RDP topology check (checkmark shape) + 5-segment fitting
+#   5-segment — skip RDP; use horizontal-plateau 5-segment only (faster, default)
+# See SPALL_DETECTION_ALGORITHM.md for full details.
+spall_detection_method: "5-segment"
+
+# ── Spall analysis window ─────────────────────────────────────────────────────
+# Only data within [spall_start_time_ns, spall_end_time_ns] is searched.
+# Values are in nanoseconds relative to t=0 (shock arrival).
+spall_start_time_ns: 0.0
+spall_end_time_ns: 90.0
+
+# ── Shock-arrival alignment ───────────────────────────────────────────────────
+# Velocity (m/s) used to locate shock arrival (t=0) per trace.
+# Lower for gentle shocks; higher to skip noise.
+threshold_velocity_ms: 5.0
+
+# Velocity threshold used when aligning multiple traces for the combined plot.
+align_velocity_threshold_ms: 20.0
+
+# ── Rebound / recompression gating ───────────────────────────────────────────
+# These thresholds prevent ringing artefacts from being mistaken for spall.
+#
+# Minimum pullback depth (m/s): any candidate with a shallower pullback is rejected.
+# min_pullback_velocity: 10.0  # (uncomment to override the default)
+#
+# Minimum rebound / pullback fraction: 0.03 = rebound must recover ≥ 3% of pullback.
+# min_recomp_ratio: 0.03
+#
+# Rebound must exceed the valley velocity by this factor (1.1 = +10% above valley).
+# min_recomp_velocity_ratio: 1.1
+#
+# Rebound must sustain for at least this many ns.
+# min_recomp_time_ns: 2.5
+
+# ── HEL (Hugoniot Elastic Limit) detection ────────────────────────────────────
+# See HEL_DETECTION_ALGORITHM.md for the full algorithm description.
+
+# Time window (ns, relative to t=0) searched for the elastic precursor plateau.
+# Typical range: 0–15 ns before the main shock for most metals.
+hel_start_time_ns: 0.0
+hel_end_time_ns: 12.0
+
+# Minimum plateau velocity to accept as a real HEL (m/s).
+# Too low → noise spikes accepted; too high → real HEL missed.
+hel_angle_threshold_deg: 45.0   # Legacy gradient-angle fallback threshold (degrees)
+
+# ── Peak / prominence detection ───────────────────────────────────────────────
+# Fraction of the peak velocity used as the minimum prominence for peak acceptance.
+prominence_factor: 0.01
+
+# Minimum time separation between consecutive detected peaks (ns).
+peak_distance_ns: 5.0
+
+# ── Signal duration ───────────────────────────────────────────────────────────
+# Duration of signal to pass to SPADE (null / "Full Signal (None)" = use all).
+signal_length: "Full Signal (None)"
+signal_length_ns: 20.0    # Used only when signal_length is not "Full Signal (None)"
+
+# ── SPADE internal smoothing ──────────────────────────────────────────────────
+# Savitzky-Golay smoothing applied inside SPADE before feature detection.
+# This is separate from the ALPSS smoothing step.
+spade_smooth_window: 101   # Window length in samples (must be odd)
+polyorder: 1               # Polynomial order (1 = linear, 2 = quadratic)
+
+# ── MAD outlier filter ────────────────────────────────────────────────────────
+# Removes outlier peak-velocity measurements per material / laser-energy bracket
+# using a modified Z-score based on the Median Absolute Deviation.
+# mad_filter_enabled: true / false
+# mad_filter_threshold:
+#   2.0 — aggressive    2.5 — moderate    3.0 — standard    3.5 — conservative
+# (Uncomment and set to override defaults)
+# mad_filter_enabled: true
+# mad_filter_threshold: 2.0
+
+# ── Velocity uncertainty cutoff ───────────────────────────────────────────────
+# Traces with velocity uncertainty above this value (m/s) are flagged.
+uncertainty_threshold_ms: 50.0
+
+# ── Per-trace plot output ─────────────────────────────────────────────────────
+plot_individual: true     # Save one diagnostic plot per trace
+save_summary: true        # Save velocity_shots_summary.csv
+show_plots: false         # Show interactive windows (useful for debugging)
+
+# Axis limits for the main panel of each individual trace plot:
+x_min_main: 0.0     # Time axis start (ns)
+x_max_main: 1000.0  # Time axis end (ns); increase for long traces
+y_min_main: 0.0     # Velocity axis start (m/s)
+y_max_main: 1000.0  # Velocity axis end (m/s)
+
+# Axis limits for the zoom inset:
+x_min_zoom: 0.0
+x_max_zoom: 200.0
+y_min_zoom: 0.0
+y_max_zoom: 1000.0
+
+# Set true to calculate limits from data automatically.
+auto_calculate_limits: false
+
+# ── Combined velocity-traces plot ─────────────────────────────────────────────
+generate_all_velocity_plot: true
+
+# Shade velocity uncertainty bands on the combined plot.
+include_uncert_bands: true
+uncert_alpha: 0.2           # Opacity of the shading (0 = invisible, 1 = solid)
+
+# Duration of the zoom window in individual trace plots (ns).
+zoom_window_ns: 500
+
+# ── Bookkeeping ───────────────────────────────────────────────────────────────
+# Skip traces whose material is not in material_properties (avoids crashes).
+skip_unknown_material_traces: true

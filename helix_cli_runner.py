@@ -3,17 +3,26 @@
 Command-line runner for HELIX Toolbox analysis.
 
 This script bypasses the GUI and executes the full ALPSS→SPADE pipeline
-using existing configuration files. It reuses the same AnalysisThread
-logic that powers the GUI but drives it with command-line arguments so
-batch runs can be launched quickly from a terminal or automation job.
+using a configuration file. It reuses the same AnalysisThread logic that
+powers the GUI but drives it from a terminal, making it suitable for batch
+runs and automated / headless workflows.
 
-Example usage (master config file - recommended):
-    python helix_cli_runner.py --config ./helix_master_config.json
+Config files are YAML (.yml / .yaml) or JSON (.json) — format is detected
+automatically from the file extension. The fully-commented YAML templates
+(helix_master_config.yml, alpss_config_default.yml, spade_config_default.yml)
+are the recommended starting point.
+
+Example usage (master config file — recommended):
+    python helix_cli_runner.py --config ./helix_master_config.yml
+
+Example usage (override config paths from the command line):
+    python helix_cli_runner.py --config ./helix_master_config.yml \\
+        --input-dir /path/to/pdv --output-dir /path/to/output
 
 Example usage (separate config files):
     python helix_cli_runner.py \
-        --alpss-config ./alpss_config_default.json \
-        --spade-config ./spade_config_default.json \
+        --alpss-config ./alpss_config_default.yml \
+        --spade-config ./spade_config_default.yml \
         --input-dir /path/to/pdv \
         --input-pattern "*Velocity*.csv" \
         --output-dir /path/to/output \
@@ -39,17 +48,40 @@ if REPO_ROOT not in sys.path:
 from helix_analysis_toolbox import AnalysisThread, load_config_from_file
 
 
-def _load_json_config(config_path: str) -> Dict:
-    """Load a JSON config file and return the parsed dictionary."""
+# Extensions probed (in order) when looking for a default master config next
+# to the repo. YAML takes precedence over JSON so users can migrate simply by
+# dropping a commented .yml next to the existing .json.
+_DEFAULT_CONFIG_BASENAMES = (
+    "helix_master_config.yml",
+    "helix_master_config.yaml",
+    "helix_master_config.json",
+)
+
+
+def _find_default_master_config(search_dir: str = REPO_ROOT) -> Optional[str]:
+    """Return the first existing default master config path, or None."""
+    for name in _DEFAULT_CONFIG_BASENAMES:
+        candidate = os.path.join(search_dir, name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _load_config_file(config_path: str) -> Dict:
+    """Load a config file (YAML or JSON, auto-detected) and return the dict."""
     ok, data, message = load_config_from_file(config_path)
     if not ok:
         raise RuntimeError(f"Failed to load config {config_path}: {message}")
     return data
 
 
+# Backwards-compatible alias: historically this helper was JSON-only.
+_load_json_config = _load_config_file
+
+
 def _load_master_config(config_path: str) -> Dict:
     """Load master config file containing CLI settings and nested ALPSS/SPADE configs."""
-    master_config = _load_json_config(config_path)
+    master_config = _load_config_file(config_path)
     
     # Validate structure
     if "cli_settings" not in master_config:
@@ -78,7 +110,8 @@ def _transform_alpss_params_for_analysis(alpss_params: Dict) -> Dict:
     # This matches get_alpss_params() lines 6402-6411
     # Handle both cases: config with raw dropdown value OR already transformed
     if 'save_all_plots' in params and 'save_all_plots_enabled' not in params:
-        # Raw config format - need to transform
+        # Raw config format - need to transformface
+        
         dropdown_value = params['save_all_plots']
         save_plots_value = 'yes' if dropdown_value in ['subfolder', 'main_dir'] else 'no'
         plots_enabled = (save_plots_value == 'yes')
@@ -208,9 +241,19 @@ def _transform_alpss_params_for_analysis(alpss_params: Dict) -> Dict:
                         'order', 'plot_dpi']:
                 if isinstance(params[param], (int, float)):
                     params[param] = int(params[param])
+            
+            # Ensure float parameters for IQ detection are floats
+            if param in ['iq_smoothing_window_ns', 'iq_skip_start_ns', 'iq_persistence_ns', 
+                        'iq_threshold_factor', 'iq_baseline_fraction']:
+                if isinstance(params[param], (int, float, str)):
+                    try:
+                        params[param] = float(params[param])
+                    except (ValueError, TypeError):
+                        pass  # Keep original if conversion fails
     
     # Ensure boolean parameters are actually booleans
-    boolean_params = ['use_notch_filter', 'save_velocity_csv', 'save_velocity_smooth_csv',
+    boolean_params = ['use_notch_filter', 'use_robust_iq_detection',
+                     'save_velocity_csv', 'save_velocity_smooth_csv',
                      'save_velocity_uncert_csv', 'save_velocity_smooth_uncert_csv',
                      'save_results_csv', 'save_noise_csv']
     for param in boolean_params:
@@ -290,6 +333,9 @@ def _transform_spade_params_for_analysis(spade_params: Dict) -> Dict:
     ]:
         if bool_key in params:
             params[bool_key] = _to_bool(params[bool_key], default=default)
+        else:
+            # Set default value if key doesn't exist
+            params[bool_key] = default
 
     return params
 
@@ -390,6 +436,57 @@ def _detect_pdv_column(columns: List[str]) -> Optional[str]:
     return None
 
 
+def _normalize_pdv_filename(value: str) -> str:
+    """
+    Normalize PDV filename strings into canonical form.
+
+    Canonical form used throughout HELIX is typically:
+      C<digit>--YYYYMMDD--#####  (e.g., C1--20251023--00072)
+
+    Some metadata files can contain Unicode dash characters (en-dash/em-dash/minus)
+    or inconsistent single-dash separators (e.g., "C1–20251023--00072").
+    """
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return ""
+
+    # Strip any directory prefix. Parameter files sometimes store the full path
+    # (e.g. "C:\\Users\\Administrator\\Desktop\\PDV_DATA\\<name>" from the
+    # acquisition PC, or a POSIX path). We only want the bare filename.
+    # Handle both separator styles explicitly since os.path.basename on POSIX
+    # hosts will not split on backslashes.
+    if "\\" in s:
+        s = s.rsplit("\\", 1)[-1]
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1]
+    s = s.strip().strip('"').strip("'")
+
+    # Drop common data-file extensions if present
+    for _ext in (".csv", ".txt", ".dat", ".bin", ".h5", ".hdf5", ".trc"):
+        if s.lower().endswith(_ext):
+            s = s[: -len(_ext)]
+            break
+
+    # Normalize common Unicode dash variants to ASCII hyphen
+    # (en-dash U+2013, em-dash U+2014, minus U+2212)
+    s = s.replace("–", "-").replace("—", "-").replace("−", "-")
+
+    # Canonicalize common PDV naming variants to C#--YYYYMMDD--#####.
+    # Accept one/two hyphens between tokens after normalization.
+    m = re.match(r"^(C\d+)--?(\d{8})--?(\d{5})$", s)
+    if m:
+        return f"{m.group(1)}--{m.group(2)}--{m.group(3)}"
+
+    # If the string already contains the canonical pattern as a substring, return that.
+    m2 = re.search(r"(C\d+--\d{8}--\d{5})", s)
+    if m2:
+        return m2.group(1)
+
+    return s
+
+
 def _load_parameter_folder(folder: str) -> Dict[str, Dict]:
     """Aggregate experiment metadata from all CSV/Excel files in a folder."""
     if not folder:
@@ -400,10 +497,13 @@ def _load_parameter_folder(folder: str) -> Dict[str, Dict]:
         raise FileNotFoundError(f"Parameter folder not found: {folder}")
 
     param_data: Dict[str, Dict] = {}
-    for entry in os.listdir(folder):
-        if not entry.lower().endswith((".csv", ".xlsx", ".xls")):
-            continue
-
+    all_entries = os.listdir(folder)
+    param_files = [e for e in all_entries if e.lower().endswith((".csv", ".xlsx", ".xls"))]
+    
+    print(f"[INFO] Found {len(param_files)} parameter file(s) to process")
+    
+    for idx, entry in enumerate(param_files, 1):
+        print(f"[INFO] Processing parameter file {idx}/{len(param_files)}: {entry}")
         file_path = os.path.join(folder, entry)
         try:
             if entry.lower().endswith(".csv"):
@@ -420,6 +520,7 @@ def _load_parameter_folder(folder: str) -> Dict[str, Dict]:
             continue
 
         if df.empty:
+            print(f"[WARN] Parameter file {entry} is empty, skipping")
             continue
 
         pdv_col = _detect_pdv_column(list(df.columns))
@@ -427,11 +528,123 @@ def _load_parameter_folder(folder: str) -> Dict[str, Dict]:
             print(f"[WARN] Could not detect PDV filename column in {entry}")
             continue
 
+        # Check for 'Sample material' column (with various name variations)
+        sample_material_col = None
+        material_col_variations = [
+            'Sample material', 'Sample Material', 'Sample_Material',
+            'sample_material', 'samplematerial', 'SampleMaterial',
+            'Material', 'material', 'Target material', 'Target Material'
+        ]
+        for col in df.columns:
+            if col in material_col_variations:
+                sample_material_col = col
+                break
+        
+        if sample_material_col:
+            print(f"[INFO] Found 'Sample material' column: '{sample_material_col}'")
+            # Count non-empty material values
+            material_values = df[sample_material_col].dropna()
+            material_values = material_values[material_values.astype(str).str.strip() != '']
+            unique_materials = material_values.unique()
+            print(f"[INFO]   Found {len(material_values)} entries with material values")
+            print(f"[INFO]   Unique materials: {', '.join(sorted([str(m) for m in unique_materials]))}")
+        else:
+            print(f"[WARN] No 'Sample material' column found in {entry}")
+            print(f"[WARN]   Available columns: {', '.join(df.columns.tolist())}")
+
+        rows_loaded = 0
+        rows_with_material = 0
         for _, row in df.iterrows():
-            pdv_name = str(row.get(pdv_col, "")).strip()
-            if not pdv_name or pdv_name.lower() == "nan":
+            pdv_name_raw = row.get(pdv_col, "")
+            pdv_name = _normalize_pdv_filename(pdv_name_raw)
+            if not pdv_name:
                 continue
-            param_data[pdv_name] = row.to_dict()
+            
+            # Store all row data as dictionary
+            row_dict = row.to_dict()
+
+            # Normalize PDV_FileName inside the row dict too (helps downstream exact matching)
+            if "PDV_FileName" in row_dict:
+                row_dict["PDV_FileName"] = _normalize_pdv_filename(row_dict.get("PDV_FileName"))
+            
+            # Ensure 'Sample material' is accessible (normalize column name)
+            if sample_material_col and sample_material_col in row_dict:
+                # Also store under standard name for easier access
+                material_value = str(row_dict[sample_material_col]).strip()
+                if material_value and material_value.lower() not in ['nan', 'none', '']:
+                    row_dict['Sample material'] = material_value
+                    rows_with_material += 1
+                else:
+                    row_dict['Sample material'] = None
+            
+            # Store by PDV filename (from detected column, which should be PDV_FileName)
+            param_data[pdv_name] = row_dict
+            
+            # Also store by PDV_FileName column value if it exists and differs from pdv_col
+            # This ensures we can match using either the column name or the actual PDV_FileName value
+            if 'PDV_FileName' in row_dict and pdv_col != 'PDV_FileName':
+                pdv_file_name_value = _normalize_pdv_filename(row_dict.get('PDV_FileName'))
+                if pdv_file_name_value and pdv_file_name_value != pdv_name:
+                    # Store additional entry keyed by PDV_FileName column value
+                    param_data[pdv_file_name_value] = row_dict
+            
+            rows_loaded += 1
+        
+        print(f"[INFO] Loaded {rows_loaded} entries from {entry}")
+        if sample_material_col:
+            print(f"[INFO]   {rows_with_material} entries have valid 'Sample material' values")
+
+    # Summary: Report total parameter data loaded
+    total_entries = len(param_data)
+    if total_entries > 0:
+        # Count entries with Sample material
+        entries_with_material = sum(
+            1 for entry in param_data.values()
+            if isinstance(entry, dict) and 
+            entry.get('Sample material') and 
+            str(entry.get('Sample material')).strip().lower() not in ['nan', 'none', '']
+        )
+        
+        # Get unique Exp_IDs and materials
+        exp_id_materials = {}
+        for entry in param_data.values():
+            if isinstance(entry, dict):
+                pdv_file = entry.get('PDV_FileName', '')
+                if pdv_file:
+                    # Extract Exp_ID from PDV_FileName
+                    import re
+                    exp_id_match = re.search(r'([A-Z]+\d+-\d+)', str(pdv_file))
+                    if exp_id_match:
+                        exp_id = exp_id_match.group(1)
+                        material = entry.get('Sample material', 'Unknown')
+                        if material and str(material).strip().lower() not in ['nan', 'none', '', 'unknown']:
+                            exp_id_materials[exp_id] = str(material).strip()
+        
+        print(f"\n[INFO] Parameter data summary:")
+        print(f"[INFO]   Total entries loaded: {total_entries}")
+        print(f"[INFO]   Entries with 'Sample material': {entries_with_material}")
+        print(f"[INFO]   Entries without 'Sample material': {total_entries - entries_with_material}")
+        print(f"[INFO]   Unique Exp_IDs with materials: {len(exp_id_materials)}")
+        if exp_id_materials:
+            print(f"[INFO]   Exp_ID -> Material mapping:")
+            for exp_id, material in sorted(exp_id_materials.items()):
+                print(f"[INFO]     {exp_id} -> {material}")
+        
+        # Show sample entries with materials
+        if entries_with_material > 0:
+            sample_count = min(5, entries_with_material)
+            print(f"[INFO]   Sample PDV_FileName entries (showing {sample_count}):")
+            count = 0
+            for pdv_name, entry in param_data.items():
+                if isinstance(entry, dict):
+                    material = entry.get('Sample material', '')
+                    pdv_file = entry.get('PDV_FileName', pdv_name)
+                    if material and str(material).strip().lower() not in ['nan', 'none', '']:
+                        print(f"[INFO]     {pdv_file} -> Material: {material}")
+                        count += 1
+                        if count >= sample_count:
+                            break
+        print()
 
     return param_data
 
@@ -443,18 +656,18 @@ def _parse_args() -> argparse.Namespace:
         epilog="""
 Examples:
   # Use master config file (recommended):
-  python helix_cli_runner.py --config ./helix_master_config.json
-  
-  # Use separate config files:
+  python helix_cli_runner.py --config ./helix_master_config.yml
+
+  # Override config file paths from the command line:
+  python helix_cli_runner.py --config ./helix_master_config.yml \\
+      --input-dir /different/path --output-dir /different/output
+
+  # Use separate per-tool config files:
   python helix_cli_runner.py \\
-      --alpss-config ./alpss_config_default.json \\
-      --spade-config ./spade_config_default.json \\
+      --alpss-config ./alpss_config_default.yml \\
+      --spade-config ./spade_config_default.yml \\
       --input-dir /path/to/pdv \\
       --output-dir /path/to/output
-  
-  # Override config file settings:
-  python helix_cli_runner.py --config ./helix_master_config.json \\
-      --input-dir /different/path --output-dir /different/output
         """
     )
     
@@ -526,18 +739,28 @@ Examples:
 def main():
     args = _parse_args()
 
-    # If no config specified, try to use default master config in current directory
+    # If no config specified, try to use default master config in current directory.
+    # Probe order: .yml -> .yaml -> .json (first found wins).
     if not args.config and not args.alpss_config and not args.spade_config:
-        default_config = os.path.join(REPO_ROOT, "helix_master_config.json")
-        if os.path.exists(default_config):
+        default_config = _find_default_master_config(REPO_ROOT)
+        if default_config:
             args.config = default_config
             print(f"Using default config: {default_config}")
 
     # Load configs - either master config or separate configs
     if args.config:
         # Master config mode
-        master_config = _load_master_config(os.path.abspath(args.config))
+        config_path_abs = os.path.abspath(args.config)
+        print(f"\n[DEBUG] Loading config from: {config_path_abs}")
+        master_config = _load_master_config(config_path_abs)
         cli_settings = master_config.get("cli_settings", {})
+        
+        # Debug: Print what was loaded from config
+        print(f"[DEBUG] Config file 'cli_settings' section:")
+        print(f"  input_dir: {cli_settings.get('input_dir', 'NOT FOUND')}")
+        print(f"  output_dir: {cli_settings.get('output_dir', 'NOT FOUND')}")
+        print(f"  param_folder: {cli_settings.get('param_folder', 'NOT FOUND')}")
+        
         alpss_params = master_config.get("alpss_config", {})
         spade_params = master_config.get("spade_config", {})
         material_properties = master_config.get("material_properties", {})  # Extract material properties
@@ -564,15 +787,25 @@ def main():
         spade_input_dir = args.spade_input_dir if args.spade_input_dir else _get_or_none(cli_settings.get("spade_input_dir"))
         spade_input_pattern = args.spade_input_pattern if args.spade_input_pattern else cli_settings.get("spade_input_pattern", "*--vel-smooth-with-uncert.csv")
         
+        # Debug: Print resolved values
+        print(f"\n[DEBUG] Resolved CLI settings (after command-line overrides):")
+        print(f"  input_dir: {input_dir}")
+        print(f"  output_dir: {output_dir}")
+        print(f"  param_folder: {param_folder}")
+        print(f"  analysis_mode: {analysis_mode}")
+        print(f"  spade_mode: {spade_mode}\n")
+        
     else:
         # Separate configs mode (backward compatibility)
         if not args.alpss_config or not args.spade_config:
-            default_config = os.path.join(REPO_ROOT, "helix_master_config.json")
+            default_config = _find_default_master_config(REPO_ROOT) or os.path.join(
+                REPO_ROOT, "helix_master_config.yml"
+            )
             error_msg = (
                 "No configuration specified.\n\n"
                 "Options:\n"
-                f"  1. Use master config: --config ./helix_master_config.json\n"
-                f"     (or place helix_master_config.json in current directory)\n"
+                f"  1. Use master config: --config ./helix_master_config.yml\n"
+                f"     (or place helix_master_config.yml / helix_master_config.json in current directory)\n"
                 "  2. Use separate configs: --alpss-config <path> --spade-config <path>\n\n"
                 f"Default config location: {default_config}"
             )
@@ -606,6 +839,16 @@ def main():
 
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Debug: Print output directory information
+    print("\n" + "=" * 70)
+    print("OUTPUT DIRECTORY CONFIGURATION")
+    print("=" * 70)
+    print(f"Output directory (resolved): {output_dir}")
+    print(f"Output directory exists: {os.path.exists(output_dir)}")
+    if os.path.exists(output_dir):
+        print(f"Output directory is writable: {os.access(output_dir, os.W_OK)}")
+    print("=" * 70 + "\n")
 
     # Resolve input files
     if analysis_mode != "spade_only":
@@ -642,6 +885,12 @@ def main():
         print(f"\n✓ Successfully resolved {len(resolved_input_files)} input file(s)\n")
     else:
         resolved_input_files = []
+        print("\n" + "=" * 70)
+        print("SPADE-ONLY MODE: Skipping ALPSS input file resolution")
+        print("=" * 70)
+        print(f"analysis_mode: {analysis_mode}")
+        print(f"resolved_input_files: [] (empty list)")
+        print("=" * 70 + "\n")
 
     if analysis_mode == "spade_only" and spade_mode == "auto":
         raise ValueError("Auto SPADE mode requires ALPSS outputs from the same run. "
@@ -660,7 +909,12 @@ def main():
         resolved_spade_input_files = None
         spade_auto_mode = True
 
-    param_data = _load_parameter_folder(param_folder) if param_folder else None
+    # Load parameter folder with progress indication
+    if param_folder:
+        print(f"\n[INFO] Loading parameter data from: {param_folder}")
+        param_data = _load_parameter_folder(param_folder)
+    else:
+        param_data = None
     
     # Inform user about parameter data loading for material color-coding
     if param_data:
@@ -802,6 +1056,15 @@ def main():
     # Normal analysis mode
     # Prepare Qt event loop for the AnalysisThread (which inherits QThread)
     app = QCoreApplication([])
+    
+    # Debug: Print output directory being passed to AnalysisThread
+    print("\n" + "=" * 70)
+    print("CREATING ANALYSIS THREAD")
+    print("=" * 70)
+    print(f"Output directory passed to AnalysisThread: {output_dir}")
+    print(f"Output directory absolute path: {os.path.abspath(output_dir)}")
+    print("=" * 70 + "\n")
+    
     thread = AnalysisThread(
         alpss_params=alpss_params,
         spade_params=spade_params,

@@ -45,6 +45,7 @@ from .data_processing import (
 
 from .plotting import (
     plot_velocity_comparison,
+    plot_stft_vs_phase_velocity_comparison,
     plot_spall_vs_strain_rate,
     plot_spall_vs_shock_stress,
     plot_shock_stress_vs_laser_energy,

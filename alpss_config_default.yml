@@ -1,0 +1,143 @@
+# =============================================================================
+# ALPSS Configuration — Default Template (YAML)
+# =============================================================================
+# This file controls the ALPSS (Automated Laser PDV Signal Processing) stage:
+# raw oscilloscope CSV → cleaned velocity trace + uncertainty.
+#
+# Use this when running ALPSS independently (--alpss-config flag) or load it
+# from the GUI using "Use Config File → ALPSS Config".
+#
+# YAML comments (lines starting with #) are ignored by the parser and are
+# purely for your reference.  Feel free to annotate your own values inline.
+# =============================================================================
+
+# ── Output control ────────────────────────────────────────────────────────────
+save_data: "yes"      # Save CSV outputs (yes / no)
+display_plots: "no"   # Show interactive matplotlib windows during processing
+# Plot saving:
+#   no        — no per-trace ALPSS plots
+#   subfolder — save plots to <output>/<file>_plots/ (recommended)
+#   main_dir  — save plots alongside CSV files
+save_all_plots: "subfolder"
+spall_calculation: "no"   # ALPSS built-in spall calc (use SPADE for this instead)
+
+# ── Input file format ─────────────────────────────────────────────────────────
+# Number of header lines at the top of each oscilloscope CSV to skip.
+# Common values: 5 (Tektronix), 22 (Rigol MSO / LeCroy), 2 (custom).
+header_lines: 22
+
+# Manual start time override (seconds).  "none" = auto-detect from signal.
+start_time_user: "none"
+
+# Fine correction added to the detected start time (seconds).
+start_time_correction: 0
+
+# Duration of trace to skip from the beginning before signal extraction (s).
+time_to_skip: 0.0
+
+# Duration of signal to extract from the detected start time (s).
+# Example: 4e-6 = 4 µs window.
+time_to_take: 4.0e-06
+
+# Pre-signal padding included in the output (s).
+t_before: 2.0e-08
+
+# Post-onset window included in the output (s).
+t_after: 2.0e-07
+
+# ── IQ signal-onset detection ─────────────────────────────────────────────────
+# Use the robust pipeline (threshold + smoothing + persistence filter).
+use_robust_iq_detection: true
+
+# Fraction of peak amplitude used as the onset threshold.
+# 0.8 = 80% of peak.  Lower → earlier detection; higher → fewer false starts.
+iq_threshold_factor: 0.8
+
+# Gaussian smoothing window (ns) applied before onset detection.
+iq_smoothing_window_ns: 5.0
+
+# Ignore the first N ns of the trace to avoid edge transients.
+iq_skip_start_ns: 1.0
+
+# Persistence: the signal must stay above threshold for this many ns before
+# the onset is accepted.
+iq_persistence_ns: 0.5
+
+# ── Frequency / spectrogram ───────────────────────────────────────────────────
+freq_min: 1.2e9    # Lower edge of the useful Doppler band (Hz)
+freq_max: 3.5e9    # Upper edge of the useful Doppler band (Hz)
+
+sample_rate: 1.28e11   # Oscilloscope sample rate (S/s); 128e9 = 128 GS/s
+
+nperseg: 512    # STFT window length (samples)
+noverlap: 400   # STFT overlap (samples); must be < nperseg
+nfft: 5120      # FFT size (zero-padding); larger = finer freq resolution
+window: "hann"  # STFT window function: hann | hamming | blackman | ...
+
+# Gaussian blur applied to the spectrogram image before frequency tracking.
+blur_kernel_x: 5
+blur_kernel_y: 5
+blur_sigx: 0.0   # 0 = infer from kernel size
+blur_sigy: 0.0
+
+# Duration (s) at the start of the trace used to characterise the carrier band.
+carrier_band_time: 2.5e-07
+
+# ── Velocity smoothing ────────────────────────────────────────────────────────
+# Algorithm: savgol (Savitzky-Golay, recommended) or gaussian
+smoothing_type: "gaussian"
+
+# Window length in nanoseconds (preferred).  Set null to use smoothing_window.
+smoothing_window_ns: null
+
+# Window length in samples (used only when smoothing_window_ns is null).
+# Must be an odd integer.
+smoothing_window: 601
+
+# Gaussian-specific parameters (only used when smoothing_type: gaussian):
+smoothing_wid: 3.0      # Width parameter (samples)
+smoothing_amp: 1.0      # Amplitude normalisation
+smoothing_sigma: 1.0    # Standard deviation
+smoothing_mu: 0.0       # Mean (centre offset)
+
+# Polynomial order for Savitzky-Golay (smoothing_type: savgol).
+savgol_polyorder: 3
+
+# ── Peak / feature detection ──────────────────────────────────────────────────
+pb_neighbors: 400       # Sample search radius for pullback minimum
+pb_idx_correction: 0    # Manual sample offset correction for pullback
+rc_neighbors: 400       # Sample search radius for recompression peak
+rc_idx_correction: 0    # Manual sample offset correction for recompression
+
+# ── Carrier notch filter ──────────────────────────────────────────────────────
+# Enable if your signal has a strong static carrier tone.
+use_notch_filter: true
+order: 6              # Butterworth filter order
+wid: 1.5e8            # Notch half-width (Hz); tune to match the carrier width
+
+# ── Uncertainty ───────────────────────────────────────────────────────────────
+# Multiplier applied to the instantaneous noise-based frequency uncertainty.
+# Increase for conservative (wider) error bars.
+uncert_mult: 10.0
+
+# ── Material / laser parameters ───────────────────────────────────────────────
+C0: 3950.0       # Bulk wave speed (m/s)
+density: 8960.0  # Material density (kg/m³)
+lam: 1.55001e-06 # PDV laser wavelength (m); 1550 nm ≈ 1.55e-6
+theta: 0.0       # PDV probe angle (degrees); 0 = normal incidence
+
+# Uncertainty contributions for the ALPSS spall calculation:
+delta_rho: 9.0      # Density uncertainty (kg/m³)
+delta_C0: 23.0      # Wave speed uncertainty (m/s)
+delta_lam: 8.0e-18  # Wavelength uncertainty (m)
+delta_theta: 5.0    # Angle uncertainty (degrees)
+
+cmap: "viridis"   # Matplotlib colormap for spectrogram plots
+
+# ── Selective CSV output ──────────────────────────────────────────────────────
+save_velocity_csv: false               # Raw (unsmoothed) velocity
+save_velocity_smooth_csv: false        # Smoothed velocity only
+save_velocity_uncert_csv: false        # Raw uncertainty
+save_velocity_smooth_uncert_csv: true  # Smoothed velocity + uncertainty (used by SPADE)
+save_results_csv: false                # Per-file ALPSS results summary
+save_noise_csv: true                   # Noise fraction trace
