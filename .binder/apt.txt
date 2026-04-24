@@ -1,0 +1,8 @@
+libgl1-mesa-glx
+libglib2.0-0
+libxext6
+libxrender1
+libx11-6
+libxi6
+libxtst6
+libdbus-1-3

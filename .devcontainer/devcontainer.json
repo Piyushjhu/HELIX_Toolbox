@@ -1,0 +1,42 @@
+{
+  "name": "HELIX Toolbox",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bullseye",
+
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt && pip install jupyter jupyterlab ipywidgets",
+
+  "remoteEnv": {
+    "QT_QPA_PLATFORM": "offscreen",
+    "MPLBACKEND": "Agg"
+  },
+
+  "forwardPorts": [8888],
+  "portsAttributes": {
+    "8888": {
+      "label": "Jupyter Lab",
+      "onAutoForward": "notify"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.pylance",
+        "ms-toolsai.jupyter",
+        "ms-toolsai.jupyter-keymap",
+        "ms-toolsai.jupyter-renderers"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "editor.formatOnSave": false,
+        "jupyter.notebookFileRoot": "${workspaceFolder}/examples"
+      }
+    }
+  },
+
+  "onCreateCommand": "echo 'HELIX Toolbox environment ready. Run: jupyter lab examples/' "
+}

@@ -9,8 +9,33 @@
 
 ---
 
+## Run Online — No Installation Required
+
+Try HELIX Toolbox directly in your browser using any of the platforms below.
+All example notebooks open with bundled sample PDV data pre-loaded; bring your own CSV files by uploading them in the first notebook cell.
+
+| Platform | What you get | Launch |
+|---|---|---|
+| **Binder** | Full Jupyter environment, all deps pre-installed, no account needed | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F01_full_pipeline_cli.ipynb) |
+| **Google Colab** | Google-hosted GPU/CPU, persistent Drive storage, free tier | [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/01_full_pipeline_cli.ipynb) |
+| **GitHub Codespaces** | Full VS Code in the browser, drag-and-drop file upload, CLI + GUI | [![Open in Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Piyushjhu/HELIX_Toolbox) |
+
+### Quick-start per notebook
+
+| Notebook | Binder | Colab |
+|---|---|---|
+| 01 — Full pipeline CLI | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F01_full_pipeline_cli.ipynb) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/01_full_pipeline_cli.ipynb) |
+| 02 — ALPSS signal processing | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F02_alpss_signal_processing.ipynb) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/02_alpss_signal_processing.ipynb) |
+| 03 — SPADE spall & HEL analysis | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F03_spade_spall_hel_analysis.ipynb) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/03_spade_spall_hel_analysis.ipynb) |
+| 04 — Post-processing & paper plots | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F04_postprocessing_paper_plots.ipynb) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/04_postprocessing_paper_plots.ipynb) |
+
+> **Using your own data on Binder/Colab?** The first cell of each notebook detects the cloud environment and offers an upload widget. On **Codespaces**, drag-and-drop your CSV files directly into the VS Code file explorer then update the path variables.
+
+---
+
 ## Table of Contents
 
+0. [Run Online — No Installation Required](#run-online--no-installation-required)
 1. [Overview](#overview)
 2. [Features](#features)
 3. [Installation](#installation)

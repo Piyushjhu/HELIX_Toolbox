@@ -1,0 +1,21 @@
+#!/bin/bash
+# Configure headless Qt and non-interactive matplotlib for all Jupyter kernels
+set -e
+
+# IPython startup script — runs at kernel launch, so env vars are always set
+mkdir -p ~/.ipython/profile_default/startup
+cat > ~/.ipython/profile_default/startup/00_helix_env.py << 'PYEOF'
+import os
+# Headless Qt — no display required (CLI and notebook mode)
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Non-interactive matplotlib backend
+os.environ.setdefault("MPLBACKEND", "Agg")
+PYEOF
+
+# Also export for any shell-based steps below
+export QT_QPA_PLATFORM=offscreen
+export MPLBACKEND=Agg
+
+echo "HELIX Toolbox Binder post-build complete."
+echo "  QT_QPA_PLATFORM=offscreen"
+echo "  MPLBACKEND=Agg"
