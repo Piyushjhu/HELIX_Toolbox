@@ -7521,161 +7521,80 @@ class AnalysisThread(QThread):
                 'intersections': intersections
             }
         
-        # Find first minimum after plateau (this is P3)
-        # We want the FIRST local minimum chronologically, not the deepest one
-        # Apply smoothing to avoid noise-based minima
-        smooth_window = min(10, len(post_plateau_data) // 5)  # 20% of data or 10 points, whichever is smaller
-        if smooth_window >= 3 and len(post_plateau_data) >= smooth_window:
-            from scipy.ndimage import uniform_filter1d
-            post_plateau_smooth = uniform_filter1d(post_plateau_data, size=smooth_window, mode='nearest')
+        # Find pullback minimum P3.
+        #
+        # Strategy: use the GLOBAL minimum of a lightly smoothed post-plateau
+        # signal.  The spall pullback is always the deepest point in the
+        # post-plateau trace, so a simple argmin is more robust than a
+        # peak-finding + drop-check approach (which rejects broad/gradual
+        # pullbacks because velocity looks like it is still falling 10 ns
+        # after the true minimum).
+        #
+        # After locating the global minimum we verify that there is genuine
+        # recompression (velocity rises after the minimum).  If it does not
+        # rise — e.g. the signal declines monotonically to the window end —
+        # we fall back to scipy.signal.find_peaks so we can still attempt a
+        # fit and return a DNS result with visualisation.
+
+        from scipy.ndimage import uniform_filter1d
+        from scipy.signal import find_peaks as _find_peaks
+
+        # Light smoothing (window ≤ 5 points) to suppress sample-level noise
+        # without killing a broad/flat minimum region.
+        sw = min(5, max(3, len(post_plateau_data) // 20))
+        if sw >= 3 and len(post_plateau_data) >= sw:
+            post_plateau_smooth = uniform_filter1d(post_plateau_data.astype(float),
+                                                   size=sw, mode='nearest')
         else:
-            post_plateau_smooth = post_plateau_data
-        
-        # Method: Find first local minimum by scanning forward
-        # A local minimum is where velocity decreases then increases
-        # Use scipy.signal.find_peaks on inverted data to find valleys
-        from scipy.signal import find_peaks
-        
-        # Invert the signal to find valleys as peaks
-        inverted_signal = -post_plateau_smooth
-        
-        # Find peaks in inverted signal (which are valleys in original)
-        # Require minimum prominence to avoid noise
-        min_prominence = max(v_max * 0.01, 2.0)  # At least 1% of peak or 2 m/s
-        min_distance = max(5, len(post_plateau_smooth) // 50)  # At least 5 points, or 2% of data
-        
-        valleys, properties = find_peaks(inverted_signal, prominence=min_prominence, distance=min_distance)
-        
-        if len(valleys) > 0:
-            # Validate each valley: check if velocity continues dropping after it
-            # If it does, it's not a true minimum (just noise on a downward slope)
-            drop_threshold_ns = 10.0  # Check next 10 ns after minimum
-            valid_p3_found = False
-            
-            for valley_idx in valleys:
-                idx_local_min = valley_idx
-                idx_p3_candidate = idx_last_plateau + idx_local_min
-                t_p3_candidate = time[idx_p3_candidate]
-                v_p3_candidate = velocity[idx_p3_candidate]
-                
-                # VALIDATION STEP 1: Check ±1 ns around detected minima to ensure it's a true local minimum
-                # Find indices within ±1 ns window
-                time_window_ns = 1.0  # Check ±1 ns
-                window_mask = (time >= (t_p3_candidate - time_window_ns)) & (time <= (t_p3_candidate + time_window_ns))
-                window_indices = np.where(window_mask)[0]
-                
-                if len(window_indices) > 0:
-                    # Check if this point is actually the minimum within the ±1 ns window
-                    window_velocities = velocity[window_indices]
-                    min_in_window = np.min(window_velocities)
-                    idx_min_in_window = window_indices[np.argmin(window_velocities)]
-                    
-                    # If the detected P3 is not the lowest point in the ±1 ns window, it's noise
-                    if idx_p3_candidate != idx_min_in_window:
-                        print(f"  [HORIZ-PLAT] Checking minimum at t={t_p3_candidate:.2f} ns, v={v_p3_candidate:.2f} m/s")
-                        print(f"  [HORIZ-PLAT]   REJECTED: Not a true local minimum. Minimum in ±1ns window is at t={time[idx_min_in_window]:.2f} ns, v={velocity[idx_min_in_window]:.2f} m/s")
-                        sys.stdout.flush()
-                        continue  # Skip this candidate and try next one
-                    
-                    # Check if velocity difference is significant (not just flat signal)
-                    velocity_range_in_window = np.max(window_velocities) - min_in_window
-                    min_range_threshold = max(0.5, abs(v_p3_candidate) * 0.01)  # At least 0.5 m/s or 1% of current value
-                    
-                    if velocity_range_in_window < min_range_threshold:
-                        print(f"  [HORIZ-PLAT] Checking minimum at t={t_p3_candidate:.2f} ns, v={v_p3_candidate:.2f} m/s")
-                        print(f"  [HORIZ-PLAT]   REJECTED: Flat signal around minimum (range={velocity_range_in_window:.2f} m/s < threshold={min_range_threshold:.2f})")
-                        sys.stdout.flush()
-                        continue  # Skip this candidate - it's too flat
-                
-                # VALIDATION STEP 2: Check if velocity continues dropping after this minimum
-                # Find index corresponding to 10 ns after this minimum
-                target_time = t_p3_candidate + drop_threshold_ns
-                # Find closest time index
-                time_after_min = time[idx_p3_candidate:]
-                if len(time_after_min) > 0:
-                    time_diffs = np.abs(time_after_min - target_time)
-                    idx_10ns_later = idx_p3_candidate + np.argmin(time_diffs)
-                    
-                    # Ensure we have valid indices
-                    if idx_10ns_later < len(velocity) and idx_10ns_later > idx_p3_candidate:
-                        v_10ns_later = velocity[idx_10ns_later]
-                        velocity_drop = v_p3_candidate - v_10ns_later
-                        
-                        # If velocity drops significantly (more than 2 m/s or 5% of current value), 
-                        # this is not a true minimum - it's still on a downward slope
-                        drop_threshold = max(2.0, abs(v_p3_candidate) * 0.05)
-                        
-                        print(f"  [HORIZ-PLAT] Validating minimum at t={t_p3_candidate:.2f} ns, v={v_p3_candidate:.2f} m/s")
-                        print(f"  [HORIZ-PLAT]   ✓ Passed ±1ns local minimum check")
-                        print(f"  [HORIZ-PLAT]   Velocity at t+10ns ({time[idx_10ns_later]:.2f} ns): {v_10ns_later:.2f} m/s, drop={velocity_drop:.2f} m/s (threshold={drop_threshold:.2f})")
-                        sys.stdout.flush()
-                        
-                        if velocity_drop > drop_threshold:
-                            # Velocity continues dropping - this is not a true minimum
-                            print(f"  [HORIZ-PLAT]   REJECTED: Velocity continues dropping, not a true minimum")
-                            sys.stdout.flush()
-                            continue
-                        else:
-                            # This is a valid minimum - velocity doesn't continue dropping
-                            idx_p3 = idx_p3_candidate
-                            v_p3 = v_p3_candidate
-                            t_p3 = t_p3_candidate
-                            valid_p3_found = True
-                            print(f"  [HORIZ-PLAT]   ✓ Passed drop threshold check")
-                            print(f"  [HORIZ-PLAT]   ✅ ACCEPTED: Valid minimum found at t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
-                            sys.stdout.flush()
-                            break
-                    else:
-                        # Can't check 10 ns ahead (end of data), accept this minimum
-                        idx_p3 = idx_p3_candidate
-                        v_p3 = v_p3_candidate
-                        t_p3 = t_p3_candidate
-                        valid_p3_found = True
-                        print(f"  [HORIZ-PLAT]   ✓ Passed ±1ns local minimum check")
-                        print(f"  [HORIZ-PLAT]   ✅ ACCEPTED: Minimum at end of data, t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
-                        sys.stdout.flush()
-                        break
-                else:
-                    # No data after minimum, accept it
-                    idx_p3 = idx_p3_candidate
-                    v_p3 = v_p3_candidate
-                    t_p3 = t_p3_candidate
-                    valid_p3_found = True
-                    print(f"  [HORIZ-PLAT]   ✓ Passed ±1ns local minimum check")
-                    print(f"  [HORIZ-PLAT]   ✅ ACCEPTED: No data after minimum, t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
-                    sys.stdout.flush()
-                    break
-            
-            if not valid_p3_found:
-                # All minima were rejected, use the first one anyway (fallback)
-                idx_local_min = valleys[0]
-                idx_p3 = idx_last_plateau + idx_local_min
-                v_p3 = velocity[idx_p3]
-                t_p3 = time[idx_p3]
-                print(f"  [HORIZ-PLAT] WARNING: All minima rejected, using first one as fallback: idx={idx_p3}, t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
-                sys.stdout.flush()
+            post_plateau_smooth = post_plateau_data.astype(float)
+
+        # --- Primary: global minimum ---
+        rel_idx_global_min = int(np.argmin(post_plateau_smooth))
+        idx_p3_global = idx_last_plateau + rel_idx_global_min
+        v_p3_global   = float(velocity[idx_p3_global])
+        t_p3_global   = float(time[idx_p3_global])
+
+        # Check recompression: does velocity rise by at least 2% of pullback
+        # amplitude somewhere after this minimum?
+        pullback_amp = v_max - v_p3_global
+        recomp_threshold = max(5.0, pullback_amp * 0.02)
+        post_min_data = post_plateau_data[rel_idx_global_min + 1:]
+        has_recomp = (len(post_min_data) > 0 and
+                      float(np.max(post_min_data)) - v_p3_global >= recomp_threshold)
+
+        if has_recomp:
+            idx_p3 = idx_p3_global
+            v_p3   = v_p3_global
+            t_p3   = t_p3_global
+            print(f"  [HORIZ-PLAT] P3 (global minimum): t={t_p3:.2f} ns, v={v_p3:.2f} m/s "
+                  f"(pullback={pullback_amp:.1f} m/s, recomp confirmed)")
+            sys.stdout.flush()
+        else:
+            # --- Fallback: find_peaks on the inverted smoothed signal ---
+            # Used when the global minimum is at the very end of the window
+            # (no recompression visible) — we still want the best local valley.
+            print(f"  [HORIZ-PLAT] Global minimum at {t_p3_global:.2f} ns has no clear "
+                  f"recompression — trying find_peaks fallback")
+            sys.stdout.flush()
+
+            inverted = -post_plateau_smooth
+            min_prom  = max(v_max * 0.01, 2.0)
+            min_dist  = max(3, len(post_plateau_smooth) // 50)
+            valleys, _ = _find_peaks(inverted, prominence=min_prom, distance=min_dist)
+
+            if len(valleys) > 0:
+                idx_p3 = idx_last_plateau + int(valleys[0])
+                v_p3   = float(velocity[idx_p3])
+                t_p3   = float(time[idx_p3])
+                print(f"  [HORIZ-PLAT] P3 (find_peaks fallback, first valley): "
+                      f"t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
             else:
-                print(f"  [HORIZ-PLAT] P3 (validated first local minimum): idx={idx_p3}, t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
-                sys.stdout.flush()
-        else:
-            # Fallback: Find first point where velocity stops decreasing
-            # Scan forward and find first point where velocity increases after decreasing
-            decreasing = True
-            idx_local_min = 0
-            for i in range(1, len(post_plateau_smooth)):
-                if decreasing and post_plateau_smooth[i] > post_plateau_smooth[i-1]:
-                    # Velocity started increasing - previous point was a minimum
-                    idx_local_min = i - 1
-                    break
-                elif post_plateau_smooth[i] < post_plateau_smooth[i-1]:
-                    decreasing = True
-                else:
-                    decreasing = False
-            
-            idx_p3 = idx_last_plateau + idx_local_min
-            v_p3 = velocity[idx_p3]
-            t_p3 = time[idx_p3]
-            print(f"  [HORIZ-PLAT] P3 (fallback - first turning point): idx={idx_p3}, t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
+                # Last resort: use the global minimum regardless of recompression
+                idx_p3 = idx_p3_global
+                v_p3   = v_p3_global
+                t_p3   = t_p3_global
+                print(f"  [HORIZ-PLAT] P3 (last-resort global minimum): "
+                      f"t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
             sys.stdout.flush()
         
         # Validate P3 was found
