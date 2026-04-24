@@ -420,7 +420,8 @@ def generate_spall_vs_strain_rate_plot(summary_df, spade_output_dir, progress_ca
         apply_consistent_plot_formatting(ax, 'Strain Rate (s^-1)', 'Spall Strength (GPa)', 
                                          'Spall Strength vs Strain Rate by Material')
         ax.set_xscale('log')  # Use log scale for strain rate
-        ax.set_ylim(0, 3.5)
+        y_max_data = pd.to_numeric(valid_data[spall_strength_col], errors='coerce').max()
+        ax.set_ylim(0, max(3.5, y_max_data * 1.15))
         ax.legend(legend_handles, legend_labels, title='Material', loc='best', fontsize=20)
         
         # Tight layout and save
@@ -480,7 +481,20 @@ def generate_spall_vs_shock_stress_plot(summary_df, spade_output_dir, progress_c
             if progress_callback:
                 progress_callback("⚠ No valid data - skipping plot")
             return
-        
+
+        # Apply 3-sigma outlier filter (consistent with strain-rate plots)
+        if len(valid_data) > 3:
+            valid_data, outliers = filter_3sigma_outliers(
+                valid_data,
+                shock_stress_col,
+                spall_strength_col,
+                progress_callback=progress_callback
+            )
+            if len(valid_data) == 0:
+                if progress_callback:
+                    progress_callback("⚠ No valid data after 3-sigma filtering - skipping plot")
+                return
+
         # Get material column
         material_col = find_column_name(valid_data, ['Material', 'material', 'Sample material'], progress_callback)
         if material_col is None:
@@ -562,7 +576,8 @@ def generate_spall_vs_shock_stress_plot(summary_df, spade_output_dir, progress_c
         # Set labels and formatting
         apply_consistent_plot_formatting(ax, 'Peak Shock Stress (GPa)', 'Spall Strength (GPa)',
                                          'Spall Strength vs Shock Stress by Material')
-        ax.set_ylim(0, 3.5)
+        y_max_data = pd.to_numeric(valid_data[spall_strength_col], errors='coerce').max()
+        ax.set_ylim(0, max(3.5, y_max_data * 1.15))
         ax.legend(legend_handles, legend_labels, title='Material', loc='best', fontsize=20)
         
         plt.tight_layout()
@@ -625,7 +640,20 @@ def generate_spall_vs_shock_stress_by_material_subplots(summary_df, spade_output
             if progress_callback:
                 progress_callback("⚠ No valid data - skipping plot")
             return
-        
+
+        # Apply 3-sigma outlier filter (consistent with strain-rate plots)
+        if len(valid_data) > 3:
+            valid_data, outliers = filter_3sigma_outliers(
+                valid_data,
+                shock_stress_col,
+                spall_strength_col,
+                progress_callback=progress_callback
+            )
+            if len(valid_data) == 0:
+                if progress_callback:
+                    progress_callback("⚠ No valid data after 3-sigma filtering - skipping plot")
+                return
+
         # Get material column
         material_col = find_column_name(valid_data, ['Material', 'material', 'Sample material'], progress_callback)
         if material_col is None:
@@ -790,10 +818,12 @@ def generate_spall_vs_shock_stress_by_material_subplots(summary_df, spade_output
         apply_consistent_plot_formatting(ax2, 'Peak Shock Stress (GPa)', 'Spall Strength (GPa)', 'Aluminum (Al)')
         ax2.legend(title='Flyer Thickness', loc='best')
         
-        # Force paper y-axis range (GPa)
-        ax1.set_ylim(0, 3.5)
-        ax2.set_ylim(0, 3.5)
-        
+        # Set y-axis to fit data, with 3.5 GPa as a minimum ceiling
+        y_max_data = pd.to_numeric(valid_data[spall_strength_col], errors='coerce').max()
+        y_top = max(3.5, y_max_data * 1.15)
+        ax1.set_ylim(0, y_top)
+        ax2.set_ylim(0, y_top)
+
         # Set same x-axis limits for both subplots
         x_min = min(ax1.get_xlim()[0], ax2.get_xlim()[0])
         x_max = max(ax1.get_xlim()[1], ax2.get_xlim()[1])
@@ -1049,14 +1079,18 @@ def generate_spall_vs_strain_rate_by_material_subplots(summary_df, spade_output_
         # Configure left subplot (Cu)
         apply_consistent_plot_formatting(ax1, 'Strain Rate (s^-1)', 'Spall Strength (GPa)', 'Copper (Cu)')
         ax1.set_xscale('log')
-        ax1.set_ylim(0, 3.5)
         ax1.legend(title='Flyer Thickness', loc='best')
-        
+
         # Configure right subplot (Al)
         apply_consistent_plot_formatting(ax2, 'Strain Rate (s^-1)', 'Spall Strength (GPa)', 'Aluminum (Al)')
         ax2.set_xscale('log')
-        ax2.set_ylim(0, 3.5)
         ax2.legend(title='Flyer Thickness', loc='best')
+
+        # Set shared y-axis ceiling based on actual data (minimum 3.5 GPa)
+        y_max_data = pd.to_numeric(valid_data[spall_strength_col], errors='coerce').max()
+        y_top = max(3.5, y_max_data * 1.15)
+        ax1.set_ylim(0, y_top)
+        ax2.set_ylim(0, y_top)
         
         # Tight layout and save
         plt.tight_layout()
