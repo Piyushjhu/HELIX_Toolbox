@@ -4,21 +4,26 @@ This folder contains worked examples that show how to use HELIX Toolbox for
 common PDV spall-analysis workflows, from setting up a config file to
 generating publication-quality figures.
 
-## Examples
+---
 
-| # | Notebook | What it shows |
-|---|----------|---------------|
-| 1 | [01_full_pipeline_cli.ipynb](01_full_pipeline_cli.ipynb) | End-to-end run: raw PDV CSVs → velocity → spall strength using the CLI and a YAML config file |
-| 2 | [02_alpss_signal_processing.ipynb](02_alpss_signal_processing.ipynb) | ALPSS step only: IQ extraction, spectrogram, velocity trace, and uncertainty |
-| 3 | [03_spade_spall_hel_analysis.ipynb](03_spade_spall_hel_analysis.ipynb) | SPADE step only: spall strength, strain rate, shock stress, and HEL detection from an existing velocity file |
-| 4 | [04_postprocessing_paper_plots.ipynb](04_postprocessing_paper_plots.ipynb) | Post-processing mode: regenerate publication plots from existing SPADE summary CSVs without rerunning the analysis |
+## Run in your browser — no local install needed
 
-## Figures
+Click any badge to open the notebook in a live cloud environment.
+Bundled sample PDV data is pre-loaded; upload your own CSVs in the first cell.
 
-The [`figures/`](figures/) subfolder holds reference plots used in the
-notebooks. Add your own output plots here to compare against the examples.
+| # | Notebook | What it shows | Binder | Colab |
+|---|----------|---------------|--------|-------|
+| 1 | [01_full_pipeline_cli.ipynb](01_full_pipeline_cli.ipynb) | End-to-end: raw PDV CSVs → velocity → spall strength via CLI + YAML config | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F01_full_pipeline_cli.ipynb) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/01_full_pipeline_cli.ipynb) |
+| 2 | [02_alpss_signal_processing.ipynb](02_alpss_signal_processing.ipynb) | ALPSS only: IQ extraction, velocity trace, uncertainty bands | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F02_alpss_signal_processing.ipynb) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/02_alpss_signal_processing.ipynb) |
+| 3 | [03_spade_spall_hel_analysis.ipynb](03_spade_spall_hel_analysis.ipynb) | SPADE only: spall strength, strain rate, shock stress, HEL detection | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F03_spade_spall_hel_analysis.ipynb) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/03_spade_spall_hel_analysis.ipynb) |
+| 4 | [04_postprocessing_paper_plots.ipynb](04_postprocessing_paper_plots.ipynb) | Post-processing: regenerate paper plots from existing SPADE summary CSVs | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Piyushjhu/HELIX_Toolbox/main?labpath=examples%2F04_postprocessing_paper_plots.ipynb) | [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Piyushjhu/HELIX_Toolbox/blob/main/examples/04_postprocessing_paper_plots.ipynb) |
 
-## How to run
+**Binder** takes ~1-3 minutes to build the first time; subsequent launches are fast.  
+**Colab** requires a free Google account.
+
+---
+
+## Run locally
 
 1. Activate your HELIX Toolbox environment (see main [README](../README.md#installation)).
 
@@ -40,6 +45,13 @@ notebooks. Add your own output plots here to compare against the examples.
 4. Update the **path variables at the top of each notebook** to point to your
    own data and output directories, then run all cells (`Kernel → Restart & Run All`).
 
+---
+
+## Figures
+
+The [`figures/`](figures/) subfolder holds reference plots used in the
+notebooks. Add your own output plots here to compare against the examples.
+
 ## Notes
 
 - All notebooks use the same `load_config_from_file` / `save_config_to_file`
@@ -49,3 +61,5 @@ notebooks. Add your own output plots here to compare against the examples.
   by default.
 - The notebooks are designed to be self-contained: each one shows the relevant
   config snippet, runs the analysis, and displays/saves the output figures.
+- In cloud environments (Binder/Colab), Qt is run in offscreen mode and
+  matplotlib uses the `Agg` non-interactive backend automatically.
