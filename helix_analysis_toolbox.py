@@ -19,14 +19,93 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # Excel support will be checked dynamically when needed
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QPlainTextEdit, QProgressBar,
-    QFileDialog, QCheckBox, QComboBox, QSpinBox, QRadioButton, QButtonGroup,
-    QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
-    QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QObject
-from PyQt5.QtGui import QFont, QValidator
+
+# ---------------------------------------------------------------------------
+# PyQt5 / display bootstrap
+#
+# In headless Linux environments (GitHub Codespaces, Docker containers, CI)
+# two things can go wrong before PyQt5 can be imported:
+#   1. libGL.so.1 is missing  → ImportError on PyQt5 import
+#   2. No DISPLAY is set      → Qt: cannot connect to X server
+#
+# The block below attempts to fix both automatically, so users don't have to
+# run any manual apt/Xvfb commands.
+# ---------------------------------------------------------------------------
+def _ensure_display_and_libgl():
+    """Auto-fix missing libGL and headless display on Linux before Qt starts."""
+    import platform
+    if platform.system() != "Linux":
+        return  # macOS / Windows handle this themselves
+
+    # -- 1. Auto-install libGL if the shared library is missing ---------------
+    import ctypes.util
+    if ctypes.util.find_library("GL") is None:
+        print("[HELIX] libGL.so.1 not found — attempting to install libgl1-mesa-glx …")
+        _ok = False
+        try:
+            # Remove any broken apt sources (e.g. unsigned Yarn repo) so that
+            # apt-get update succeeds.
+            _broken_src = "/etc/apt/sources.list.d/yarn.list"
+            if os.path.exists(_broken_src):
+                subprocess.run(["sudo", "rm", "-f", _broken_src],
+                               capture_output=True, check=False)
+            subprocess.run(["sudo", "apt-get", "update", "-qq"],
+                           capture_output=True, check=False)
+            result = subprocess.run(
+                ["sudo", "apt-get", "install", "-y", "-qq",
+                 "libgl1-mesa-glx", "libglib2.0-0"],
+                capture_output=True, check=False)
+            if result.returncode == 0:
+                print("[HELIX] libgl1-mesa-glx installed successfully.")
+                _ok = True
+            else:
+                # Fallback: some newer Debian/Ubuntu renamed the package
+                result2 = subprocess.run(
+                    ["sudo", "apt-get", "install", "-y", "-qq", "libgl1"],
+                    capture_output=True, check=False)
+                _ok = result2.returncode == 0
+                if _ok:
+                    print("[HELIX] libgl1 installed successfully (fallback).")
+        except Exception as exc:
+            print(f"[HELIX] Could not auto-install libGL: {exc}")
+        if not _ok:
+            print("[HELIX] WARNING: libGL installation failed. "
+                  "Run: sudo apt-get install -y libgl1-mesa-glx")
+
+    # -- 2. Set up a virtual framebuffer if no display is available -----------
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        print("[HELIX] No display detected — starting virtual framebuffer (Xvfb) …")
+        try:
+            subprocess.run(["sudo", "apt-get", "install", "-y", "-qq", "xvfb"],
+                           capture_output=True, check=False)
+            # Launch Xvfb on :99 (ignore error if already running)
+            subprocess.Popen(["Xvfb", ":99", "-screen", "0", "1024x768x24"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            os.environ["DISPLAY"] = ":99"
+            time.sleep(0.5)  # give Xvfb a moment to start
+            print("[HELIX] Virtual display started on :99.")
+        except Exception as exc:
+            # Last resort: use Qt's offscreen platform (no window, but no crash)
+            print(f"[HELIX] Could not start Xvfb ({exc}). "
+                  "Falling back to offscreen Qt platform.")
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+_ensure_display_and_libgl()
+
+try:
+    from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
+        QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
+        QLineEdit, QPushButton, QTextEdit, QPlainTextEdit, QProgressBar,
+        QFileDialog, QCheckBox, QComboBox, QSpinBox, QRadioButton, QButtonGroup,
+        QDoubleSpinBox, QGroupBox, QScrollArea, QMessageBox,
+        QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
+    from PyQt5.QtCore import QThread, pyqtSignal, Qt, QObject
+    from PyQt5.QtGui import QFont, QValidator
+except ImportError as _qt_err:
+    print(f"\n[HELIX] ERROR: PyQt5 could not be imported: {_qt_err}")
+    print("  Try:  pip install PyQt5")
+    print("  On Linux also run: sudo apt-get install -y libgl1-mesa-glx libglib2.0-0")
+    sys.exit(1)
 from SPADE.spall_analysis_release.spall_analysis import (
     plot_combined_mean_traces,
     plot_spall_vs_strain_rate,
