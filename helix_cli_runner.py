@@ -262,7 +262,27 @@ def _transform_alpss_params_for_analysis(alpss_params: Dict) -> Dict:
                 params[param] = params[param].lower() in ('true', 'yes', '1')
             else:
                 params[param] = bool(params[param])
-    
+
+    # Add defaults for every parameter that alpss_main accesses via inputs["key"]
+    # directly (no .get() fallback).  These cover configs that omit optional fields.
+    _alpss_defaults = {
+        'carrier_band_time':  2.5e-7,   # s — time window around carrier for DOI finder
+        'pb_neighbors':       400,       # samples — pullback peak search window
+        'pb_idx_correction':  0,         # index offset correction for pullback
+        'rc_neighbors':       400,       # samples — recompression peak search window
+        'rc_idx_correction':  0,         # index offset correction for recompression
+        'uncert_mult':        10.0,      # uncertainty multiplier
+        'delta_rho':          9.0,       # density uncertainty (kg/m³)
+        'delta_C0':           23.0,      # wave speed uncertainty (m/s)
+        'delta_lam':          8e-18,     # wavelength uncertainty (m)
+        'delta_theta':        5.0,       # angle uncertainty (degrees)
+        'order':              6,         # notch filter order (only used when use_notch_filter=True)
+        'wid':                1.5e9,     # notch filter width (Hz)
+    }
+    for key, default in _alpss_defaults.items():
+        if key not in params:
+            params[key] = default
+
     return params
 
 
