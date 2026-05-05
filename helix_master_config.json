@@ -1,12 +1,12 @@
 {
     "cli_settings": {
-        "input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Post_demo_1/PDV_files",
+        "input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo_day/Test",
         "input_files": null,
         "input_pattern": "*.csv",
-        "output_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Post_demo_1/Output",
-        "param_folder": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Post_demo_1/Parameters",
-        "analysis_mode": "spade_only",
-        "spade_mode": "manual",
+        "output_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo_day/Test",
+        "param_folder": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo_day/Parameters",
+        "analysis_mode": "both",
+        "spade_mode": "auto",
         "spade_input_files": null,
         "spade_input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Post_demo_1/Output",
         "spade_input_pattern": "*--vel-smooth-with-uncert.csv"
