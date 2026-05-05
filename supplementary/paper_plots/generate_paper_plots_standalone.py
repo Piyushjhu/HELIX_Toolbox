@@ -4,6 +4,14 @@ Standalone script to generate HELIX paper plots from summary CSV files
 """
 import os
 import sys
+
+# Add repo root to sys.path BEFORE any local imports so that helix_paper_plots
+# and helix_analysis_toolbox are importable regardless of the working directory.
+# This script lives in <repo>/supplementary/paper_plots/, so the repo root is two levels up.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -17,12 +25,6 @@ from helix_paper_plots import (
     generate_all_plots_from_summary_files,
     find_column_name,
 )
-
-# Add helix_analysis_toolbox to path for config loading.
-# This script lives in <repo>/supplementary/paper_plots/, so the repo root is two levels up.
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
 
 try:
     from helix_analysis_toolbox import load_config_from_file
