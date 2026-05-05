@@ -1536,9 +1536,15 @@ class AnalysisThread(QThread):
             # Start timing the entire analysis
             self.start_time = time.time()
 
-            # Import ALPSS and SPADE modules
-            sys.path.append('ALPSS')
-            sys.path.append('SPADE/spall_analysis_release')
+            # Import ALPSS and SPADE modules using absolute repo-rooted paths.
+            # Relative sys.path entries can break in Colab/CLI when cwd changes.
+            repo_root = os.path.dirname(os.path.abspath(__file__))
+            alpss_path = os.path.join(repo_root, 'ALPSS')
+            spade_path = os.path.join(repo_root, 'SPADE', 'spall_analysis_release')
+            if alpss_path not in sys.path:
+                sys.path.insert(0, alpss_path)
+            if spade_path not in sys.path:
+                sys.path.insert(0, spade_path)
 
             from alpss_main import alpss_main
             from spall_analysis import process_velocity_files
