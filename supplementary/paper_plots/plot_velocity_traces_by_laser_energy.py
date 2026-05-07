@@ -52,6 +52,35 @@ def find_column(df, possible_names):
     return None
 
 
+def normalize_material_label(material_value):
+    """Normalize common material aliases while preserving non-empty unknown materials."""
+    if pd.isna(material_value):
+        return None
+
+    material = str(material_value).strip()
+    if material == "":
+        return None
+
+    m = material.lower()
+    if 'cu' in m or 'copper' in m:
+        return 'Cu'
+    if 'al' in m or 'aluminum' in m or 'aluminium' in m:
+        return 'Al'
+    if 'brass' in m:
+        return 'Brass'
+    if 'zn' in m or 'zinc' in m:
+        return 'Zn'
+    if 'ti64' in m or 'ti-6al-4v' in m or 'ti6al4v' in m:
+        return 'Ti64'
+    if 'ti' in m or 'titanium' in m or 'cp-ti' in m or 'ti_grade2' in m:
+        return 'Ti'
+    if 'v' == m or 'vanadium' in m:
+        return 'V'
+    if 'mg' in m or 'magnesium' in m:
+        return 'Mg'
+    return material
+
+
 def find_hel_t0_alignment(time_data, velocity_data, min_velocity_threshold=10.0):
     """
     Find t=0 alignment point using HEL-style detection (velocity > 0 and increasing for 10 ns).
@@ -440,19 +469,9 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
             if not vel_file or not os.path.exists(vel_file):
                 continue
             
-            # Get material (support Cu, Al, Brass, Zn as in combined_mean_velocity)
-            material = str(row[material_col]).strip() if not pd.isna(row[material_col]) else 'Unknown'
-            material_lower = material.lower()
-            if 'cu' in material_lower or 'copper' in material_lower:
-                material = 'Cu'
-            elif 'al' in material_lower or 'aluminum' in material_lower or 'aluminium' in material_lower:
-                material = 'Al'
-            elif 'brass' in material_lower:
-                material = 'Brass'
-            elif 'zn' in material_lower or 'zinc' in material_lower:
-                material = 'Zn'
-            else:
-                continue  # Skip unknown materials
+            material = normalize_material_label(row[material_col])
+            if material is None:
+                continue
             
             # Get laser energy
             laser_energy = row[laser_energy_col]
@@ -471,7 +490,7 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
     
     # Create plot with space for colorbar on the right
     # Use all materials found in data (Brass, Cu, Zn, Al, etc.) - same order as combined_mean_velocity
-    material_order = ['Cu', 'Zn', 'Brass', 'Al']  # Preferred order; others appended
+    material_order = ['Cu', 'Zn', 'Brass', 'Al', 'Ti', 'Ti64', 'V', 'Mg']  # Preferred order; others appended
     materials = [m for m in material_order if m in traces_by_material]
     for m in sorted(traces_by_material.keys()):
         if m not in materials:
@@ -505,6 +524,9 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
     # Create colormap
     cmap = plt.get_cmap('viridis')
     
+    # Track peak-velocity statistics by material and 100 mJ energy bin.
+    peak_stats_by_material = defaultdict(lambda: defaultdict(list))
+
     for ax_idx, material in enumerate(materials):
         ax = axes[ax_idx]
         
@@ -552,6 +574,11 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
             # Plot trace with same formatting as main code (alpha=0.7, linewidth=1.5)
             ax.plot(time_plot, velocity_plot, color=color, alpha=0.7, linewidth=1.5)
             plotted_count += 1
+
+            # Collect peak velocity for mean/std summary by material + binned energy.
+            peak_velocity = np.nanmax(velocity_plot) if len(velocity_plot) > 0 else np.nan
+            if np.isfinite(peak_velocity):
+                peak_stats_by_material[material][binned_energy].append(float(peak_velocity))
         
         if shifted_count > 0:
             print(f"  Shifted {shifted_count} traces (peaks before 15 ns -> 19 ns)")
@@ -612,6 +639,63 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
     plt.savefig(output_path_40ns, dpi=300, bbox_inches='tight')
     print(f"✅ Plot (0-40 ns) saved to: {output_path_40ns}")
     plt.close()
+
+    # Additional plot: mean ± std peak velocity by material and 100 mJ laser-energy bins.
+    fig_stats, axes_stats = plt.subplots(1, n_materials, figsize=(8 * n_materials, 6))
+    if n_materials == 1:
+        axes_stats = np.atleast_1d(axes_stats)
+
+    for ax_idx, material in enumerate(materials):
+        ax = axes_stats[ax_idx]
+        material_bins = peak_stats_by_material.get(material, {})
+        sorted_bins = sorted(material_bins.keys())
+
+        if not sorted_bins:
+            ax.set_title(f"{material} (no valid traces)", fontsize=12, fontweight='bold')
+            ax.set_xlabel("Laser Energy Bin (mJ)", fontsize=11)
+            ax.set_ylabel("Peak Velocity (m/s)", fontsize=11)
+            ax.grid(False)
+            continue
+
+        means = []
+        stds = []
+        counts = []
+        for b in sorted_bins:
+            vals = np.array(material_bins[b], dtype=float)
+            means.append(float(np.nanmean(vals)))
+            stds.append(float(np.nanstd(vals, ddof=1)) if len(vals) > 1 else 0.0)
+            counts.append(len(vals))
+
+        # Color each marker by its energy bin using the same colormap.
+        for b, m, s in zip(sorted_bins, means, stds):
+            norm_energy = (b - energy_min) / (energy_max - energy_min) if energy_max > energy_min else 0.5
+            ax.errorbar(
+                b, m, yerr=s,
+                fmt='o', markersize=6, capsize=4,
+                color=cmap(norm_energy), ecolor=cmap(norm_energy),
+                alpha=0.95
+            )
+
+        ax.plot(sorted_bins, means, color='black', linewidth=1.2, alpha=0.7)
+        ax.set_xlabel("Laser Energy Bin (mJ, 100 mJ bins)", fontsize=11)
+        ax.set_ylabel("Peak Velocity Mean ± 1σ (m/s)", fontsize=11)
+        ax.set_title(f"{material} (bins={len(sorted_bins)})", fontsize=12, fontweight='bold')
+        ax.grid(False)
+
+        # Small bin-count labels near each point.
+        for b, m, n in zip(sorted_bins, means, counts):
+            ax.annotate(f"n={n}", (b, m), textcoords="offset points", xytext=(0, 7), ha='center', fontsize=8)
+
+    fig_stats.subplots_adjust(wspace=0.25, right=0.9)
+    sm_stats = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=energy_min, vmax=energy_max))
+    sm_stats.set_array([])
+    cbar_stats = fig_stats.colorbar(sm_stats, ax=axes_stats, pad=0.03, location='right')
+    cbar_stats.set_label('Laser Energy (mJ), binned to 100 mJ', fontsize=11, rotation=270, labelpad=16)
+
+    stats_output_path = os.path.join(output_dir, f"{base}_peak_velocity_mean_std_by_material_energy{ext}")
+    plt.savefig(stats_output_path, dpi=300, bbox_inches='tight')
+    print(f"✅ Mean±std peak-velocity plot saved to: {stats_output_path}")
+    plt.close(fig_stats)
 
 
 def generate_velocity_traces_by_laser_energy_3d(summary_csv_path, output_dir, output_filename='velocity_traces_by_laser_energy_3d.png', spade_params=None):
@@ -733,17 +817,8 @@ def generate_velocity_traces_by_laser_energy_3d(summary_csv_path, output_dir, ou
             if not vel_file or not os.path.exists(vel_file):
                 continue
 
-            material = str(row[material_col]).strip() if not pd.isna(row[material_col]) else 'Unknown'
-            material_lower = material.lower()
-            if 'cu' in material_lower or 'copper' in material_lower:
-                material = 'Cu'
-            elif 'al' in material_lower or 'aluminum' in material_lower or 'aluminium' in material_lower:
-                material = 'Al'
-            elif 'brass' in material_lower:
-                material = 'Brass'
-            elif 'zn' in material_lower or 'zinc' in material_lower:
-                material = 'Zn'
-            else:
+            material = normalize_material_label(row[material_col])
+            if material is None:
                 continue
 
             laser_energy = row[laser_energy_col]
@@ -759,9 +834,11 @@ def generate_velocity_traces_by_laser_energy_3d(summary_csv_path, output_dir, ou
             print(f"  Warning: Error processing row {idx}: {e}")
             continue
 
-    # Prefer Cu and Al (two-panel layout like the 2D figure); ignore others for 3D.
-    preferred_materials = ['Al', 'Cu']
-    materials = [m for m in preferred_materials if m in traces_by_material]
+    material_order = ['Cu', 'Zn', 'Brass', 'Al', 'Ti', 'Ti64', 'V', 'Mg']
+    materials = [m for m in material_order if m in traces_by_material]
+    for m in sorted(traces_by_material.keys()):
+        if m not in materials:
+            materials.append(m)
     if not materials:
         print("ERROR: No valid traces found")
         return
@@ -998,14 +1075,9 @@ def generate_velocity_traces_by_shock_stress_3d(summary_csv_path, output_dir, ou
             if not vel_file or not os.path.exists(vel_file):
                 continue
 
-            material = str(row[material_col]).strip() if not pd.isna(row[material_col]) else 'Unknown'
-            ml = material.lower()
-            if 'cu' in ml or 'copper' in ml:
-                material = 'Cu'
-            elif 'al' in ml or 'aluminum' in ml or 'aluminium' in ml:
-                material = 'Al'
-            else:
-                continue  # only Al and Cu for this plot
+            material = normalize_material_label(row[material_col])
+            if material is None:
+                continue
 
             stress_val = row[shock_stress_col]
             if pd.isna(stress_val):
@@ -1022,7 +1094,11 @@ def generate_velocity_traces_by_shock_stress_3d(summary_csv_path, output_dir, ou
             print(f"  Warning: Error processing row {idx}: {e}")
             continue
 
-    materials = [m for m in ['Al', 'Cu'] if m in traces_by_material]
+    material_order = ['Cu', 'Zn', 'Brass', 'Al', 'Ti', 'Ti64', 'V', 'Mg']
+    materials = [m for m in material_order if m in traces_by_material]
+    for m in sorted(traces_by_material.keys()):
+        if m not in materials:
+            materials.append(m)
     if not materials:
         print("ERROR: No valid traces found"); return
 
@@ -1144,14 +1220,37 @@ def load_master_config(config_path=None):
     Probe order when config_path is not specified:
         helix_master_config.yml → helix_master_config.yaml → helix_master_config.json
     """
+    def _is_placeholder_path(path_value):
+        """Return True for template/placeholder paths like /path/to/output."""
+        if path_value is None:
+            return True
+        p = str(path_value).strip().lower()
+        return (not p) or ("/path/to/" in p) or p.startswith("path/to/")
+
     if config_path is None:
+        selected_config_path = None
         for name in ("helix_master_config.yml", "helix_master_config.yaml", "helix_master_config.json"):
             candidate = os.path.join(REPO_ROOT, name)
-            if os.path.exists(candidate):
-                config_path = candidate
-                break
-        if config_path is None:
-            config_path = os.path.join(REPO_ROOT, "helix_master_config.json")  # will raise below
+            if not os.path.exists(candidate):
+                continue
+
+            ok, probed_config, _message = load_config_from_file(candidate)
+            if not ok:
+                # Keep probing; a later file may still be valid.
+                continue
+
+            probed_output_dir = (probed_config.get("cli_settings", {}) or {}).get("output_dir")
+            if _is_placeholder_path(probed_output_dir):
+                # Skip template configs and keep probing for a real config (e.g., JSON).
+                continue
+
+            selected_config_path = candidate
+            break
+
+        if selected_config_path is None:
+            # Fall back to JSON path for a clear file-not-found/validation error below.
+            selected_config_path = os.path.join(REPO_ROOT, "helix_master_config.json")
+        config_path = selected_config_path
     
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")

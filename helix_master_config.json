@@ -1,14 +1,14 @@
 {
     "cli_settings": {
-        "input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo_day/Test",
+        "input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo2_12_samples/PDV_files",
         "input_files": null,
         "input_pattern": "*.csv",
-        "output_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo_day/Test",
-        "param_folder": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo_day/Parameters",
-        "analysis_mode": "both",
-        "spade_mode": "auto",
+        "output_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo2_12_samples/Output",
+        "param_folder": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo2_12_samples/Parameter_incomplete",
+        "analysis_mode": "spade_only",
+        "spade_mode": "manual",
         "spade_input_files": null,
-        "spade_input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Post_demo_1/Output",
+        "spade_input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/Demo2_12_samples/Output",
         "spade_input_pattern": "*--vel-smooth-with-uncert.csv"
     },
     "alpss_config": {
@@ -87,7 +87,7 @@
         "hel_angle_threshold_deg": 86.0,
         "hel_detection_min_points": 10,
         "minimum_HEL_velocity_expected": 40.0,
-        "hel_rdp_epsilon": 1,
+        "hel_rdp_epsilon": 0.5,
         "hel_slope_drop_ratio": 0.9,
         "hel_min_plateau_duration": 0.5,
         "use_hel_t0_alignment_for_plots": true,
