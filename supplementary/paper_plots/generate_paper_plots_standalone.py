@@ -1003,14 +1003,35 @@ def load_master_config(config_path=None):
     Probe order when config_path is not specified:
         helix_master_config.yml → helix_master_config.yaml → helix_master_config.json
     """
+    def _is_placeholder_path(path_value):
+        """Return True for template/placeholder paths like /path/to/output."""
+        if path_value is None:
+            return True
+        p = str(path_value).strip().lower()
+        return (not p) or ("/path/to/" in p) or p.startswith("path/to/")
+
     if config_path is None:
+        selected_config_path = None
         for name in ("helix_master_config.yml", "helix_master_config.yaml", "helix_master_config.json"):
             candidate = os.path.join(REPO_ROOT, name)
-            if os.path.exists(candidate):
-                config_path = candidate
-                break
-        if config_path is None:
-            config_path = os.path.join(REPO_ROOT, "helix_master_config.json")  # will raise below
+            if not os.path.exists(candidate):
+                continue
+
+            ok, probed_config, _message = load_config_from_file(candidate)
+            if not ok:
+                # Keep probing; a later file may still be valid.
+                continue
+
+            probed_output_dir = (probed_config.get("cli_settings", {}) or {}).get("output_dir")
+            if _is_placeholder_path(probed_output_dir):
+                # Skip template configs and keep probing for a real config (e.g., JSON).
+                continue
+
+            selected_config_path = candidate
+            break
+        if selected_config_path is None:
+            selected_config_path = os.path.join(REPO_ROOT, "helix_master_config.json")  # will raise below
+        config_path = selected_config_path
     
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
