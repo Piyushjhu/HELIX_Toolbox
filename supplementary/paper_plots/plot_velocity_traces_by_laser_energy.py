@@ -1324,6 +1324,8 @@ Examples:
                        help='Path to helix_master_config.json (default: helix_master_config.json in script directory)')
     parser.add_argument('--plot-3d', action='store_true',
                        help='Only the laser-energy 3D plot (no 2D, no shock-stress 3D)')
+    parser.add_argument('--fast', action='store_true',
+                       help='Fast mode: generate only 2D plots (skip all 3D plots)')
     
     args = parser.parse_args()
     
@@ -1397,7 +1399,19 @@ Examples:
     # Generate plots
     base, ext = os.path.splitext(args.output_filename)
 
-    if args.plot_3d:
+    if args.fast and args.plot_3d:
+        print("ERROR: --fast and --plot-3d cannot be used together")
+        sys.exit(1)
+
+    if args.fast:
+        print("Fast mode enabled: generating only 2D plots (skipping 3D plots)")
+        generate_velocity_traces_by_laser_energy(
+            summary_csv,
+            output_dir,
+            args.output_filename,
+            spade_params
+        )
+    elif args.plot_3d:
         # Explicit 3D-only mode
         out_name_3d = args.output_filename if base.endswith('_3d') else f"{base}_3d{ext}"
         generate_velocity_traces_by_laser_energy_3d(
