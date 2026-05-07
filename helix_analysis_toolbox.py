@@ -13,6 +13,13 @@ import json
 import pandas as pd
 import numpy as np
 import matplotlib
+
+# Ensure stdout/stderr use UTF-8 on Windows (default is cp1252/charmap which
+# cannot encode characters like ✓ \u2713, causing UnicodeEncodeError in print()).
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 # Set non-interactive backend BEFORE importing pyplot or SPADE to avoid macOS aborts
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -170,7 +177,7 @@ def save_config_to_file(config_dict, file_path):
                     "YAML support requires PyYAML. Install it with "
                     "`pip install pyyaml`, or save as .json instead."
                 )
-            with open(file_path, "w") as f:
+            with open(file_path, "w", encoding='utf-8') as f:
                 _yaml.safe_dump(
                     config_dict,
                     f,
@@ -180,7 +187,7 @@ def save_config_to_file(config_dict, file_path):
                     allow_unicode=True,
                 )
         else:
-            with open(file_path, "w") as f:
+            with open(file_path, "w", encoding='utf-8') as f:
                 json.dump(config_dict, f, indent=4)
         return True, f"Configuration saved to {file_path}"
     except Exception as e:
@@ -3903,7 +3910,7 @@ class AnalysisThread(QThread):
             
             # Save report
             report_path = os.path.join(spade_output_dir, 'parameter_mapping_report.txt')
-            with open(report_path, 'w') as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(report_lines))
             
             self.progress_signal.emit(f"Created parameter mapping report: {report_path}")
@@ -10340,7 +10347,7 @@ class AnalysisThread(QThread):
             
             # Add note about filtering criteria to a separate notes file
             notes_file = os.path.join(spade_output_dir, 'spall_analysis_notes.txt')
-            with open(notes_file, 'w') as f:
+            with open(notes_file, 'w', encoding='utf-8') as f:
                 f.write("SPALL ANALYSIS FILTERING NOTES\n")
                 f.write("=" * 60 + "\n\n")
                 f.write("The following filtering criteria were applied during spall detection:\n\n")
@@ -12918,7 +12925,7 @@ class HELIXAnalysisToolbox(QMainWindow):
                 }
             }
             
-            with open(self.config_file, 'w') as f:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=2)
                 
         except Exception as e:
