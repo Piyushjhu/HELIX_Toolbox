@@ -108,11 +108,62 @@ try:
         QSplitter, QFrame, QStyleFactory, QTabBar, QListWidget)
     from PyQt5.QtCore import QThread, pyqtSignal, Qt, QObject
     from PyQt5.QtGui import QFont, QValidator
+    _GUI_AVAILABLE = True
 except ImportError as _qt_err:
-    print(f"\n[HELIX] ERROR: PyQt5 could not be imported: {_qt_err}")
-    print("  Try:  pip install PyQt5")
-    print("  On Linux also run: sudo apt-get install -y libgl1-mesa-glx libglib2.0-0")
-    sys.exit(1)
+    _GUI_AVAILABLE = False
+    print(f"\n[HELIX] WARNING: PyQt5 not found — running in headless CLI mode. ({_qt_err})")
+
+    # --- Lightweight shims so AnalysisThread works without a Qt event loop ---
+
+    class _CliSignal:
+        """Drop-in for pyqtSignal: stores callbacks and calls them synchronously."""
+        def __init__(self):
+            self._cbs = []
+        def connect(self, cb):
+            self._cbs.append(cb)
+        def emit(self, *args):
+            for cb in self._cbs:
+                cb(*args)
+
+    def pyqtSignal(*types):
+        """Class-level descriptor that creates one _CliSignal per instance."""
+        class _Descriptor:
+            def __set_name__(self, owner, name):
+                self._attr = f'_clisig_{name}'
+            def __get__(self, obj, cls=None):
+                if obj is None:
+                    return self
+                if not hasattr(obj, self._attr):
+                    object.__setattr__(obj, self._attr, _CliSignal())
+                return getattr(obj, self._attr)
+        return _Descriptor()
+
+    class QThread:
+        def __init__(self): pass
+        def start(self): self.run()
+        def wait(self, ms=None): pass
+        def isRunning(self): return False
+        def isInterruptionRequested(self): return False
+        def requestInterruption(self): pass
+
+    class Qt: pass
+    class QObject: pass
+
+    # GUI widget stubs — raise a clear error if GUI code is attempted without PyQt5
+    class _QtWidgetStub:
+        def __init__(self, *a, **kw):
+            raise RuntimeError(
+                "PyQt5 is required for GUI mode. "
+                "Install it with:  pip install PyQt5"
+            )
+    QApplication = QMainWindow = QTabWidget = QWidget = _QtWidgetStub
+    QVBoxLayout = QHBoxLayout = QGridLayout = _QtWidgetStub
+    QLabel = QLineEdit = QPushButton = QTextEdit = QPlainTextEdit = _QtWidgetStub
+    QProgressBar = QFileDialog = QCheckBox = QComboBox = _QtWidgetStub
+    QSpinBox = QRadioButton = QButtonGroup = QDoubleSpinBox = _QtWidgetStub
+    QGroupBox = QScrollArea = QMessageBox = QSplitter = QFrame = _QtWidgetStub
+    QStyleFactory = QTabBar = QListWidget = _QtWidgetStub
+    QFont = QValidator = _QtWidgetStub
 from SPADE.spall_analysis_release.spall_analysis import (
     plot_combined_mean_traces,
     plot_spall_vs_strain_rate,
@@ -380,6 +431,21 @@ class AnalysisThread(QThread):
         self.traces_rejected = 0
         self.rejection_reasons = {}  # Track reasons for rejection
         self._warned_skip_unknown_override = False
+
+    def _get_summary_filename(self):
+        """Return the CSV filename for the consolidated data summary.
+
+        Derives the IGSN prefix from the parent folder of output_dir.
+        Example: .../JHAMAL00016-004/Output  →  JHAMAL00016-004-Data_Summary.csv
+        Falls back to 'Data_Summary.csv' if the parent folder name is generic.
+        """
+        try:
+            parent = os.path.basename(os.path.dirname(os.path.abspath(self.output_dir)))
+            if parent and parent not in ('', '.', '..', 'Output', 'output', 'Results', 'results'):
+                return f"{parent}-Data_Summary.csv"
+        except Exception:
+            pass
+        return "Data_Summary.csv"
 
     def _should_skip_unknown_materials(self):
         """
@@ -835,11 +901,11 @@ class AnalysisThread(QThread):
                             'Minima (m/s)': P_velocities['P3'],
                             'Second Maxima (m/s)': P_velocities['P4'],
                             'Pullback Velocity (m/s)': fit_results['pullback_velocity'],
-                            'Pullback Velocity Uncertainty (m/s)': 0.0,  # Calculate from uncertainty data
+                            'Pullback Velocity Uncertainty (m/s)': float(pullback_unc) if np.isfinite(pullback_unc) else 0.0,
                             'Strain Rate (s^-1)': 0.0,  # Will calculate below
-                            'Strain Rate Uncertainty (s^-1)': 0.0,
+                            'Strain Rate Uncertainty (s^-1)': 0.0,  # Will calculate below
                             'Spall Strength (GPa)': 0.0,  # Will calculate below
-                            'Spall Strength Uncertainty (GPa)': 0.0,
+                            'Spall Strength Uncertainty (GPa)': 0.5 * density * acoustic_velocity * float(pullback_unc) / 1e9 if np.isfinite(pullback_unc) else 0.0,
                             'Plateau Mean Velocity (m/s)': plateau_mean_vel  # Mean plateau velocity
                         }
                         
@@ -865,7 +931,11 @@ class AnalysisThread(QThread):
                             release_slope_ms_per_s = abs(release_slope_ms_per_ns) * 1e9
                             strain_rate = release_slope_ms_per_s / acoustic_velocity
                             result_dict['Strain Rate (s^-1)'] = strain_rate
-                        
+                            # Strain rate uncertainty from pullback velocity uncertainty
+                            delta_t_release_ns = abs(P_times['P3'] - P_times['P2'])
+                            if np.isfinite(pullback_unc) and delta_t_release_ns > 0:
+                                result_dict['Strain Rate Uncertainty (s^-1)'] = float(pullback_unc) * 1e9 / (acoustic_velocity * delta_t_release_ns)
+
                         # Store fits and intersections for plotting
                         spade_lines_info = fits
                         spade_intersections = [(time_window[P_indices['P1']], P_velocities['P1']),
@@ -1553,7 +1623,15 @@ class AnalysisThread(QThread):
             if spade_path not in sys.path:
                 sys.path.insert(0, spade_path)
 
-            from alpss_main import alpss_main
+            # Force-reload so code changes made while the GUI is open take effect
+            # immediately on the next run (avoids Python module-cache stale reads).
+            import importlib
+            import alpss_main as _alpss_module
+            importlib.reload(_alpss_module)
+            alpss_main = _alpss_module.alpss_main
+
+            import spall_analysis as _spade_module
+            importlib.reload(_spade_module)
             from spall_analysis import process_velocity_files
 
 
@@ -2337,7 +2415,7 @@ class AnalysisThread(QThread):
             # If counters are still 0 (e.g. spade_only mode), try to populate from summary files
             if self.total_input_traces == 0:
                 try:
-                    enhanced_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
+                    enhanced_path = os.path.join(spade_output_dir, self._get_summary_filename())
                     vs_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
                     if os.path.exists(enhanced_path):
                         df = pd.read_csv(enhanced_path)
@@ -2345,7 +2423,7 @@ class AnalysisThread(QThread):
                         if n_rows > 0:
                             self.total_input_traces = n_rows
                             self.traces_plotted = n_rows
-                            self.progress_signal.emit(f"[INFO] Summary populated from enhanced_spall_summary ({n_rows} traces)")
+                            self.progress_signal.emit(f"[INFO] Summary populated from {self._get_summary_filename()} ({n_rows} traces)")
                     elif os.path.exists(vs_path):
                         vs_df = pd.read_csv(vs_path)
                         n_rows = len(vs_df)
@@ -2835,7 +2913,7 @@ class AnalysisThread(QThread):
                 if hel_t0 is not None and hel_t0_idx is not None:
                     time_aligned_iq = time_aligned_iq_candidate
                     self.progress_signal.emit(
-                        f"  [HEL] t=0 at {hel_t0:.2f} ns (method='{t0_method}', signal-start foot of rise)"
+                        f"  [trace-t0] t=0 at {hel_t0:.2f} ns (method='{t0_method}', for velocity alignment / plots)"
                     )
                 else:
                     # Fallback: use velocity threshold alignment if no valid point found
@@ -2843,7 +2921,7 @@ class AnalysisThread(QThread):
                     hel_t0 = t0 if 't0' in locals() else (time_data[0] if len(time_data) > 0 else 0.0)
                     hel_t0_idx = t0_idx if 't0_idx' in locals() else 0
                     self.progress_signal.emit(
-                        f"  [HEL] Warning: signal-start detection failed; falling back to velocity threshold alignment"
+                        f"  [trace-t0] Warning: signal-start detection failed; falling back to velocity threshold alignment"
                     )
                 
                 hel_detection_enabled = (self.spade_params.get('hel_detection_enabled', False) or 
@@ -3383,10 +3461,12 @@ class AnalysisThread(QThread):
                         self.progress_signal.emit(f"Warning: Could not calculate HEL strain rate for {base_name}: {str(strain_error)}")
                 else:
                     # HEL not detected or not enabled - strain rate cannot be calculated
-                    if not hel_ok:
-                        self.progress_signal.emit(f"   HEL strain rate for {base_name}: Not calculated (HEL not detected)")
-                    elif not hel_detection_enabled:
+                    # Check hel_detection_enabled before hel_ok: when detection is off,
+                    # hel_ok stays False and would wrongly imply "HEL not detected".
+                    if not hel_detection_enabled:
                         self.progress_signal.emit(f"   HEL strain rate for {base_name}: Not calculated (HEL detection disabled)")
+                    elif not hel_ok:
+                        self.progress_signal.emit(f"   HEL strain rate for {base_name}: Not calculated (HEL not detected)")
                     elif not np.isfinite(hel_time_detection):
                         self.progress_signal.emit(f"   HEL strain rate for {base_name}: Not calculated (hel_time_detection is not finite)")
                     elif not np.isfinite(free_surface_velocity):
@@ -7615,97 +7695,94 @@ class AnalysisThread(QThread):
         
         # Find pullback minimum P3.
         #
-        # Strategy: use the GLOBAL minimum of a lightly smoothed post-plateau
-        # signal.  The spall pullback is always the deepest point in the
-        # post-plateau trace, so a simple argmin is more robust than a
-        # peak-finding + drop-check approach (which rejects broad/gradual
-        # pullbacks because velocity looks like it is still falling 10 ns
-        # after the true minimum).
+        # Strategy: find the FIRST local minimum after the plateau using
+        # prominence-based peak detection on the inverted smoothed signal.
+        # The physical spall pullback is the first velocity dip after the
+        # shock peak, not necessarily the global minimum. Secondary oscillations
+        # (reverberations) can produce deeper but later minima that are not the
+        # primary spall signal.
         #
-        # After locating the global minimum we verify that there is genuine
-        # recompression (velocity rises after the minimum).  If it does not
-        # rise — e.g. the signal declines monotonically to the window end —
-        # we fall back to scipy.signal.find_peaks so we can still attempt a
-        # fit and return a DNS result with visualisation.
+        # No fallback: if no local valley clears the prominence threshold,
+        # the trace is classified DNS immediately. Substituting the global
+        # minimum (typically just the last sample of a still-decaying trace)
+        # would report a P3 that isn't a real pullback point.
 
         from scipy.ndimage import uniform_filter1d
         from scipy.signal import find_peaks as _find_peaks
 
-        # Light smoothing (window ≤ 5 points) to suppress sample-level noise
-        # without killing a broad/flat minimum region.
-        sw = min(5, max(3, len(post_plateau_data) // 20))
-        if sw >= 3 and len(post_plateau_data) >= sw:
+        # Moderate smoothing to suppress sample-level noise while preserving
+        # broad/flat minimum regions and shallow recompression bumps.
+        # Window is ~2% of the post-plateau length, floored at 5 points.
+        sw = min(20, max(5, len(post_plateau_data) // 10))
+        if len(post_plateau_data) >= sw:
             post_plateau_smooth = uniform_filter1d(post_plateau_data.astype(float),
                                                    size=sw, mode='nearest')
         else:
             post_plateau_smooth = post_plateau_data.astype(float)
 
-        # --- Primary: global minimum ---
-        rel_idx_global_min = int(np.argmin(post_plateau_smooth))
-        idx_p3_global = idx_last_plateau + rel_idx_global_min
-        v_p3_global   = float(velocity[idx_p3_global])
-        t_p3_global   = float(time[idx_p3_global])
+        # --- First local minimum with sufficient prominence ---
+        # Threshold: 1% of plateau mean velocity (floor 2 m/s). Prominence is
+        # measured against the plateau level rather than the raw peak so the
+        # bar reflects the height actually being pulled back from.
+        inverted  = -post_plateau_smooth
+        min_prom  = max(v_plateau_mean * 0.01, 1.0)
+        min_dist  = max(3, len(post_plateau_smooth) // 50)
+        valleys, _ = _find_peaks(inverted, prominence=min_prom, distance=min_dist)
+
+        if len(valleys) == 0:
+            # No candidate valley cleared the prominence threshold - classify
+            # as DNS immediately rather than defaulting to the global minimum.
+            print(f"  [HORIZ-PLAT] No local pullback minimum found after plateau "
+                  f"(min_prom={min_prom:.2f} m/s) - classifying as DNS")
+            sys.stdout.flush()
+
+            t_p1, v_p1 = t_first_plateau, v_plateau_mean
+            t_p2, v_p2 = t_last_plateau, v_plateau_mean
+
+            fits = {
+                'seg1_rise': {'m': m1, 'c': c1, 't_range': (time[0], t_p1), 'start_idx': 0, 'end_idx': idx_first_plateau},
+                'seg2_plateau': {'m': 0.0, 'c': v_plateau_mean, 't_range': (t_p1, t_p2), 'start_idx': idx_first_plateau, 'end_idx': idx_last_plateau},
+                'seg3_release': {'m': 0.0, 'c': v_plateau_mean, 't_range': (t_p2, time[-1]), 'start_idx': idx_last_plateau, 'end_idx': len(time) - 1},
+                'seg4_recomp': {'m': 0.0, 'c': v_plateau_mean, 't_range': (time[-1], time[-1]), 'start_idx': len(time) - 1, 'end_idx': len(time) - 1},
+                'seg5_tail': {'m': 0.0, 'c': v_plateau_mean, 't_range': (time[-1], time[-1]), 'start_idx': len(time) - 1, 'end_idx': len(time) - 1}
+            }
+
+            intersections = [
+                (t_p1, v_p1),
+                (t_p2, v_p2),
+                (np.nan, np.nan),
+                (np.nan, np.nan)
+            ]
+
+            return False, f"DNS: No local pullback minimum found (prominence threshold {min_prom:.2f} m/s not met)", {
+                'Processing Status': 'DNS',
+                'Plateau Mean Velocity (m/s)': v_plateau_mean,
+                'Peak Shock Stress (GPa)': peak_shock_stress,
+                'Peak Shock Stress Uncertainty (GPa)': 0.0,
+                'First Maxima (m/s)': v_plateau_mean,
+                'Minima (m/s)': np.nan,
+                'Second Maxima (m/s)': np.nan,
+                'fits': fits,
+                'intersections': intersections
+            }
+
+        # Take the FIRST valley — this is the true spall pullback minimum.
+        idx_p3 = idx_last_plateau + int(valleys[0])
+        v_p3   = float(velocity[idx_p3])
+        t_p3   = float(time[idx_p3])
+        pullback_amp = v_max - v_p3
+        print(f"  [HORIZ-PLAT] P3 (first local minimum): t={t_p3:.2f} ns, v={v_p3:.2f} m/s "
+              f"(pullback={pullback_amp:.1f} m/s)")
+        sys.stdout.flush()
 
         # Check recompression: does velocity rise by at least 2% of pullback
-        # amplitude somewhere after this minimum?
-        pullback_amp = v_max - v_p3_global
+        # amplitude somewhere after P3?
         recomp_threshold = max(5.0, pullback_amp * 0.02)
-        post_min_data = post_plateau_data[rel_idx_global_min + 1:]
+        rel_idx_p3 = idx_p3 - idx_last_plateau
+        post_min_data = post_plateau_data[rel_idx_p3 + 1:]
         has_recomp = (len(post_min_data) > 0 and
-                      float(np.max(post_min_data)) - v_p3_global >= recomp_threshold)
+                      float(np.max(post_min_data)) - v_p3 >= recomp_threshold)
 
-        if has_recomp:
-            idx_p3 = idx_p3_global
-            v_p3   = v_p3_global
-            t_p3   = t_p3_global
-            print(f"  [HORIZ-PLAT] P3 (global minimum): t={t_p3:.2f} ns, v={v_p3:.2f} m/s "
-                  f"(pullback={pullback_amp:.1f} m/s, recomp confirmed)")
-            sys.stdout.flush()
-        else:
-            # --- Fallback: find_peaks on the inverted smoothed signal ---
-            # Used when the global minimum is at the very end of the window
-            # (no recompression visible) — we still want the best local valley.
-            print(f"  [HORIZ-PLAT] Global minimum at {t_p3_global:.2f} ns has no clear "
-                  f"recompression — trying find_peaks fallback")
-            sys.stdout.flush()
-
-            inverted = -post_plateau_smooth
-            min_prom  = max(v_max * 0.01, 2.0)
-            min_dist  = max(3, len(post_plateau_smooth) // 50)
-            valleys, _ = _find_peaks(inverted, prominence=min_prom, distance=min_dist)
-
-            if len(valleys) > 0:
-                idx_p3 = idx_last_plateau + int(valleys[0])
-                v_p3   = float(velocity[idx_p3])
-                t_p3   = float(time[idx_p3])
-                print(f"  [HORIZ-PLAT] P3 (find_peaks fallback, first valley): "
-                      f"t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
-            else:
-                # Last resort: use the global minimum regardless of recompression
-                idx_p3 = idx_p3_global
-                v_p3   = v_p3_global
-                t_p3   = t_p3_global
-                print(f"  [HORIZ-PLAT] P3 (last-resort global minimum): "
-                      f"t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
-            sys.stdout.flush()
-        
-        # Validate P3 was found
-        if 'idx_p3' not in locals() or idx_p3 is None:
-            print(f"  [HORIZ-PLAT] ERROR: P3 not properly initialized!")
-            sys.stdout.flush()
-            # Fallback: use first point after plateau as P3
-            idx_p3 = idx_last_plateau + 1 if idx_last_plateau < len(velocity) - 1 else len(velocity) - 1
-            v_p3 = velocity[idx_p3]
-            t_p3 = time[idx_p3]
-        
-        # Ensure P3 indices are valid
-        if idx_p3 >= len(velocity) or idx_p3 < 0:
-            print(f"  [HORIZ-PLAT] ERROR: P3 index out of bounds ({idx_p3}), using last point")
-            sys.stdout.flush()
-            idx_p3 = len(velocity) - 1
-            v_p3 = velocity[idx_p3]
-            t_p3 = time[idx_p3]
-        
         print(f"  [HORIZ-PLAT] Final P3: idx={idx_p3}, t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
         sys.stdout.flush()
         
@@ -7760,7 +7837,7 @@ class AnalysisThread(QThread):
                     post_p4_smooth_dns = post_p4_dns
                 
                 inverted_p4_dns = -post_p4_smooth_dns
-                min_prominence_dns = max(v_max * 0.01, 2.0)
+                min_prominence_dns = max(v_plateau_mean * 0.01, 2.0)
                 min_distance_dns = max(5, len(post_p4_smooth_dns) // 50)
                 valleys_dns, _ = find_peaks(inverted_p4_dns, prominence=min_prominence_dns, distance=min_distance_dns)
                 
@@ -7865,7 +7942,7 @@ class AnalysisThread(QThread):
             
             # Find local minima after P4
             inverted_p4_signal = -post_p4_smooth
-            min_prominence_p4 = max(v_max * 0.01, 2.0)
+            min_prominence_p4 = max(v_plateau_mean * 0.01, 2.0)
             min_distance_p4 = max(5, len(post_p4_smooth) // 50)
             valleys_p4, _ = find_peaks(inverted_p4_signal, prominence=min_prominence_p4, distance=min_distance_p4)
             
@@ -8034,24 +8111,32 @@ class AnalysisThread(QThread):
         # 9. Calculate Physics
         pullback_velocity = v_plateau_mean - v_p3
         spall_strength_gpa = 0.5 * density * acoustic_velocity * pullback_velocity / 1e9
-        
+
         # Strain rate from pullback slope
         strain_rate = abs(m3) * 1e9 / acoustic_velocity if m3 != 0 else 0.0
-        
+
         # Shock stress from plateau
         peak_shock_stress = density * acoustic_velocity * v_plateau_mean / 1e9
-        
+
+        # Uncertainty from velocity uncertainty array at P2 (plateau end) and P3 (minimum)
+        plateau_unc = float(uncert[idx_last_plateau]) if uncert is not None and idx_last_plateau < len(uncert) and np.isfinite(uncert[idx_last_plateau]) else 0.0
+        p3_unc = float(uncert[idx_p3]) if uncert is not None and idx_p3 < len(uncert) and np.isfinite(uncert[idx_p3]) else 0.0
+        pullback_velocity_unc = np.sqrt(plateau_unc**2 + p3_unc**2)
+        spall_strength_unc_gpa = 0.5 * density * acoustic_velocity * pullback_velocity_unc / 1e9
+        delta_t_release_ns = abs(t_p3 - t_last_plateau)
+        strain_rate_unc = pullback_velocity_unc * 1e9 / (acoustic_velocity * delta_t_release_ns) if delta_t_release_ns > 0 else 0.0
+
         results = {
             'Processing Status': 'Success',
             'First Maxima (m/s)': v_plateau_mean,
             'Minima (m/s)': v_p3,
             'Second Maxima (m/s)': v_p4,
             'Pullback Velocity (m/s)': pullback_velocity,
-            'Pullback Velocity Uncertainty (m/s)': 0.0,
+            'Pullback Velocity Uncertainty (m/s)': pullback_velocity_unc,
             'Strain Rate (s^-1)': strain_rate,
-            'Strain Rate Uncertainty (s^-1)': 0.0,
+            'Strain Rate Uncertainty (s^-1)': strain_rate_unc,
             'Spall Strength (GPa)': spall_strength_gpa,
-            'Spall Strength Uncertainty (GPa)': 0.0,
+            'Spall Strength Uncertainty (GPa)': spall_strength_unc_gpa,
             'Plateau Mean Velocity (m/s)': v_plateau_mean,
             'Peak Shock Stress (GPa)': peak_shock_stress,
             'Peak Shock Stress Uncertainty (GPa)': 0.0,
@@ -10317,30 +10402,59 @@ class AnalysisThread(QThread):
                 'Strain Rate Uncertainty (s^-1)',  # Alternative naming
                 'Strain_Rate_Unc_s^-1',  # Alternative naming
                 'StrainRate_Unc_s^-1',   # Alternative naming
+                # 6. HEL analysis results
+                'hel_ok',
+                'hel_strength_gpa',
+                'hel_uncertainty_gpa',
+                'hel_strain_rate_s^-1',
+                'hel_segment_time_ns',
+                'hel_consecutive_points',
+                'free_surface_velocity_ms',
                 # Note: ALPSS columns will be added at the end automatically
             ]
-            
+
+            # Merge HEL data from velocity_shots_summary.csv (these columns are not in spall_summary)
+            velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+            if os.path.exists(velocity_shots_path):
+                try:
+                    vel_df = pd.read_csv(velocity_shots_path)
+                    hel_cols = [c for c in [
+                        'hel_ok', 'hel_strength_gpa', 'hel_uncertainty_gpa',
+                        'hel_strain_rate_s^-1', 'hel_segment_time_ns',
+                        'hel_consecutive_points', 'free_surface_velocity_ms'
+                    ] if c in vel_df.columns]
+                    if hel_cols and 'file_name' in vel_df.columns:
+                        hel_merge_df = vel_df[['file_name'] + hel_cols].rename(columns={'file_name': 'Filename'})
+                        # Drop columns already present to avoid conflicts
+                        existing_hel = [c for c in hel_cols if c in enhanced_spall_df.columns]
+                        if existing_hel:
+                            enhanced_spall_df = enhanced_spall_df.drop(columns=existing_hel)
+                        enhanced_spall_df = enhanced_spall_df.merge(hel_merge_df, on='Filename', how='left')
+                        self.progress_signal.emit(f"Merged HEL data ({len(hel_cols)} columns) from velocity_shots_summary.csv")
+                except Exception as e:
+                    self.progress_signal.emit(f"Warning: Could not merge HEL data from velocity_shots_summary: {e}")
+
             # Get all columns from the DataFrame
             all_columns = list(enhanced_spall_df.columns)
-            
+
             # Start with priority columns (only those that exist)
             reordered_columns = [col for col in priority_columns if col in all_columns]
-            
+
             # Separate remaining columns into ALPSS and other columns
             remaining_columns = [col for col in all_columns if col not in reordered_columns]
-            
+
             # Separate ALPSS columns (they start with 'ALPSS_')
             alpss_columns = [col for col in remaining_columns if col.startswith('ALPSS_')]
             other_columns = [col for col in remaining_columns if not col.startswith('ALPSS_')]
-            
+
             # Add other columns first, then ALPSS columns at the end
             reordered_columns.extend(other_columns)
             reordered_columns.extend(sorted(alpss_columns))  # Sort ALPSS columns for consistency
-            
+
             # Reorder the DataFrame
             enhanced_spall_df = enhanced_spall_df[reordered_columns]
 
-            enhanced_spall_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
+            enhanced_spall_path = os.path.join(spade_output_dir, self._get_summary_filename())
             enhanced_spall_df.to_csv(enhanced_spall_path, index=False)
             self.progress_signal.emit(f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
             self.progress_signal.emit(f"Saved to: {enhanced_spall_path}")
@@ -10362,7 +10476,7 @@ class AnalysisThread(QThread):
                 f.write("   - Must show pullback after initial rise\n")
                 f.write("   - Must show re-acceleration after pullback\n\n")
                 f.write("Traces that do not meet these criteria are marked as 'DNS' (Did Not Spall)\n")
-                f.write("in the DNS_Classification column of enhanced_spall_summary.csv\n")
+                f.write(f"in the DNS_Classification column of {self._get_summary_filename()}\n")
             self.progress_signal.emit(f"Saved filtering notes to: {notes_file}")
 
             # Merge EOS-calculated shock stress back into velocity_shots_summary.csv
@@ -10416,7 +10530,7 @@ class AnalysisThread(QThread):
                 spall_summary_path = os.path.join(spade_output_dir, 'spall_summary.csv')
                 if os.path.exists(spall_summary_path):
                     os.remove(spall_summary_path)
-                    self.progress_signal.emit("Removed redundant spall_summary.csv (superseded by enhanced_spall_summary.csv)")
+                    self.progress_signal.emit(f"Removed redundant spall_summary.csv (superseded by {self._get_summary_filename()})")
             except Exception:
                 pass
             
@@ -10871,7 +10985,7 @@ class AnalysisThread(QThread):
         
         if spall_analysis_enabled:
             # Define paths for summary files
-            enhanced_summary_csv = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
+            enhanced_summary_csv = os.path.join(spade_output_dir, self._get_summary_filename())
             summary_csv = os.path.join(spade_output_dir, 'spall_summary.csv')
             
             # Try to use enhanced_spall_df if available (passed to this function), 
@@ -10954,7 +11068,7 @@ class AnalysisThread(QThread):
                     summary_df['Material'] = summary_df['Material'].astype(str).str.strip()
                     summary_df['Material'] = summary_df['Material'].replace(['nan', 'None', ''], 'Unknown')
             else:
-                self.progress_signal.emit("[WARNING] No spall summary file found (neither enhanced_spall_summary.csv nor spall_summary.csv)")
+                self.progress_signal.emit(f"[WARNING] No spall summary file found (neither {self._get_summary_filename()} nor spall_summary.csv)")
                 summary_df = None
             
             if summary_df is not None and not summary_df.empty:
@@ -11169,42 +11283,59 @@ class AnalysisThread(QThread):
                         'Strain Rate Uncertainty (s^-1)',  # Alternative naming
                         'Strain_Rate_Unc_s^-1',  # Alternative naming
                         'StrainRate_Unc_s^-1',   # Alternative naming
+                        # 6. HEL analysis results
+                        'hel_ok',
+                        'hel_strength_gpa',
+                        'hel_uncertainty_gpa',
+                        'hel_strain_rate_s^-1',
+                        'hel_segment_time_ns',
+                        'hel_consecutive_points',
+                        'free_surface_velocity_ms',
                         # Note: ALPSS columns will be added at the end automatically
                     ]
-                    
+
+                    # Merge HEL data from velocity_shots_summary.csv
+                    velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
+                    if os.path.exists(velocity_shots_path):
+                        try:
+                            vel_df = pd.read_csv(velocity_shots_path)
+                            hel_cols = [c for c in [
+                                'hel_ok', 'hel_strength_gpa', 'hel_uncertainty_gpa',
+                                'hel_strain_rate_s^-1', 'hel_segment_time_ns',
+                                'hel_consecutive_points', 'free_surface_velocity_ms'
+                            ] if c in vel_df.columns]
+                            if hel_cols and 'file_name' in vel_df.columns:
+                                hel_merge_df = vel_df[['file_name'] + hel_cols].rename(columns={'file_name': 'Filename'})
+                                existing_hel = [c for c in hel_cols if c in enhanced_summary_df.columns]
+                                if existing_hel:
+                                    enhanced_summary_df = enhanced_summary_df.drop(columns=existing_hel)
+                                enhanced_summary_df = enhanced_summary_df.merge(hel_merge_df, on='Filename', how='left')
+                        except Exception as e:
+                            self.progress_signal.emit(f"Warning: Could not merge HEL data: {e}")
+
                     # Get all columns from the DataFrame
                     all_columns = list(enhanced_summary_df.columns)
-                    
+
                     # Start with priority columns (only those that exist)
                     reordered_columns = [col for col in priority_columns if col in all_columns]
-                    
+
                     # Separate remaining columns into ALPSS and other columns
                     remaining_columns = [col for col in all_columns if col not in reordered_columns]
-                    
+
                     # Separate ALPSS columns (they start with 'ALPSS_')
                     alpss_columns = [col for col in remaining_columns if col.startswith('ALPSS_')]
                     other_columns = [col for col in remaining_columns if not col.startswith('ALPSS_')]
-                    
+
                     # Add other columns first, then ALPSS columns at the end
                     reordered_columns.extend(other_columns)
                     reordered_columns.extend(sorted(alpss_columns))  # Sort ALPSS columns for consistency
-                    
+
                     # Reorder the DataFrame
                     enhanced_summary_df = enhanced_summary_df[reordered_columns]
-                    
-                    # Save enhanced summary
-                    enhanced_summary_path = os.path.join(spade_output_dir, 'enhanced_spall_summary.csv')
+
+                    # Save enhanced summary (single consolidated file — no separate spall_summary.csv)
+                    enhanced_summary_path = os.path.join(spade_output_dir, self._get_summary_filename())
                     enhanced_summary_df.to_csv(enhanced_summary_path, index=False)
-                    
-                    # Update the original summary with key columns for plotting
-                    summary_df['Peak Shock Stress (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_GPa_Final']
-                    summary_df['Peak Shock Stress Uncertainty (GPa)'] = enhanced_summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
-                    summary_df['Spall Strength (GPa)'] = enhanced_summary_df['Spall_Strength_GPa_Final']
-                    summary_df['Spall Strength Uncertainty (GPa)'] = enhanced_summary_df['Spall_Strength_Uncertainty_GPa_Final']
-                    summary_df['Strain Rate (s^-1)'] = enhanced_summary_df['Strain_Rate_s1_Final']
-                    summary_df['Strain Rate Uncertainty (s^-1)'] = enhanced_summary_df['Strain_Rate_Uncertainty_s1_Final']
-                    summary_csv = os.path.join(spade_output_dir, 'spall_summary.csv')
-                    summary_df.to_csv(summary_csv, index=False)
                     
                     # Check if ALPSS data was included
                     use_alpss_data = (self.alpss_params.get('spall_calculation', 'yes').lower() == 'yes')
@@ -11335,8 +11466,7 @@ class AnalysisThread(QThread):
             
             # Log available outputs for spall analysis
             self.progress_signal.emit("Available outputs (Spall Analysis):")
-            self.progress_signal.emit("  - spall_summary.csv: Basic SPADE results")
-            self.progress_signal.emit("  - enhanced_spall_summary.csv: Complete results with ALPSS data and uncertainties")
+            self.progress_signal.emit(f"  - {self._get_summary_filename()}: Complete results with spall, HEL, and ALPSS data")
             self.progress_signal.emit("  - spall_vs_strain_rate.png: Spall strength vs strain rate plot")
             self.progress_signal.emit("  - spall_vs_shock_stress.png: Spall strength vs shock stress plot")
             self.progress_signal.emit("  - shock_stress_vs_laser_energy.png: Peak shock stress vs laser energy")

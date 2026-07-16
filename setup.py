@@ -19,7 +19,7 @@ def read_requirements():
 
 setup(
     name="helix-toolbox",
-    version="2.0.0",
+    version="2.1.0",
     author="Piyush Wanchoo",
     author_email="pwanchoo@jhu.edu",
     description="A Comprehensive GUI for Single Point PDV Data Analysis",

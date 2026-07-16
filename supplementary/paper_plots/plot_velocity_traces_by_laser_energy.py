@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Standalone script to generate velocity traces plot by material (Cu, Zn, Brass, Al) colored by laser energy.
-Creates two versions: full (0-80 ns) and focused (0-50 ns). Matches combined_mean_velocity style.
+Standalone script to generate velocity traces colored by laser energy, with panels grouped by
+sample/target material (default) or by flyer material (--group-by flyer_material).
+Creates full (0-80 ns) and 0-40 ns versions plus optional 3D waterfall plots. Matches combined_mean_velocity style.
 """
 import os
 import sys
@@ -50,6 +51,36 @@ def find_column(df, possible_names):
             if col == possible or possible_lower in col_lower:
                 return col
     return None
+
+
+def find_flyer_material_column(df):
+    """Resolve Flyer_material / flyer material column from summary CSV."""
+    for col in df.columns:
+        cl = str(col).lower().strip().replace("_", " ")
+        if "flyer" in cl and "material" in cl:
+            return col
+    return find_column(
+        df,
+        [
+            "Flyer_material",
+            "Flyer Material",
+            "flyer_material",
+            "FlyerMaterial",
+            "Flyer_Material",
+        ],
+    )
+
+
+def normalize_group_by(group_by):
+    """Return 'sample_material' or 'flyer_material'."""
+    if group_by is None:
+        return "sample_material"
+    g = str(group_by).strip().lower().replace("-", "_")
+    if g in ("flyer", "flyer_material", "flyer_mat"):
+        return "flyer_material"
+    if g in ("sample", "sample_material", "target", "target_material"):
+        return "sample_material"
+    return "sample_material"
 
 
 def normalize_material_label(material_value):
@@ -303,17 +334,35 @@ def load_velocity_trace(vel_file_path, spade_params=None):
     return None, None
 
 
-def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, output_filename='velocity_traces_by_laser_energy.png', spade_params=None):
+def generate_velocity_traces_by_laser_energy(
+    summary_csv_path,
+    output_dir,
+    output_filename='velocity_traces_by_laser_energy.png',
+    spade_params=None,
+    group_by='sample_material',
+):
     """
-    Generate velocity trace plots separated by material (Cu/Al) colored by laser energy.
-    
+    Generate velocity trace plots separated by sample or flyer material, colored by laser energy.
+
     Args:
-        summary_csv_path: Path to summary CSV file (enhanced_spall_summary.csv or velocity_shots_summary.csv)
+        summary_csv_path: Path to summary CSV (enhanced_spall_summary.csv or velocity_shots_summary.csv)
         output_dir: Directory to save plot
         output_filename: Name of output plot file
+        spade_params: Optional SPADE alignment settings
+        group_by: 'sample_material' (default, target/sample) or 'flyer_material' (group panels by flyer)
     """
+    group_mode = normalize_group_by(group_by)
+    if group_mode == "flyer_material":
+        default_base = "velocity_traces_by_laser_energy"
+        base_fn, ext_fn = os.path.splitext(output_filename)
+        if base_fn == default_base:
+            output_filename = f"{default_base}_by_flyer_material{ext_fn}"
+
     print("=" * 60)
-    print("Generating velocity traces by material colored by laser energy")
+    print(
+        "Generating velocity traces colored by laser energy "
+        f"(grouped by {'flyer material' if group_mode == 'flyer_material' else 'sample / target material'})"
+    )
     print("=" * 60)
     
     # Read summary CSV
@@ -331,42 +380,46 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
     # Find columns
     file_col = find_column(df, ['PDV File', 'File', 'Filename', 'file_name', 'pdv_file'])
     
-    # Find material column - prioritize target material over flyer material
-    # Priority: 1) 'Sample material' (exact), 2) 'Material', 3) other sample material variants, 4) avoid flyer material
+    # Grouping column: sample/target material vs flyer material
     material_col = None
-    for col in df.columns:
-        col_lower = str(col).lower().strip()
-        if col_lower == 'sample material':
-            material_col = col
-            break
-    
-    if not material_col:
+    if group_mode == "flyer_material":
+        material_col = find_flyer_material_column(df)
+        if not material_col:
+            print("ERROR: Could not find flyer material column (expected e.g. 'Flyer_material', 'Flyer Material')")
+            print(f"Available columns: {', '.join(df.columns)}")
+            return
+    else:
+        # Target/sample material — prioritize over flyer
         for col in df.columns:
             col_lower = str(col).lower().strip()
-            if col_lower == 'material':
+            if col_lower == 'sample material':
                 material_col = col
                 break
-    
-    if not material_col:
-        # Try other sample material variants (but not flyer)
-        for col in df.columns:
-            col_lower = str(col).lower().strip()
-            if 'sample' in col_lower and 'material' in col_lower and 'flyer' not in col_lower:
-                material_col = col
-                break
-    
-    if not material_col:
-        # Last resort: use find_column but exclude flyer material
-        possible_names = ['Material', 'Sample Material', 'sample_material', 'Target material', 'Target Material']
-        material_col = find_column(df, possible_names)
-        if material_col and 'flyer' in str(material_col).lower():
-            # If it found flyer material, try to find something else
+
+        if not material_col:
             for col in df.columns:
                 col_lower = str(col).lower().strip()
-                if 'material' in col_lower and 'flyer' not in col_lower:
+                if col_lower == 'material':
                     material_col = col
                     break
-    
+
+        if not material_col:
+            for col in df.columns:
+                col_lower = str(col).lower().strip()
+                if 'sample' in col_lower and 'material' in col_lower and 'flyer' not in col_lower:
+                    material_col = col
+                    break
+
+        if not material_col:
+            possible_names = ['Material', 'Sample Material', 'sample_material', 'Target material', 'Target Material']
+            material_col = find_column(df, possible_names)
+            if material_col and 'flyer' in str(material_col).lower():
+                for col in df.columns:
+                    col_lower = str(col).lower().strip()
+                    if 'material' in col_lower and 'flyer' not in col_lower:
+                        material_col = col
+                        break
+
     # Find laser energy column - prioritize 'Laser_Target_Energy (mJ)'
     laser_energy_col = None
     if 'Laser_Target_Energy (mJ)' in df.columns:
@@ -386,9 +439,9 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
         print("ERROR: Could not find target material column (tried: 'Sample material', 'Material', etc.)")
         print(f"Available columns: {', '.join(df.columns)}")
         return
-    
-    # Warn if we're using flyer material instead of target material
-    if 'flyer' in str(material_col).lower():
+
+    # Warn if we're using flyer column while grouping by sample (misconfiguration)
+    if group_mode == "sample_material" and 'flyer' in str(material_col).lower():
         print(f"WARNING: Using '{material_col}' which appears to be flyer material, not target material")
         print("  Looking for 'Sample material' or 'Material' column for target material...")
         for col in df.columns:
@@ -401,9 +454,13 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
         print("ERROR: Could not find laser energy column")
         print(f"Available columns: {', '.join(df.columns)}")
         return
-    
-    print(f"Using columns: File={file_col}, Material={material_col}, Laser Energy={laser_energy_col}")
-    
+
+    print(
+        f"Using columns: File={file_col}, "
+        f"{'Flyer' if group_mode == 'flyer_material' else 'Sample'} material={material_col}, "
+        f"Laser Energy={laser_energy_col}"
+    )
+
     # Find velocity files directory
     # Velocity files (*--vel-smooth-with-uncert.csv) live in Output/ or its subdirs (from ALPSS or prior runs),
     # not inside SPADE_manual/ or SPADE_analysis/. Walk up from output_dir to find the Output root.
@@ -589,7 +646,8 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
             align_threshold = spade_params.get('align_velocity_threshold_ms', 30.0)
         ax.set_xlabel(f'Time (ns) - Aligned to t=0 at {align_threshold} m/s', fontsize=12)
         ax.set_ylabel('Velocity (m/s)', fontsize=12)
-        ax.set_title(f'{material} (n={plotted_count})', fontsize=14, fontweight='bold')
+        title_prefix = "Flyer " if group_mode == "flyer_material" else ""
+        ax.set_title(f'{title_prefix}{material} (n={plotted_count})', fontsize=14, fontweight='bold')
         ax.grid(False)  # No gridlines
         ax.set_xlim(0, 80)  # Limit to 80 ns (full version)
         ax.set_ylim(0, 250)
@@ -645,13 +703,15 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
     if n_materials == 1:
         axes_stats = np.atleast_1d(axes_stats)
 
+    stats_title_prefix = "Flyer " if group_mode == "flyer_material" else ""
+
     for ax_idx, material in enumerate(materials):
         ax = axes_stats[ax_idx]
         material_bins = peak_stats_by_material.get(material, {})
         sorted_bins = sorted(material_bins.keys())
 
         if not sorted_bins:
-            ax.set_title(f"{material} (no valid traces)", fontsize=12, fontweight='bold')
+            ax.set_title(f"{stats_title_prefix}{material} (no valid traces)", fontsize=12, fontweight='bold')
             ax.set_xlabel("Laser Energy Bin (mJ)", fontsize=11)
             ax.set_ylabel("Peak Velocity (m/s)", fontsize=11)
             ax.grid(False)
@@ -679,7 +739,7 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
         ax.plot(sorted_bins, means, color='black', linewidth=1.2, alpha=0.7)
         ax.set_xlabel("Laser Energy Bin (mJ, 100 mJ bins)", fontsize=11)
         ax.set_ylabel("Peak Velocity Mean ± 1σ (m/s)", fontsize=11)
-        ax.set_title(f"{material} (bins={len(sorted_bins)})", fontsize=12, fontweight='bold')
+        ax.set_title(f"{stats_title_prefix}{material} (bins={len(sorted_bins)})", fontsize=12, fontweight='bold')
         ax.grid(False)
 
         # Small bin-count labels near each point.
@@ -692,19 +752,38 @@ def generate_velocity_traces_by_laser_energy(summary_csv_path, output_dir, outpu
     cbar_stats = fig_stats.colorbar(sm_stats, ax=axes_stats, pad=0.03, location='right')
     cbar_stats.set_label('Laser Energy (mJ), binned to 100 mJ', fontsize=11, rotation=270, labelpad=16)
 
-    stats_output_path = os.path.join(output_dir, f"{base}_peak_velocity_mean_std_by_material_energy{ext}")
+    stats_suffix = (
+        "by_flyer_material_energy" if group_mode == "flyer_material" else "by_material_energy"
+    )
+    stats_output_path = os.path.join(output_dir, f"{base}_peak_velocity_mean_std_{stats_suffix}{ext}")
     plt.savefig(stats_output_path, dpi=300, bbox_inches='tight')
     print(f"✅ Mean±std peak-velocity plot saved to: {stats_output_path}")
     plt.close(fig_stats)
 
 
-def generate_velocity_traces_by_laser_energy_3d(summary_csv_path, output_dir, output_filename='velocity_traces_by_laser_energy_3d.png', spade_params=None):
+def generate_velocity_traces_by_laser_energy_3d(
+    summary_csv_path,
+    output_dir,
+    output_filename='velocity_traces_by_laser_energy_3d.png',
+    spade_params=None,
+    group_by='sample_material',
+):
     """
-    Generate 3D velocity trace plots separated by material (Cu/Al/...) where:
+    Generate 3D velocity trace plots separated by sample or flyer material where:
       x = time (ns), y = laser energy (mJ, binned to 100 mJ), z = velocity (m/s).
     """
+    group_mode = normalize_group_by(group_by)
+    if group_mode == "flyer_material":
+        default_base = "velocity_traces_by_laser_energy_3d"
+        base_fn, ext_fn = os.path.splitext(output_filename)
+        if base_fn == default_base:
+            output_filename = f"{default_base}_by_flyer_material{ext_fn}"
+
     print("=" * 60)
-    print("Generating 3D velocity traces by material (waterfall: z=velocity)")
+    print(
+        "Generating 3D velocity traces (waterfall: z=velocity), grouped by "
+        f"{'flyer material' if group_mode == 'flyer_material' else 'sample / target material'}"
+    )
     print("=" * 60)
 
     if not os.path.exists(summary_csv_path):
@@ -721,30 +800,46 @@ def generate_velocity_traces_by_laser_energy_3d(summary_csv_path, output_dir, ou
     file_col = find_column(df, ['PDV File', 'File', 'Filename', 'file_name', 'pdv_file'])
 
     material_col = None
-    for col in df.columns:
-        col_lower = str(col).lower().strip()
-        if col_lower == 'sample material':
-            material_col = col
-            break
-    if not material_col:
+    if group_mode == "flyer_material":
+        material_col = find_flyer_material_column(df)
+        if not material_col:
+            print("ERROR: Could not find flyer material column for 3D plot")
+            print(f"Available columns: {', '.join(df.columns)}")
+            return
+    else:
         for col in df.columns:
             col_lower = str(col).lower().strip()
-            if col_lower == 'material':
+            if col_lower == 'sample material':
                 material_col = col
                 break
-    if not material_col:
-        for col in df.columns:
-            col_lower = str(col).lower().strip()
-            if 'sample' in col_lower and 'material' in col_lower and 'flyer' not in col_lower:
-                material_col = col
-                break
-    if not material_col:
-        possible_names = ['Material', 'Sample Material', 'sample_material', 'Target material', 'Target Material']
-        material_col = find_column(df, possible_names)
-        if material_col and 'flyer' in str(material_col).lower():
+        if not material_col:
             for col in df.columns:
                 col_lower = str(col).lower().strip()
-                if 'material' in col_lower and 'flyer' not in col_lower:
+                if col_lower == 'material':
+                    material_col = col
+                    break
+        if not material_col:
+            for col in df.columns:
+                col_lower = str(col).lower().strip()
+                if 'sample' in col_lower and 'material' in col_lower and 'flyer' not in col_lower:
+                    material_col = col
+                    break
+        if not material_col:
+            possible_names = ['Material', 'Sample Material', 'sample_material', 'Target material', 'Target Material']
+            material_col = find_column(df, possible_names)
+            if material_col and 'flyer' in str(material_col).lower():
+                for col in df.columns:
+                    col_lower = str(col).lower().strip()
+                    if 'material' in col_lower and 'flyer' not in col_lower:
+                        material_col = col
+                        break
+
+        if group_mode == "sample_material" and material_col and 'flyer' in str(material_col).lower():
+            print(f"WARNING: Using '{material_col}' which appears to be flyer material, not target material")
+            for col in df.columns:
+                col_lower = str(col).lower().strip()
+                if ('sample' in col_lower or col_lower == 'material') and 'flyer' not in col_lower:
+                    print(f"  Switching to target material column: '{col}'")
                     material_col = col
                     break
 
@@ -766,7 +861,11 @@ def generate_velocity_traces_by_laser_energy_3d(summary_csv_path, output_dir, ou
         print(f"Available columns: {', '.join(df.columns)}")
         return
 
-    print(f"Using columns: File={file_col}, Material={material_col}, Laser Energy={laser_energy_col}")
+    print(
+        f"Using columns: File={file_col}, "
+        f"{'Flyer' if group_mode == 'flyer_material' else 'Sample'} material={material_col}, "
+        f"Laser Energy={laser_energy_col}"
+    )
 
     base_dir = output_dir
     output_basename = os.path.basename(os.path.normpath(output_dir))
@@ -928,7 +1027,8 @@ def generate_velocity_traces_by_laser_energy_3d(summary_csv_path, output_dir, ou
         ax.set_zlabel('Velocity (m/s)', fontsize=10, labelpad=16)
         ax.yaxis.labelpad = 22
         ax.zaxis.labelpad = 22
-        ax.set_title(f'{material} (n={plotted_count})', fontsize=14, fontweight='bold', pad=16)
+        title_prefix_3d = "Flyer " if group_mode == "flyer_material" else ""
+        ax.set_title(f'{title_prefix_3d}{material} (n={plotted_count})', fontsize=14, fontweight='bold', pad=16)
 
         ax.set_xlim3d(0, 80)
         ax.set_ylim(int(energy_min // 100) * 100, int(energy_max // 100 + 1) * 100)
@@ -1312,7 +1412,16 @@ Examples:
   
   # Use custom config file
   python plot_velocity_traces_by_laser_energy.py --config /path/to/helix_master_config.json
+
+  # Group subplots by flyer material (column Flyer_material / Flyer Material in summary CSV)
+  python plot_velocity_traces_by_laser_energy.py --group-by flyer_material --fast
         """
+    )
+    parser.add_argument(
+        '--group-by',
+        default='sample_material',
+        choices=['sample_material', 'sample', 'flyer_material', 'flyer'],
+        help='Group velocity panels by sample/target material (default) or flyer_material',
     )
     parser.add_argument('summary_csv', nargs='?', default=None,
                        help='Path to summary CSV file (optional if using config file)')
@@ -1328,6 +1437,7 @@ Examples:
                        help='Fast mode: generate only 2D plots (skip all 3D plots)')
     
     args = parser.parse_args()
+    group_by_arg = normalize_group_by(args.group_by)
     
     # Try to load config from helix_master_config.json
     output_dir_from_config = None
@@ -1394,6 +1504,10 @@ Examples:
     print(f"Summary CSV: {summary_csv}")
     print(f"Output directory: {output_dir}")
     print(f"Output filename: {args.output_filename}")
+    print(
+        f"Group-by: {group_by_arg} "
+        f"({'panels = flyer material' if group_by_arg == 'flyer_material' else 'panels = sample / target material'})"
+    )
     print("=" * 60)
     
     # Generate plots
@@ -1409,7 +1523,8 @@ Examples:
             summary_csv,
             output_dir,
             args.output_filename,
-            spade_params
+            spade_params,
+            group_by=group_by_arg,
         )
     elif args.plot_3d:
         # Explicit 3D-only mode
@@ -1418,7 +1533,8 @@ Examples:
             summary_csv,
             output_dir,
             out_name_3d,
-            spade_params
+            spade_params,
+            group_by=group_by_arg,
         )
     else:
         # Default: generate 2D, 3D laser-energy, and 3D shock-stress plots.
@@ -1429,7 +1545,8 @@ Examples:
                 summary_csv,
                 output_dir,
                 args.output_filename,
-                spade_params
+                spade_params,
+                group_by=group_by_arg,
             )
         except Exception as e:
             print(f"\nERROR: 2D velocity traces plot failed: {e}", flush=True)
@@ -1441,7 +1558,8 @@ Examples:
                 summary_csv,
                 output_dir,
                 out_name_3d,
-                spade_params
+                spade_params,
+                group_by=group_by_arg,
             )
         except Exception as e:
             print(f"\nERROR: 3D laser-energy plot failed: {e}", flush=True)

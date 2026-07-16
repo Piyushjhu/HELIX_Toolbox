@@ -142,6 +142,59 @@ def alpss_main(**inputs):
         # end the program timer
         end_time = datetime.now()
 
+        # --- Noise-fraction filter ---
+        # Applied here (before plotting and CSV saving) so both see the same filtered data.
+        # Replaces the dict values with new arrays so all downstream code (plotting, saving)
+        # automatically sees the filtered data without any numpy-view ambiguity.
+        _nf_enabled   = inputs.get("noise_filter_enabled", False)
+        _nf_threshold = float(inputs.get("noise_filter_threshold", 1.0))
+        print(f"[{datetime.now()}] *** NOISE FILTER: enabled={_nf_enabled}, threshold={_nf_threshold} ***")
+        if _nf_enabled:
+            _nf_min_len = min(len(vc_out["time_f"]), len(vc_out["velocity_f"]),
+                              len(vc_out["velocity_f_smooth"]),
+                              len(iua_out["vel_uncert"]), len(iua_out["inst_noise"]))
+            _noise_arr = iua_out["inst_noise"][:_nf_min_len]
+            _nf_mask   = _noise_arr > _nf_threshold
+            _n_noisy   = int(_nf_mask.sum())
+            if _n_noisy > 0:
+                _masked_times = vc_out["time_f"][:_nf_min_len][_nf_mask]
+                print(f"[{datetime.now()}] Noise-fraction filter: replacing {_n_noisy} samples "
+                      f"(noise_fraction > {_nf_threshold}) with linear interpolation")
+                print(f"[{datetime.now()}] Noise-fraction filter: masked time range "
+                      f"{_masked_times[0]*1e6:.4f} – {_masked_times[-1]*1e6:.4f} µs")
+                _idx   = np.arange(_nf_min_len)
+                _valid = ~_nf_mask
+                if _valid.sum() >= 2:
+                    # ---- velocity_f_smooth ----
+                    # Build a full-length copy so the dict entry becomes an independent
+                    # array (not a numpy view), guaranteeing all downstream reads see
+                    # the filtered data.
+                    _vel_new = vc_out["velocity_f_smooth"].copy()
+                    _vel_roi = _vel_new[:_nf_min_len]
+                    _vel_roi[_nf_mask] = np.interp(
+                        _idx[_nf_mask], _idx[_valid], _vel_roi[_valid]
+                    )
+                    _vel_new[:_nf_min_len] = _vel_roi
+                    vc_out["velocity_f_smooth"] = _vel_new   # replace dict value
+
+                    # ---- vel_uncert ----
+                    _unc_new = iua_out["vel_uncert"].copy()
+                    _unc_roi = _unc_new[:_nf_min_len]
+                    _unc_roi[_nf_mask] = np.interp(
+                        _idx[_nf_mask], _idx[_valid], _unc_roi[_valid]
+                    )
+                    _unc_new[:_nf_min_len] = _unc_roi
+                    iua_out["vel_uncert"] = _unc_new         # replace dict value
+
+                    print(f"[{datetime.now()}] Noise-fraction filter: applied successfully "
+                          f"({_valid.sum()} valid samples used for interpolation)")
+                else:
+                    print(f"[{datetime.now()}] Noise-fraction filter: too few valid samples "
+                          f"({_valid.sum()}), skipping interpolation")
+            else:
+                print(f"[{datetime.now()}] Noise-fraction filter: no samples exceed threshold {_nf_threshold}, "
+                      f"max inst_noise = {float(_noise_arr.max()):.4f}")
+
         # function to generate the final figure - ORIGINAL ALPSS PLOT
         print(f"[{datetime.now()}] DEBUG: About to call original ALPSS plotting function...")
         fig = None
@@ -1429,7 +1482,12 @@ def saving(
         global_min_length = min(array_lengths.values())
         print(f"[{datetime.now()}] Array lengths: {array_lengths}")
         print(f"[{datetime.now()}] Using global_min_length = {global_min_length} for all CSV files")
-        
+        # vc_out["velocity_f_smooth"] and iua_out["vel_uncert"] were replaced with
+        # fresh filtered arrays by the noise-fraction filter block in alpss_main()
+        # (before plotting and before this save call), so slicing them here is safe.
+        velocity_f_smooth_out = vc_out["velocity_f_smooth"][:global_min_length]
+        vel_uncert_out        = iua_out["vel_uncert"][:global_min_length]
+
         # Save velocity data if selected
         if save_velocity_csv:
             # Use global min_length for consistency
@@ -1449,9 +1507,9 @@ def saving(
         
         # Save velocity smooth data if selected
         if save_velocity_smooth_csv:
-            # Use global min_length for consistency
+            # Use global min_length for consistency; velocity_f_smooth_out is noise-filtered if enabled
             velocity_data_smooth = np.stack(
-                (vc_out["time_f"][:global_min_length], vc_out["velocity_f_smooth"][:global_min_length]), axis=1
+                (vc_out["time_f"][:global_min_length], velocity_f_smooth_out), axis=1
             )
             print(f"[{datetime.now()}] Saving velocity smooth...")
             np.savetxt(
@@ -1504,8 +1562,8 @@ def saving(
         
         # Save velocity uncertainty data if selected
         if save_velocity_uncert_csv:
-            # Use global min_length for consistency
-            vel_uncert_data = np.stack((vc_out["time_f"][:global_min_length], iua_out["vel_uncert"][:global_min_length]), axis=1)
+            # Use global min_length for consistency; vel_uncert_out is noise-filtered if enabled
+            vel_uncert_data = np.stack((vc_out["time_f"][:global_min_length], vel_uncert_out), axis=1)
             print(f"[{datetime.now()}] Saving velocity uncertainty data...")
             np.savetxt(
                 os.path.join(inputs["out_files_dir"], inputs["filename"][0:-4] + "--vel--uncert" + ".csv"),
@@ -1584,8 +1642,8 @@ def saving(
                 vel_smooth_with_uncert = np.stack(
                     (
                         vc_out["time_f"][:global_min_length],
-                        vc_out["velocity_f_smooth"][:global_min_length],
-                        iua_out["vel_uncert"][:global_min_length],  # Uncertainty
+                        velocity_f_smooth_out,   # noise-filtered if enabled
+                        vel_uncert_out,          # noise-filtered if enabled
                     ),
                     axis=1,
                 )
