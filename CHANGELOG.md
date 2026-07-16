@@ -5,6 +5,23 @@ All notable changes to HELIX Toolbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-07-16
+
+### Added
+- **Batch Processing Mode**: `helix_cli_runner.py` can now walk a parent directory of per-shot subfolders (`batch_mode`, `subfolder_pattern` in `cli_settings`) and run the full analysis pipeline on each one in sequence
+- **Batch Summary Plotting**: New `batch_summary_plot.py` aggregates `enhanced_spall_summary.csv` and `velocity_shots_summary.csv` across all subfolders of a batch run into a combined Spall/HEL strength-vs-strain-rate figure, color-coded by material
+- **ALPSS Noise-Fraction Filter**: New `noise_filter_enabled`/`noise_filter_threshold` options in `alpss_config` replace high-noise velocity samples with linear interpolation before plotting/saving
+- New example batch config `helix_master_config_batch_process.json`
+- New standalone plotting script `supplementary/paper_plots/plot_energy_waveplate_and_velocity_violin.py`
+
+### Changed
+- **CLI Parameter Folder Matching**: `_load_parameter_folder` now accepts an `experiment_id` to disambiguate parameter lookups in batch mode
+- Updated `supplementary/paper_plots/plot_velocity_traces_by_laser_energy.py` for Ti datasets and energy-bin statistics, with improved standalone config fallback and a faster execution mode
+- Windows GUI analysis output now avoids Unicode-only characters that failed under `cp1252` encoding
+
+### Removed
+- Removed `SPALL_DETECTION_ALGORITHM.md` and `SPALL_DETECTION_ALGORITHM_5SEGMENT_ONLY.md` (superseded by the consolidated README documentation)
+
 ## [2.0.0] - 2025-11-22
 
 ### Added

@@ -38,7 +38,6 @@ import sys
 from typing import Dict, List, Optional
 
 import pandas as pd
-from PyQt5.QtCore import QCoreApplication
 
 # Ensure repository root is importable no matter where the script is run
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +54,7 @@ _DEFAULT_CONFIG_BASENAMES = (
     # "helix_master_config.yml",
     # "helix_master_config.yaml",
     "helix_master_config.json",
+    #"helix_master_config_batch_process.json",
 )
 
 
@@ -424,6 +424,70 @@ def _resolve_file_list(
     return []
 
 
+def _get_subfolders(parent_dir: str, pattern: str) -> List[str]:
+    """Return sorted subdirectories under parent_dir matching the glob pattern."""
+    abs_parent = os.path.abspath(parent_dir)
+    if not os.path.isdir(abs_parent):
+        print(f"[ERROR] Batch input directory does not exist: {abs_parent}")
+        return []
+    candidates = sorted(glob.glob(os.path.join(abs_parent, pattern)))
+    subfolders = [p for p in candidates if os.path.isdir(p)]
+    if not subfolders:
+        print(f"[WARN] No subfolders matched '{pattern}' in: {abs_parent}")
+    else:
+        print(f"[INFO] Found {len(subfolders)} subfolder(s) to process:")
+        for sf in subfolders:
+            print(f"  - {os.path.basename(sf)}")
+    return subfolders
+
+
+def _run_analysis(
+    alpss_params: Dict,
+    spade_params: Dict,
+    resolved_input_files: List[str],
+    output_dir: str,
+    param_data,
+    spade_auto_mode: bool,
+    resolved_spade_input_files,
+    analysis_mode: str,
+    material_properties: Dict,
+) -> bool:
+    """Create and run one AnalysisThread; return True on success."""
+    thread = AnalysisThread(
+        alpss_params=alpss_params,
+        spade_params=spade_params,
+        input_files=resolved_input_files,
+        output_dir=output_dir,
+        param_data=param_data,
+        spade_auto_mode=spade_auto_mode,
+        spade_input_files=resolved_spade_input_files,
+        analysis_mode=analysis_mode,
+        material_properties=material_properties,
+    )
+
+    result = {"success": False}
+
+    def _on_progress(msg: str):
+        print(msg, flush=True)
+
+    def _on_finished(success: bool, message: str):
+        result["success"] = success
+        if success:
+            print("✅ Analysis completed successfully.", flush=True)
+        else:
+            print(f"❌ Analysis failed: {message}", flush=True)
+
+    thread.progress_signal.connect(_on_progress)
+    thread.finished_signal.connect(_on_finished)
+
+    try:
+        thread.run()
+    except KeyboardInterrupt:
+        print("Interrupted by user. Stopping analysis...", flush=True)
+
+    return result["success"]
+
+
 def _detect_pdv_column(columns: List[str]) -> Optional[str]:
     """Identify the PDV filename column by normalizing column names."""
     normalized_columns = {
@@ -507,34 +571,72 @@ def _normalize_pdv_filename(value: str) -> str:
     return s
 
 
-def _load_parameter_folder(folder: str) -> Dict[str, Dict]:
-    """Aggregate experiment metadata from all CSV/Excel files in a folder."""
+def _load_parameter_folder(folder: str, experiment_id: str = None) -> Dict[str, Dict]:
+    """Aggregate experiment metadata from CSV/Excel files in a folder.
+
+    If experiment_id is provided (e.g. 'JHAMAL00016-013'), only files whose
+    name contains that string are loaded.  If none match, all files are tried
+    as a fallback so the caller never silently gets nothing.
+    """
     if not folder:
         return {}
 
     folder = os.path.abspath(folder)
     if not os.path.isdir(folder):
-        raise FileNotFoundError(f"Parameter folder not found: {folder}")
+        print(f"[WARN] Parameter folder not found: {folder}")
+        print(f"[WARN] Continuing without parameter data — material color-coding will be skipped.")
+        return {}
 
     param_data: Dict[str, Dict] = {}
     all_entries = os.listdir(folder)
-    param_files = [e for e in all_entries if e.lower().endswith((".csv", ".xlsx", ".xls"))]
-    
+    all_param_files = [e for e in all_entries if e.lower().endswith((".csv", ".xlsx", ".xls"))]
+
+    # Narrow to files matching the experiment ID when one is supplied
+    if experiment_id:
+        matched = [e for e in all_param_files if experiment_id in e]
+        if matched:
+            print(f"[INFO] Matched {len(matched)} parameter file(s) for experiment '{experiment_id}':")
+            for m in matched:
+                print(f"[INFO]   {m}")
+            param_files = matched
+        else:
+            print(f"[WARN] No parameter file found matching '{experiment_id}' — trying all {len(all_param_files)} file(s) as fallback")
+            param_files = all_param_files
+    else:
+        param_files = all_param_files
+
     print(f"[INFO] Found {len(param_files)} parameter file(s) to process")
     
     for idx, entry in enumerate(param_files, 1):
         print(f"[INFO] Processing parameter file {idx}/{len(param_files)}: {entry}")
         file_path = os.path.join(folder, entry)
         try:
-            if entry.lower().endswith(".csv"):
-                df = pd.read_csv(file_path)
-            else:
+            import concurrent.futures as _cf
+            _read_timeout = 30  # seconds — cloud-only OneDrive files can hang indefinitely
+
+            def _read_file():
+                if entry.lower().endswith(".csv"):
+                    return pd.read_csv(file_path)
                 try:
-                    df = pd.read_excel(file_path)
+                    return pd.read_excel(file_path)
                 except ImportError as exc:
                     raise ImportError(
                         "openpyxl is required to read Excel parameter files."
                     ) from exc
+
+            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                _future = _pool.submit(_read_file)
+                try:
+                    df = _future.result(timeout=_read_timeout)
+                except _cf.TimeoutError:
+                    _future.cancel()
+                    print(
+                        f"[WARN] Skipping parameter file {entry}: read timed out after "
+                        f"{_read_timeout}s. File may be a cloud-only OneDrive placeholder "
+                        f"that has not been downloaded. In Finder, right-click the file "
+                        f"and choose 'Keep on This Device' to download it."
+                    )
+                    continue
         except Exception as exc:  # pragma: no cover - best-effort loader
             print(f"[WARN] Skipping parameter file {entry}: {exc}")
             continue
@@ -852,7 +954,97 @@ def main():
         spade_input_files = args.spade_input_files
         spade_input_dir = args.spade_input_dir
         spade_input_pattern = args.spade_input_pattern if args.spade_input_pattern else "*--vel-smooth-with-uncert.csv"
+        cli_settings = {}
 
+    # ── Batch-mode settings (master config only; default to single-run) ──────
+    batch_mode = _to_bool(cli_settings.get("batch_mode", False))
+    subfolder_pattern = cli_settings.get("subfolder_pattern", "*")
+    output_subdir_name = cli_settings.get("output_subdir_name", "Output")
+    combined_output_dir = cli_settings.get("combined_output_dir") or None
+
+    if batch_mode:
+        # input_dir is the parent folder containing one subfolder per shot group.
+        if not input_dir:
+            raise ValueError("batch_mode requires 'input_dir' to be set in cli_settings.")
+        if analysis_mode == "spade_only" and spade_mode == "auto":
+            raise ValueError(
+                "Auto SPADE mode requires ALPSS outputs from the same run. "
+                "Use analysis_mode=both or spade_mode=manual in batch mode."
+            )
+        if spade_mode == "manual":
+            resolved_spade_input_files = _resolve_file_list(
+                spade_input_files, spade_input_dir, spade_input_pattern
+            )
+            if not resolved_spade_input_files:
+                raise RuntimeError("Manual SPADE mode requires spade_input_files or spade_input_dir.")
+            spade_auto_mode = False
+        else:
+            resolved_spade_input_files = None
+            spade_auto_mode = True
+
+        # Load parameter data once — shared across all subfolder runs
+        if param_folder:
+            print(f"\n[INFO] Loading parameter data from: {param_folder}")
+            param_data = _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir))
+        else:
+            param_data = None
+
+        subfolders = _get_subfolders(input_dir, subfolder_pattern)
+        if not subfolders:
+            raise RuntimeError(
+                f"No subfolders found under batch input directory: {os.path.abspath(input_dir)}"
+            )
+
+        if combined_output_dir:
+            combined_output_dir = os.path.abspath(combined_output_dir)
+            os.makedirs(combined_output_dir, exist_ok=True)
+            print(f"[INFO] Combined output directory: {combined_output_dir}")
+
+        batch_results: Dict[str, bool] = {}
+        for idx, subfolder in enumerate(subfolders, 1):
+            subfolder_name = os.path.basename(subfolder)
+            print(f"\n{'='*70}")
+            print(f"BATCH [{idx}/{len(subfolders)}]: {subfolder_name}")
+            print(f"{'='*70}\n")
+
+            run_output_dir = (
+                combined_output_dir if combined_output_dir
+                else os.path.join(subfolder, output_subdir_name)
+            )
+            os.makedirs(run_output_dir, exist_ok=True)
+
+            if analysis_mode != "spade_only":
+                run_input_files = _resolve_file_list(None, subfolder, input_pattern)
+                if not run_input_files:
+                    print(f"[WARN] No files matched '{input_pattern}' in {subfolder_name} — skipping.")
+                    batch_results[subfolder_name] = False
+                    continue
+            else:
+                run_input_files = []
+
+            success = _run_analysis(
+                alpss_params=alpss_params,
+                spade_params=spade_params,
+                resolved_input_files=run_input_files,
+                output_dir=run_output_dir,
+                param_data=param_data,
+                spade_auto_mode=spade_auto_mode,
+                resolved_spade_input_files=resolved_spade_input_files,
+                analysis_mode=analysis_mode,
+                material_properties=material_properties,
+            )
+            batch_results[subfolder_name] = success
+
+        print(f"\n{'='*70}")
+        print("BATCH PROCESSING SUMMARY")
+        print(f"{'='*70}")
+        for name, ok in batch_results.items():
+            print(f"  {'✅' if ok else '❌'} {name}")
+        n_ok = sum(batch_results.values())
+        print(f"\n{n_ok}/{len(batch_results)} subfolder(s) completed successfully.")
+        sys.exit(0 if n_ok == len(batch_results) else 1)
+
+    # ── SINGLE-RUN MODE ──────────────────────────────────────────────────────
     # Validate required settings
     if not output_dir:
         raise ValueError("--output-dir is required (either in config file or command line)")
@@ -932,7 +1124,7 @@ def main():
     # Load parameter folder with progress indication
     if param_folder:
         print(f"\n[INFO] Loading parameter data from: {param_folder}")
-        param_data = _load_parameter_folder(param_folder)
+        param_data = _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir))
     else:
         param_data = None
     
@@ -1042,49 +1234,36 @@ def main():
         print(f"Enabled plots: {[k for k, v in post_processing_config.get('plots', {}).items() if v]}")
         print("=" * 70 + "\n")
         
-        # Prepare Qt event loop for the AnalysisThread (which inherits QThread)
-        app = QCoreApplication([])
+        # Run post-processing synchronously (no Qt event loop needed in CLI mode)
         thread = AnalysisThread(
             alpss_params=alpss_params,
             spade_params=spade_params,
-            input_files=[],  # Not needed for post-processing
+            input_files=[],
             output_dir=output_dir,
             param_data=param_data,
             spade_auto_mode=spade_auto_mode,
             spade_input_files=None,
-            analysis_mode="post_process_only",  # Special mode for post-processing
+            analysis_mode="post_process_only",
             material_properties=material_properties,
         )
-        
-        # Connect progress signal
-        def on_progress(msg):
-            print(msg)
-        thread.progress_signal.connect(on_progress)
-        
-        # Run post-processing
-        thread.start()
+        thread.progress_signal.connect(print)
         success = thread.run_post_processing(post_processing_config)
-        thread.wait()
-        
+
         if success:
             print("\n✅ Post-processing complete!")
             sys.exit(0)
         else:
             print("\n❌ Post-processing failed. See error messages above.")
             sys.exit(1)
-    
-    # Normal analysis mode
-    # Prepare Qt event loop for the AnalysisThread (which inherits QThread)
-    app = QCoreApplication([])
-    
-    # Debug: Print output directory being passed to AnalysisThread
+
+    # Normal analysis mode — run synchronously in CLI (no Qt event loop needed)
     print("\n" + "=" * 70)
     print("CREATING ANALYSIS THREAD")
     print("=" * 70)
     print(f"Output directory passed to AnalysisThread: {output_dir}")
     print(f"Output directory absolute path: {os.path.abspath(output_dir)}")
     print("=" * 70 + "\n")
-    
+
     thread = AnalysisThread(
         alpss_params=alpss_params,
         spade_params=spade_params,
@@ -1108,25 +1287,14 @@ def main():
             print("✅ Analysis completed successfully.", flush=True)
         else:
             print(f"❌ Analysis failed: {message}", flush=True)
-        app.quit()
 
     thread.progress_signal.connect(_on_progress)
     thread.finished_signal.connect(_on_finished)
-    thread.start()
 
     try:
-        app.exec_()
+        thread.run()
     except KeyboardInterrupt:
         print("Interrupted by user. Stopping analysis...", flush=True)
-        thread.requestInterruption()
-        thread.wait()
-
-    # Ensure thread is fully finished before exiting to avoid "QThread: Destroyed while thread is still running"
-    # This ensures proper cleanup and prevents the warning message
-    if thread.isRunning():
-        thread.wait(5000)  # Wait up to 5 seconds for thread to finish
-    # Even if not running, ensure any pending cleanup completes
-    thread.wait(1000)  # Brief wait to ensure cleanup is complete
 
     sys.exit(0 if result["success"] else 1)
 
