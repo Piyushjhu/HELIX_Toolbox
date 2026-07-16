@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New standalone plotting script `supplementary/paper_plots/plot_energy_waveplate_and_velocity_violin.py`
 
 ### Changed
+- **Spall Pullback (P3) Detection Rewritten**: the 5-segment/hybrid spall algorithm now finds the *first* local minimum after the plateau (prominence-based peak detection on the inverted, smoothed post-plateau signal), instead of taking the global minimum of the post-plateau trace. Secondary reverberations can produce a deeper but later minimum that isn't the true spall pullback — the previous global-minimum approach could lock onto those. There is no longer a global-minimum fallback: if no valley clears the prominence threshold (1% of plateau mean velocity, floor 2 m/s), the trace is classified DNS immediately rather than substituting a spurious P3
+- **Spall Strength Uncertainty** is now propagated from the pullback velocity uncertainty (`0.5 * density * acoustic_velocity * pullback_velocity_uncertainty`) instead of being hardcoded to `0.0`
+- **Consolidated Summary Filename**: spall/HEL results now save to an IGSN-prefixed `<parent-folder>-Data_Summary.csv` (via new `_get_summary_filename()`) instead of the fixed `enhanced_spall_summary.csv` name, falling back to `Data_Summary.csv` when the parent folder name is generic
 - **CLI Parameter Folder Matching**: `_load_parameter_folder` now accepts an `experiment_id` to disambiguate parameter lookups in batch mode
 - Updated `supplementary/paper_plots/plot_velocity_traces_by_laser_energy.py` for Ti datasets and energy-bin statistics, with improved standalone config fallback and a faster execution mode
 - Windows GUI analysis output now avoids Unicode-only characters that failed under `cp1252` encoding
