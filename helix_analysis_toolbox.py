@@ -447,6 +447,33 @@ class AnalysisThread(QThread):
             pass
         return "Data_Summary.csv"
 
+    def _save_run_config(self, spade_output_dir):
+        """Save the ALPSS/SPADE parameters used for this run next to the summary CSV.
+
+        Without this, tracing which config produced a given Data_Summary.csv
+        requires reconstructing it from memory/git history, since the run
+        doesn't otherwise leave a record of its own input parameters.
+        """
+        try:
+            config_filename = self._get_summary_filename().replace('Data_Summary.csv', 'Run_Config.json')
+            config_path = os.path.join(spade_output_dir, config_filename)
+            config_snapshot = {
+                'timestamp': datetime.now().isoformat(),
+                'analysis_mode': self.analysis_mode,
+                'output_dir': self.output_dir,
+                'input_files': self.input_files,
+                'spade_auto_mode': self.spade_auto_mode,
+                'spade_input_files': self.spade_input_files,
+                'alpss_params': self.alpss_params,
+                'spade_params': self.spade_params,
+                'material_properties': self.material_properties,
+            }
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config_snapshot, f, indent=2, default=str)
+            self.progress_signal.emit(f"Saved run config to: {config_path}")
+        except Exception as e:
+            self.progress_signal.emit(f"Warning: Could not save run config: {e}")
+
     def _should_skip_unknown_materials(self):
         """
         Determine whether Unknown-material traces should be skipped.
@@ -10458,6 +10485,7 @@ class AnalysisThread(QThread):
             enhanced_spall_df.to_csv(enhanced_spall_path, index=False)
             self.progress_signal.emit(f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
             self.progress_signal.emit(f"Saved to: {enhanced_spall_path}")
+            self._save_run_config(spade_output_dir)
             
             # Add note about filtering criteria to a separate notes file
             notes_file = os.path.join(spade_output_dir, 'spall_analysis_notes.txt')
@@ -11336,7 +11364,8 @@ class AnalysisThread(QThread):
                     # Save enhanced summary (single consolidated file — no separate spall_summary.csv)
                     enhanced_summary_path = os.path.join(spade_output_dir, self._get_summary_filename())
                     enhanced_summary_df.to_csv(enhanced_summary_path, index=False)
-                    
+                    self._save_run_config(spade_output_dir)
+
                     # Check if ALPSS data was included
                     use_alpss_data = (self.alpss_params.get('spall_calculation', 'yes').lower() == 'yes')
                     if use_alpss_data:
