@@ -64,10 +64,15 @@ iq_skip_start_ns: 1.0
 iq_persistence_ns: 0.5
 
 # ── Frequency / spectrogram ───────────────────────────────────────────────────
-freq_min: 1.2e9    # Lower edge of the useful Doppler band (Hz)
-freq_max: 3.5e9    # Upper edge of the useful Doppler band (Hz)
+freq_min: 1200000000.0    # Lower edge of the useful Doppler band (Hz)
+freq_max: 3500000000.0    # Upper edge of the useful Doppler band (Hz)
 
-sample_rate: 1.28e11   # Oscilloscope sample rate (S/s); 128e9 = 128 GS/s
+# FALLBACK ONLY: the true sample rate is auto-detected from each data file's
+# time column at the start of every run; this value is used only if detection fails.
+# NOTE: written out in full (not "1.28e11") — PyYAML's safe_load only treats
+# scientific notation as a float when the exponent has an explicit +/- sign
+# (e.g. 1.28e+11 works, 1.28e11 is parsed as the *string* "1.28e11").
+sample_rate: 128000000000.0   # Oscilloscope sample rate (S/s); 128e9 = 128 GS/s
 
 nperseg: 512    # STFT window length (samples)
 noverlap: 400   # STFT overlap (samples); must be < nperseg
@@ -113,7 +118,7 @@ rc_idx_correction: 0    # Manual sample offset correction for recompression
 # Enable if your signal has a strong static carrier tone.
 use_notch_filter: true
 order: 6              # Butterworth filter order
-wid: 1.5e8            # Notch half-width (Hz); tune to match the carrier width
+wid: 150000000.0      # Notch half-width (Hz); tune to match the carrier width
 
 # ── Uncertainty ───────────────────────────────────────────────────────────────
 # Multiplier applied to the instantaneous noise-based frequency uncertainty.

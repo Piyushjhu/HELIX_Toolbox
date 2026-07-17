@@ -58,11 +58,52 @@ def _resolve_plot_saving_flags(inputs):
     return save_all_flag, save_in_subfolder
 
 
+# detect the true sample rate directly from the experimental data file so that files
+# recorded on scopes with different framing rates (e.g. 80 GS/s vs 128 GS/s) can be
+# batch processed without editing the configured sample_rate
+def detect_sample_rate(**inputs):
+    filepath = os.path.join(inputs["exp_data_dir"], inputs["filename"])
+    # read a small sample of rows just past the header, matching the read style used
+    # in spall_doi_finder (the first non-skipped row is consumed as the column header)
+    sample = pd.read_csv(
+        filepath, skiprows=int(inputs["header_lines"]), nrows=1000
+    )
+    sample.columns = ["Time", "Ampl"]
+    time = sample["Time"].to_numpy(dtype=float)
+    if len(time) < 2:
+        raise ValueError("not enough rows to measure the time step")
+    # mean of the diffs (= endpoint span / n) averages out the quantization of the
+    # printed timestamps; same convention as the downstream fs computed from the data
+    t_step = np.mean(np.diff(time))
+    if not np.isfinite(t_step) or t_step <= 0:
+        raise ValueError(f"invalid time step measured from data: {t_step}")
+    return 1.0 / t_step
+
+
 # main function to link together all the sub-functions
 def alpss_main(**inputs):
     print(f"[{datetime.now()}] DEBUG: alpss_main function called")
     print(f"[{datetime.now()}] DEBUG: save_data = {inputs.get('save_data', 'NOT FOUND')}")
     print(f"[{datetime.now()}] DEBUG: display_plots = {inputs.get('display_plots', 'NOT FOUND')}")
+
+    # detect the sample rate from the data file before it is used anywhere else;
+    # the configured value is only kept as a fallback if detection fails
+    try:
+        detected_rate = detect_sample_rate(**inputs)
+        configured_rate = inputs.get("sample_rate")
+        if configured_rate and abs(detected_rate - configured_rate) / configured_rate > 0.01:
+            print(
+                f"[{datetime.now()}] Sample rate auto-detected as {detected_rate:.4g} S/s "
+                f"(configured value {configured_rate:.4g} S/s overridden)"
+            )
+        else:
+            print(f"[{datetime.now()}] Sample rate auto-detected as {detected_rate:.4g} S/s")
+        inputs["sample_rate"] = detected_rate
+    except Exception as e:
+        print(
+            f"[{datetime.now()}] WARNING: Could not auto-detect sample rate ({e}); "
+            f"using configured value {inputs.get('sample_rate')}"
+        )
 
     # get the current working directory
     cwd = os.getcwd()

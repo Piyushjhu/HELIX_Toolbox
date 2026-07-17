@@ -1,12 +1,12 @@
 # =============================================================================
-# HELIX Toolbox — Master Configuration File (YAML)
+# HELIX Toolbox — Master Configuration File (YAML), Batch Mode Example
 # =============================================================================
-# This file controls every aspect of a HELIX Toolbox run — both the GUI and
-# the CLI (helix_cli_runner.py) read it.  All sections are optional overrides;
-# any key you omit falls back to the hard-coded default in the code.
+# This is a YAML twin of helix_master_config_batch_process.json.
+# It demonstrates batch mode: processing a parent directory that contains one
+# subfolder per shot group in a single CLI run, plus post-processing plots.
 #
 # Usage (CLI):
-#   python helix_cli_runner.py --config helix_master_config.yml
+#   python helix_cli_runner.py --config helix_master_config_batch_process.yml
 #
 # Usage (GUI):
 #   Load → "Use Config File" → browse to this file.
@@ -27,31 +27,46 @@
 # -----------------------------------------------------------------------------
 cli_settings:
 
-  # Directory containing raw PDV oscilloscope CSV files (used in ALPSS step).
-  # *** EDIT THIS *** — replace with the absolute path to your raw PDV data folder.
-  # Example (macOS/Linux): /Users/you/experiments/shot_2026_04/raw_csv
-  # Example (Windows):     C:/Users/you/experiments/shot_2026_04/raw_csv
-  input_dir: /path/to/pdv/files
+  # Set true to treat input_dir as a PARENT folder containing one subfolder
+  # per shot group (e.g. one subfolder per sample/plate). Each subfolder is
+  # processed through the full ALPSS + SPADE pipeline independently.
+  batch_mode: true
 
-  # Explicit list of files to process.  Set to null to use input_dir + input_pattern.
-  # Example:  input_files: [file1.csv, file2.csv]
+  # Parent directory containing the per-shot subfolders (only used when
+  # batch_mode: true). Each subfolder is scanned for files matching
+  # input_pattern.
+  input_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016
+
+  # Glob pattern applied to input_dir to select which subfolders to process.
+  # "*" = every subfolder.
+  subfolder_pattern: "*"
+
+  # Explicit list of files to process. Set to null to use input_dir +
+  # input_pattern instead (used in non-batch mode, or ignored in batch mode).
   input_files: null
 
-  # Glob pattern applied inside input_dir to select files.
+  # Glob pattern applied inside each subfolder to select raw PDV CSV files.
   input_pattern: "*.csv"
 
-  # Root output directory.  Sub-folders are created automatically:
-  #   <output_dir>/ALPSS_output/   → ALPSS results
-  #   <output_dir>/SPADE_analysis/ → SPADE results and plots
-  # *** EDIT THIS *** — replace with the absolute path where you want results saved.
-  output_dir: /path/to/output
+  # Root output directory. Leave null in batch mode to write each subfolder's
+  # results into "<subfolder>/<output_subdir_name>/" automatically.
+  output_dir: null
 
-  # Folder containing experiment parameter files (CSV/Excel).
-  # Must have a column matching PDV filenames so metadata (material, laser
-  # energy, waveplate angle, row/column …) is attached to each trace.
+  # Name of the output folder created inside each subfolder (batch mode only).
+  # Ignored if combined_output_dir is set.
+  output_subdir_name: "Output"
+
+  # Optionally route ALL subfolders' outputs into one shared directory instead
+  # of writing separate outputs per subfolder. Set to null to keep outputs
+  # separated per subfolder (recommended, so each shot group's Data_Summary
+  # stays independent).
+  combined_output_dir: null
+
+  # Folder containing experiment parameter files (CSV/Excel). Must have a
+  # column matching PDV filenames so metadata (material, laser energy,
+  # waveplate angle, row/column …) is attached to each trace.
   # Set to null to skip parameter enrichment.
-  # *** EDIT THIS *** — replace with your parameter folder, or set to: null
-  param_folder: /path/to/parameter/folder
+  param_folder: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016/Parameters
 
   # Analysis mode:
   #   both       — run ALPSS then SPADE (full pipeline, default)
@@ -66,7 +81,7 @@ cli_settings:
 
   # Used only when spade_mode: manual
   spade_input_files: null
-  spade_input_dir: /path/to/existing/velocity/files
+  spade_input_dir: null
   spade_input_pattern: "*--vel-smooth-with-uncert.csv"
 
 
@@ -90,24 +105,24 @@ alpss_config:
   # Number of header lines to skip in each oscilloscope CSV file.
   header_lines: 22
 
-  # Manual start time (seconds).  "none" = auto-detect from signal.
+  # Manual start time (seconds). "none" = auto-detect from signal.
   start_time_user: "none"
 
-  # Offset added to the detected start time (seconds).  Use to fine-tune t=0.
+  # Offset added to the detected start time (seconds). Use to fine-tune t=0.
   start_time_correction: 0
 
   # Time to skip from the beginning of the trace before extracting signal (s).
   time_to_skip: 0.0
 
   # Duration of signal to extract starting from the detected start time (s).
-  # 4e-6 = 4 µs, for example.
-  time_to_take: 4.0e-06
+  # 5e-6 = 5 µs.
+  time_to_take: 5.0e-06
 
   # Time window before the detected IQ start to include in the output (s).
-  t_before: 2.0e-08
+  t_before: 5.0e-08
 
   # Time window after the detected IQ start to include in the output (s).
-  t_after: 2.0e-07
+  t_after: 1.0e-07
 
   # ── IQ (signal-onset) detection ─────────────────────────────────────────────
   # Use the robust IQ detection pipeline (recommended).
@@ -115,7 +130,7 @@ alpss_config:
 
   # IQ detection threshold relative to the peak signal amplitude.
   # Lower values → earlier start detected; raise if false triggers occur.
-  iq_threshold_factor: 0.8
+  iq_threshold_factor: 0.85
 
   # Smoothing window (ns) applied to the IQ magnitude before onset detection.
   iq_smoothing_window_ns: 5.0
@@ -128,12 +143,14 @@ alpss_config:
   iq_persistence_ns: 0.5
 
   # ── Frequency / spectrogram ─────────────────────────────────────────────────
-  freq_min: 1200000000.0    # Lower edge of the frequency band of interest (Hz)
-  freq_max: 3000000000.0    # Upper edge of the frequency band of interest (Hz)
+  freq_min: 1250000000.0    # Lower edge of the frequency band of interest (Hz)
+  freq_max: 3500000000.0    # Upper edge of the frequency band of interest (Hz)
 
-  # Oscilloscope sample rate (samples/s).  128e9 = 128 GS/s.
+  # Oscilloscope sample rate (samples/s). 128e9 = 128 GS/s.
   # FALLBACK ONLY: the true sample rate is auto-detected from each data file's
-  # time column at the start of every run; this value is used only if detection fails.
+  # time column at the start of every run, so files from scopes with different
+  # framing rates (e.g. 80 GS/s and 128 GS/s) can be mixed in one batch.
+  # This value is used only if detection fails.
   # NOTE: written out in full (not "1.28e11") — PyYAML's safe_load only treats
   # scientific notation as a float when the exponent has an explicit +/- sign
   # (e.g. 1.28e+11 works, 1.28e11 is parsed as the *string* "1.28e11").
@@ -160,8 +177,8 @@ alpss_config:
   smoothing_type: "savgol"
 
   # Window length in nanoseconds (takes precedence over smoothing_window if set).
-  # The code converts this to samples using sample_rate.  Recommended: 5–10 ns.
-  smoothing_window_ns: 6.0
+  # The code converts this to samples using sample_rate. Recommended: 5–10 ns.
+  smoothing_window_ns: 8.0
 
   # Window length in samples (used only when smoothing_window_ns is null).
   smoothing_window: null
@@ -193,6 +210,10 @@ alpss_config:
                         # Increase for more conservative error bars.
 
   # ── Material properties (used for ALPSS built-in spall calc) ────────────────
+  # NOTE: these are Cu defaults, used only as a fallback when spall_calculation
+  # is enabled. Per-trace values come from the material_properties section
+  # below and the parameter-folder metadata, so leave these as-is unless you
+  # also enable ALPSS's own spall_calculation.
   C0: 3950.0            # Bulk wave speed (m/s)
   density: 8960.0       # Density (kg/m³)
   lam: 1.55e-06         # PDV laser wavelength (m); 1550 nm = 1.55e-6
@@ -213,7 +234,14 @@ alpss_config:
   save_velocity_uncert_csv: false        # Raw uncertainty
   save_velocity_smooth_uncert_csv: true  # Smoothed velocity + uncertainty (used by SPADE)
   save_results_csv: true                 # Summary of ALPSS results per file
-  save_noise_csv: true                   # Noise fraction trace
+
+  # Noise-fraction filter: when enabled, velocity samples whose instantaneous
+  # noise fraction exceeds noise_filter_threshold are replaced with linear
+  # interpolation from the surrounding valid samples, before plotting/saving.
+  save_noise_csv: true                   # Save the per-trace noise-fraction CSV
+  noise_filter_enabled: true             # Apply the noise-fraction filter
+  noise_filter_threshold: 1              # Noise-fraction cutoff (see above)
+
   save_combined_plot: true               # Combined overview plot per file
   save_iq_start_time_plot: false         # IQ onset detection diagnostic plot
 
@@ -230,7 +258,7 @@ spade_config:
   experiment_hel_detection: true     # Run HEL (Hugoniot Elastic Limit) detection
 
   # ── Material defaults (overridden per-trace from material_properties section) ──
-  density: 8960.0          # Density (kg/m³)
+  density: 8960.0           # Density (kg/m³)
   acoustic_velocity: 3950.0 # Bulk wave speed (m/s) used for spall strength
 
   # ── Spall analysis model ─────────────────────────────────────────────────────
@@ -245,18 +273,64 @@ spade_config:
   #   5-segment      — skip RDP; use horizontal-plateau 5-segment only (faster)
   spall_detection_method: "5-segment"
 
+  # ── HEL detection ─────────────────────────────────────────────────────────────
+  # Time window (ns, relative to t=0) searched for the elastic precursor plateau.
+  hel_start_time_ns: 0
+  hel_end_time_ns: 15
+
+  # Legacy gradient-angle threshold (degrees) — fallback only.
+  hel_angle_threshold_deg: 86.0
+
+  # Minimum number of consecutive raw-data points that must lie in the plateau.
+  hel_detection_min_points: 5
+
+  # Minimum plateau velocity to accept as a valid HEL (m/s).
+  # Increase if spurious low-velocity detections occur.
+  minimum_HEL_velocity_expected: 25.0
+
+  # RDP epsilon (m/s) for knee-point detection in the HEL signal.
+  hel_rdp_epsilon: 0.5
+
+  # Required fractional drop from rise slope to plateau slope.
+  # 0.9 → plateau slope must be < 10% of the rise slope.
+  hel_slope_drop_ratio: 0.9
+
+  # Minimum plateau duration (ns) for a valid HEL.
+  hel_min_plateau_duration: 0.5
+
+  # Whether to use the HEL-based t=0 for x-axis alignment in plots.
+  use_hel_t0_alignment_for_plots: true
+
+  # Method used to locate t=0 for HEL detection:
+  #   signal_start  — first point where velocity > 0 and increasing for ~2 ns
+  #   threshold     — first point where velocity >= threshold_velocity_ms
+  hel_t0_method: "signal_start"
+
+  # ── MAD outlier filter ────────────────────────────────────────────────────────
+  # Removes outlier peak-velocity values per material / laser-energy bracket.
+  mad_filter_enabled: true
+  # Threshold for the modified Z-score. Lower = more aggressive removal.
+  #   2.0 — aggressive    2.5 — moderate    3.0 — standard    3.5 — conservative
+  mad_filter_threshold: 2.0
+
+  # Signal duration to consider; "Full Signal (None)" = use the full trace.
+  signal_length: "Full Signal (None)"
+
+  # ── Peak / prominence detection ───────────────────────────────────────────────
+  # Fraction of peak velocity used as the prominence threshold.
+  prominence_factor: 0.02
+
+  # Minimum separation between detected peaks (ns).
+  peak_distance_ns: 10.0
+
   # ── Spall analysis window (ns, relative to aligned t=0) ──────────────────────
   # Only data inside this window is searched for the spall signature.
   spall_start_time_ns: 0.0
-  spall_end_time_ns: 90.0
+  spall_end_time_ns: 60.0
 
   # Velocity threshold (m/s) used to identify shock arrival (t=0 alignment).
   # Decrease if weak shocks are being missed; increase if noise triggers falsely.
   threshold_velocity_ms: 5.0
-
-  # Velocity threshold (m/s) used when aligning multiple traces to a common t=0
-  # for the combined velocity-traces plot.
-  align_velocity_threshold_ms: 10.0
 
   # ── Spall RDP parameters (only when spall_detection_method: rdp) ─────────────
   # RDP simplification epsilon (m/s): larger = coarser simplification.
@@ -266,74 +340,23 @@ spade_config:
   # These thresholds prevent false spall detections from post-shock ringing.
   #
   # Minimum pullback depth (m/s): ignores candidates shallower than this.
-  min_pullback_velocity: 10.0
+  min_pullback_velocity: 20.0
 
   # Minimum rebound / pullback ratio: rebound must recover at least this
-  # fraction of the pullback depth.  0.03 = 3%.
+  # fraction of the pullback depth. 0.03 = 3%.
   min_recomp_ratio: 0.03
 
   # Minimum velocity ratio: rebound peak must exceed valley by this factor.
-  # 1.1 means the rebound must be at least 10% above the valley.
-  min_recomp_velocity_ratio: 1.1
+  # 1.05 means the rebound must be at least 5% above the valley.
+  min_recomp_velocity_ratio: 1.05
 
   # Minimum sustained duration of the rebound (ns).
-  min_recomp_time_ns: 2.5
-
-  # ── HEL detection ─────────────────────────────────────────────────────────────
-  # Time window (ns, relative to t=0) searched for the elastic precursor plateau.
-  hel_start_time_ns: 0
-  hel_end_time_ns: 20
-
-  # Minimum plateau velocity to accept as a valid HEL (m/s).
-  # Increase if spurious low-velocity detections occur.
-  minimum_HEL_velocity_expected: 40.0
-
-  # Minimum number of consecutive raw-data points that must lie in the plateau.
-  hel_detection_min_points: 10
-
-  # RDP epsilon (m/s) for knee-point detection in the HEL signal.
-  hel_rdp_epsilon: 1.25
-
-  # Required fractional drop from rise slope to plateau slope.
-  # 0.9 → plateau slope must be < 10% of the rise slope.
-  hel_slope_drop_ratio: 0.9
-
-  # Minimum plateau duration (ns) for a valid HEL.
-  hel_min_plateau_duration: 0.5
-
-  # Legacy gradient-angle threshold (degrees) — fallback only.
-  hel_angle_threshold_deg: 86.0
-
-  # Method used to locate t=0 for HEL detection:
-  #   signal_start  — first point where velocity > 0 and increasing for ~2 ns
-  #   threshold     — first point where velocity >= threshold_velocity_ms
-  hel_t0_method: "signal_start"
-
-  # Whether to use the HEL-based t=0 for x-axis alignment in plots.
-  use_hel_t0_alignment_for_plots: true
-
-  # ── Peak / prominence detection ───────────────────────────────────────────────
-  # Fraction of peak velocity used as the prominence threshold.
-  prominence_factor: 0.01
-
-  # Minimum separation between detected peaks (ns).
-  peak_distance_ns: 10.0
+  min_recomp_time_ns: 1.5
 
   # ── SPADE smoothing (applied before feature detection) ───────────────────────
   spade_smooth_window: 11    # Savitzky-Golay window length (samples, must be odd)
-  polyorder: 1               # Savitzky-Golay polynomial order
-  skip_smoothing: false      # Set true to disable additional smoothing in SPADE
-
-  # ── MAD outlier filter ────────────────────────────────────────────────────────
-  # Removes outlier peak-velocity values per material / laser-energy bracket.
-  mad_filter_enabled: true
-  # Threshold for the modified Z-score.  Lower = more aggressive removal.
-  #   2.0 — aggressive    2.5 — moderate    3.0 — standard    3.5 — conservative
-  mad_filter_threshold: 2.0
-
-  # ── Velocity uncertainty cutoff ───────────────────────────────────────────────
-  # Traces whose velocity uncertainty exceeds this value (m/s) are flagged.
-  uncertainty_threshold_ms: 10.0
+  polyorder: 1                # Savitzky-Golay polynomial order
+  skip_smoothing: false       # Set true to disable additional smoothing in SPADE
 
   # ── Individual trace plots ────────────────────────────────────────────────────
   plot_individual: true         # Save one plot per trace (spall + HEL)
@@ -342,42 +365,45 @@ spade_config:
 
   # Axis limits for individual trace main panel (ns, m/s):
   x_min_main: 0.0
-  x_max_main: 120.0
+  x_max_main: 200.0
   y_min_main: 0.0
-  y_max_main: 800.0
+  y_max_main: 500.0
 
   # Axis limits for zoom panel:
   x_min_zoom: 0.0
-  x_max_zoom: 80.0
+  x_max_zoom: 70.0
   y_min_zoom: 0.0
-  y_max_zoom: 800.0
+  y_max_zoom: 400.0
 
   # Set true to compute axis limits automatically from data.
   auto_calculate_limits: false
 
-  # Duration (ns) of the zoom window in individual trace plots.
-  zoom_window_ns: 80
-
   # ── Combined velocity-traces plot ─────────────────────────────────────────────
   generate_all_velocity_plot: true
+
+  # Velocity threshold (m/s) used when aligning multiple traces to a common t=0
+  # for the combined velocity-traces plot.
+  align_velocity_threshold_ms: 10.0
+
+  # Traces whose velocity uncertainty exceeds this value (m/s) are flagged.
+  uncertainty_threshold_ms: 10.0
 
   # Whether to shade velocity uncertainty bands on the combined plot.
   include_uncert_bands: true
   uncert_alpha: 0.2           # Opacity of uncertainty shading (0–1)
 
+  # Duration (ns) of the zoom window in individual trace plots.
+  zoom_window_ns: 80
+
   # ── Bookkeeping ───────────────────────────────────────────────────────────────
   # Skip traces whose material is not found in material_properties.
   skip_unknown_material_traces: true
-
-  # Signal duration to consider; null = use full trace.
-  # Example string: "Full Signal (None)"  or a numeric ns value.
-  signal_length: "Full Signal (None)"
 
 
 # -----------------------------------------------------------------------------
 # 4. POST-PROCESSING CONFIGURATION
 #    Generate publication plots from *existing* SPADE outputs without rerunning
-#    ALPSS or SPADE.  Useful for tweaking figures after a completed analysis.
+#    ALPSS or SPADE. Useful for tweaking figures after a completed batch run.
 # -----------------------------------------------------------------------------
 post_processing_config:
 
@@ -386,22 +412,22 @@ post_processing_config:
 
   # Path to an existing SPADE output directory that contains
   # velocity_shots_summary.csv (and optionally enhanced_spall_summary.csv).
-  spade_output_dir: /path/to/spade/output
+  spade_output_dir: Users/piyushwanchoo/Documents/Post_Doc/500_micron_shots/Output
 
   # Select which plots to generate (true = generate, false = skip).
   plots:
     hel_vs_peak_velocity: true
     hel_vs_hel_strain_rate: true
-    hel_vs_laser_energy: true
     flyer_row_column_peak_velocity_heatmap: true
     flyer_row_column_pair_peak_velocity: true
     flyer_row_column_pair_peak_velocity_by_material: true
     peak_velocity_pattern_analysis: true
+    hel_vs_laser_energy: true
     shock_stress_vs_laser_energy: true
     shock_stress_vs_waveplate_angle: true
+    laser_energy_vs_waveplate_angle: true
     shock_stress_vs_peak_velocity: true
     row_column_vs_peak_shock_stress: true
-    laser_energy_vs_waveplate_angle: true
 
 
 # -----------------------------------------------------------------------------

@@ -53,8 +53,8 @@ from helix_analysis_toolbox import AnalysisThread, load_config_from_file
 _DEFAULT_CONFIG_BASENAMES = (
     # "helix_master_config.yml",
     # "helix_master_config.yaml",
-    "helix_master_config.json",
-    #"helix_master_config_batch_process.json",
+    #"helix_master_config.json",
+    "helix_master_config_batch_process.json",
 )
 
 
