@@ -51,4 +51,4 @@ They will look for `helix_master_config.json` at the repo root by default.
 | `alpss_config_default.json`, `spade_config_default.json` | Default per-tool configs |
 | `requirements.txt`, `setup.py`, `run_helix_toolbox.bat` | Install / launch |
 | `README.md`, `LICENSE`, `CHANGELOG.md` | Project metadata |
-| `HEL_DETECTION_ALGORITHM.md`, `SPALL_DETECTION_ALGORITHM.md`, `SPALL_DETECTION_ALGORITHM_5SEGMENT_ONLY.md` | Algorithm references linked from README |
+| `HEL_DETECTION_ALGORITHM.md` | Algorithm reference linked from README (spall detection is documented in the main README) |

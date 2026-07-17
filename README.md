@@ -66,10 +66,16 @@ HELIX Toolbox integrates ALPSS (Automated Laser Photonic Doppler Velocimetry Sig
 
 Both modes share identical analysis logic and produce the same outputs, from raw PDV signals through to complete spall strength, strain rate, HEL, and shock-stress analysis with full uncertainty quantification.
 
-**Latest Updates:**
+**Latest Updates (v2.1.0):**
+- **Batch processing mode**: process a parent directory of per-shot subfolders in one CLI run (`batch_mode` + `subfolder_pattern` in `cli_settings`; see `helix_master_config_batch_process.json`)
+- **Batch summary plotting**: `batch_summary_plot.py` aggregates spall and HEL results across all subfolders of a batch run into combined strength-vs-strain-rate figures
+- **ALPSS noise-fraction filter**: `noise_filter_enabled` / `noise_filter_threshold` replace high-noise velocity samples with linear interpolation before plotting and saving
+- **Consolidated data summary**: results now save to `<prefix>-Data_Summary.csv` (IGSN-prefixed from the parent folder of the output directory), replacing `enhanced_spall_summary.csv`
+- **Run traceability**: every run saves a `<prefix>-Run_Config.json` next to the summary CSV recording all ALPSS/SPADE parameters and material properties used
+- **First-local-minimum spall pullback (P3) detection**: prominence-based detection of the true pullback dip; traces with no qualifying valley are classified DNS
 - **RDP + Linear Hybrid HEL detection**: Robust elastic-plastic transition detection using Ramer–Douglas–Peucker simplification combined with linear regression on raw segments (see [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md))
-- **RDP topology + 5-segment spall analysis**: Geometric "checkmark" detection with 5-segment linear fitting for accurate spall strength and strain rate (see [SPALL_DETECTION_ALGORITHM.md](SPALL_DETECTION_ALGORITHM.md))
-- **5-Segment-only mode**: Opt out of RDP topology checks via `"spall_detection_method": "5-segment"` (see [SPALL_DETECTION_ALGORITHM_5SEGMENT_ONLY.md](SPALL_DETECTION_ALGORITHM_5SEGMENT_ONLY.md))
+- **RDP topology + 5-segment spall analysis**: Geometric "checkmark" detection with 5-segment linear fitting for accurate spall strength and strain rate
+- **5-Segment-only mode**: Opt out of RDP topology checks via `"spall_detection_method": "5-segment"`
 - **Hybrid analysis model**: `analysis_model: "hybrid"` uses `max_min` for spall strength and 5-segment for strain rate
 - **Paper-quality plotting suite**: `helix_paper_plots.py` (library, used at runtime by the GUI) plus standalone post-processing scripts in [`supplementary/paper_plots/`](supplementary/paper_plots/)
 - **Robust IQ start-time detection**: New `use_robust_iq_detection` pipeline with configurable smoothing and persistence windows
@@ -103,7 +109,8 @@ Both modes share identical analysis logic and produce the same outputs, from raw
 - **Uncertainty Propagation**: Complete error analysis throughout pipeline
 - **MAD Filter**: Statistical outlier removal for peak velocities (per material / laser-energy bracket)
 - **HEL Detection**: RDP + Linear Hybrid detection of the Hugoniot Elastic Limit (see [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md))
-- **Spall Detection**: RDP topology + 5-segment linear analysis with optional 5-segment-only mode (see [SPALL_DETECTION_ALGORITHM.md](SPALL_DETECTION_ALGORITHM.md))
+- **Spall Detection**: RDP topology + 5-segment linear analysis with optional 5-segment-only mode (see [Spall Detection](#spall-detection))
+- **Noise-Fraction Filter**: Optional ALPSS filter that replaces velocity samples whose instantaneous noise fraction exceeds a threshold with linear interpolation
 
 ### 📈 **Rich Output Generation**
 - Velocity traces with uncertainty bands (aggregate and per-material)
@@ -394,6 +401,36 @@ python helix_cli_runner.py --config ./helix_master_config.yml
 --input-dir /path/to/files --input-pattern "C1--*.csv"
 ```
 
+### Batch Mode (Multiple Shot Folders in One Run)
+
+When your data is organised as one subfolder per shot group, the CLI can process all of them in a single run. Enable it in the master config's `cli_settings` (see `helix_master_config_batch_process.json` for a complete example):
+
+```json
+"cli_settings": {
+    "batch_mode": true,
+    "input_dir": "/path/to/parent_folder",
+    "subfolder_pattern": "*",
+    "output_subdir_name": "Output",
+    "combined_output_dir": null,
+    ...
+}
+```
+
+- `batch_mode`: set `true` to treat `input_dir` as a parent folder containing one subfolder per shot group
+- `subfolder_pattern`: glob to select which subfolders to process (default `*`)
+- `output_subdir_name`: name of the output folder created inside each subfolder (default `Output`)
+- `combined_output_dir`: optionally route all outputs to one shared directory instead of per-subfolder outputs
+
+Each subfolder gets its own full analysis (ALPSS + SPADE) and its own `<prefix>-Data_Summary.csv` / `<prefix>-Run_Config.json`. A pass/fail summary for all subfolders is printed at the end.
+
+After a batch run, aggregate results across all subfolders with:
+
+```bash
+python batch_summary_plot.py
+```
+
+which reads `helix_master_config_batch_process.json` and produces combined Spall Strength and HEL Strength vs strain-rate figures, colour-coded by material.
+
 ### Command-Line Arguments
 
 **Master Config Mode** (when using `--config`):
@@ -468,6 +505,8 @@ The master config file (`helix_master_config.json`) contains three main sections
         "smoothing_type": "savgol",
         "smoothing_window_ns": 6.0,
         "savgol_polyorder": 3,
+        "noise_filter_enabled": true,
+        "noise_filter_threshold": 1,
         "C0": 3950.0,
         "density": 8960.0
     },
@@ -515,6 +554,8 @@ The master config file (`helix_master_config.json`) contains three main sections
 The shipped `helix_master_config.json` contains a full list of materials including
 `Copper`, `Zinc`, `Aluminum`, `Titanium`, `Ti_Grade2`, `CP-Ti`, `Ti-6Al-4V`, `Ti6Al4V`,
 `Vanadium`, and `Magnesium` aliases.
+
+**Noise-fraction filter** (`alpss_config`): when `noise_filter_enabled` is `true`, velocity samples whose instantaneous noise fraction exceeds `noise_filter_threshold` are replaced with linear interpolation from the surrounding valid samples, before plotting and CSV saving. This suppresses spurious velocity spikes in low-signal regions without altering clean portions of the trace.
 
 ### Using Configuration Files in GUI
 
@@ -631,14 +672,14 @@ The only paper-plot module that stays at the repo root is `helix_paper_plots.py`
 
 ### `supplementary/paper_plots/generate_paper_plots_standalone.py`
 
-Generates the full set of paper figures from `enhanced_spall_summary.csv` (and `velocity_shots_summary.csv` if available). It reads the output directory from `helix_master_config.json` by default.
+Generates the full set of paper figures from the consolidated data summary CSV (`<prefix>-Data_Summary.csv`; and `velocity_shots_summary.csv` if available). It reads the output directory from `helix_master_config.json` by default.
 
 ```bash
 # Uses helix_master_config.json for the output path
 python supplementary/paper_plots/generate_paper_plots_standalone.py
 
 # Or pass an explicit summary CSV
-python supplementary/paper_plots/generate_paper_plots_standalone.py /path/to/SPADE_analysis/enhanced_spall_summary.csv
+python supplementary/paper_plots/generate_paper_plots_standalone.py /path/to/SPADE_analysis/JHAMAL00016-004-Data_Summary.csv
 
 # With a custom config
 python supplementary/paper_plots/generate_paper_plots_standalone.py /path/to/summary.csv /path/to/custom_config.json
@@ -659,7 +700,7 @@ Produces velocity-trace plots grouped by material with line colour mapped to las
 
 ```bash
 python supplementary/paper_plots/plot_velocity_traces_by_laser_energy.py \
-    /path/to/SPADE_analysis/enhanced_spall_summary.csv \
+    /path/to/SPADE_analysis/JHAMAL00016-004-Data_Summary.csv \
     --output-dir /path/to/SPADE_analysis \
     --plot-3d
 
@@ -837,8 +878,8 @@ All SPADE outputs are written to `<output_dir>/SPADE_analysis/`.
 | File | Description |
 |------|-------------|
 | `velocity_shots_summary.csv` | Complete velocity shots analysis summary (main output) |
-| `enhanced_spall_summary.csv` | Enhanced spall summary with DNS classification / processing status |
-| `spall_summary.csv` | Legacy spall analysis summary (if spall analysis enabled) |
+| `<prefix>-Data_Summary.csv` | Consolidated summary with spall, HEL, and ALPSS results plus DNS classification. `<prefix>` is derived from the parent folder of the output directory (e.g. `JHAMAL00016-004-Data_Summary.csv`); plain `Data_Summary.csv` if the parent name is generic. Replaces the former `enhanced_spall_summary.csv` |
+| `<prefix>-Run_Config.json` | Snapshot of every ALPSS/SPADE parameter, material property, input file, and analysis mode used for the run — saved automatically for traceability |
 | `all_velocity_traces.png` | Combined velocity traces plot |
 | `shock_stress_vs_laser_energy_by_material.png` | Shock stress vs laser energy |
 | `shock_stress_vs_waveplate_angle_by_material.png` | Shock stress vs waveplate angle |
@@ -957,10 +998,6 @@ Per-trace HEL detection plots are saved to the `SPADE_analysis/HEL_plots/` subfo
 
 Spall strength and strain rate are extracted from the characteristic "checkmark" signature (**Plateau → Pullback → Rebound**) using an RDP topology detector combined with 5-segment linear analysis.
 
-> **Full algorithm references:**
-> - [SPALL_DETECTION_ALGORITHM.md](SPALL_DETECTION_ALGORITHM.md) — RDP topology + 5-segment (default)
-> - [SPALL_DETECTION_ALGORITHM_5SEGMENT_ONLY.md](SPALL_DETECTION_ALGORITHM_5SEGMENT_ONLY.md) — 5-segment only mode
-
 ### Detection Methods
 
 **RDP Topology + 5-Segment (default)**:
@@ -972,6 +1009,10 @@ Spall strength and strain rate are extracted from the characteristic "checkmark"
 **5-Segment Only** (set `"spall_detection_method": "5-segment"`):
 1. Skip RDP topology checks.
 2. Enforce a horizontal plateau constraint and fit 5 linear segments directly.
+
+### Pullback Minimum (P3) Detection
+
+The pullback minimum is located as the **first local minimum after the plateau**, found by prominence-based peak detection on the inverted, smoothed post-plateau signal. The physical spall pullback is the first velocity dip after the shock peak — secondary reverberations can produce deeper but later minima that are not the primary spall signal, so a simple global minimum is not used. A candidate valley must clear a prominence threshold of 1% of the plateau mean velocity (floor 2 m/s); if no valley qualifies, the trace is classified **DNS** (Did Not Spall) rather than substituting a spurious point.
 
 ### Analysis Models (`analysis_model`)
 
@@ -1010,7 +1051,7 @@ In `spade_config`:
 
 ### Output
 
-Spall results appear in `velocity_shots_summary.csv` and `enhanced_spall_summary.csv`:
+Spall results appear in `velocity_shots_summary.csv` and `<prefix>-Data_Summary.csv`:
 - `Spall_Strength_GPa`, `Spall_Strength_Uncertainty_GPa`
 - `Strain_Rate_s^-1`, `Strain_Rate_Uncertainty_s^-1`
 - `Peak_Velocity_ms`, `Min_Velocity_ms` (post-peak valley)
@@ -1067,8 +1108,7 @@ Detailed step-by-step algorithm documentation lives alongside this README:
 | Document | Description |
 |----------|-------------|
 | [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md) | Full RDP + Linear Hybrid HEL detection pipeline: time-zero alignment, uncertainty filtering, RDP simplification, raw-segment linear regression, physics validation |
-| [SPALL_DETECTION_ALGORITHM.md](SPALL_DETECTION_ALGORITHM.md) | RDP topology + 5-segment linear analysis for spall (default flow) |
-| [SPALL_DETECTION_ALGORITHM_5SEGMENT_ONLY.md](SPALL_DETECTION_ALGORITHM_5SEGMENT_ONLY.md) | Reduced flow when `"spall_detection_method": "5-segment"` is set (no RDP) |
+| [Spall Detection](#spall-detection) (this README) | RDP topology + 5-segment linear analysis for spall, including the 5-segment-only mode |
 | [supplementary/references/SPALL_STRENGTH_CALCULATION.tex](supplementary/references/SPALL_STRENGTH_CALCULATION.tex) | Derivation and uncertainty propagation for the acoustic spall-strength formula |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and feature changes |
 | [supplementary/README.md](supplementary/README.md) | Description of optional / non-runtime files |
