@@ -222,8 +222,8 @@ spade_config:
   experiment_hel_detection: true     # Run HEL (Hugoniot Elastic Limit) detection
 
   # ── Material defaults (overridden per-trace from material_properties section) ──
-  density: 8960.0          # Density (kg/m³)
-  acoustic_velocity: 3950.0 # Bulk wave speed (m/s) used for spall strength
+  density:  1         # Density (kg/m³)
+  acoustic_velocity: 1 # Bulk wave speed (m/s) used for spall strength
 
   # ── Spall analysis model ─────────────────────────────────────────────────────
   # spall_detection_method controls the spall-detection algorithm:
@@ -256,11 +256,11 @@ spade_config:
 
   # Minimum rebound / pullback ratio: rebound must recover at least this
   # fraction of the pullback depth.  0.03 = 3%.
-  min_recomp_ratio: 0.015
+  min_recomp_ratio: 0.025
 
   # Minimum velocity ratio: rebound peak must exceed valley by this factor.
   # 1.1 means the rebound must be at least 10% above the valley.
-  min_recomp_velocity_ratio: 1.015
+  min_recomp_velocity_ratio: 1.025
 
   # Minimum sustained duration of the rebound (ns).
   min_recomp_time_ns: 2.5
@@ -321,14 +321,14 @@ spade_config:
   mad_filter_enabled: true
   # Threshold for the modified Z-score.  Lower = more aggressive removal.
   #   2.0 — aggressive    2.5 — moderate    3.0 — standard    3.5 — conservative
-  mad_filter_threshold: 2.0
+  mad_filter_threshold: 3.0
 
   # ── Velocity uncertainty cutoff ───────────────────────────────────────────────
   # Traces whose velocity uncertainty exceeds this value (m/s) are flagged.
   uncertainty_threshold_ms: 10.0
 
   # ── Individual trace plots ────────────────────────────────────────────────────
-  plot_individual: true         # Save one plot per trace (spall + HEL)
+  plot_individual: false         # Save one plot per trace (spall + HEL)
   save_summary: true            # Save velocity_shots_summary.csv
   show_plots: false             # Show interactive plots (set true for debugging)
 
@@ -452,28 +452,28 @@ material_properties:
     C0: 5240.0
     C_L: 6000.0
 
-  Ti:  # CP-Titanium / Grade 2
-    density: 4510.0
-    bulk_wave_speed: 5020.0
-    C0: 5020.0
+  Ti:  # CP-Titanium / Grade 2 (ISBN 0-520-04008-2)
+    density: 4507.0
+    bulk_wave_speed: 4726.0
+    C0: 4726.0
     C_L: 6070.0
 
   Titanium:
-    density: 4510.0
-    bulk_wave_speed: 5020.0
-    C0: 5020.0
+    density: 4507.0
+    bulk_wave_speed: 4726.0
+    C0: 4726.0
     C_L: 6070.0
 
   Ti_Grade2:
-    density: 4510.0
-    bulk_wave_speed: 5020.0
-    C0: 5020.0
+    density: 4507.0
+    bulk_wave_speed: 4726.0
+    C0: 4726.0
     C_L: 6070.0
 
   CP-Ti:
-    density: 4510.0
-    bulk_wave_speed: 5020.0
-    C0: 5020.0
+    density: 4507.0
+    bulk_wave_speed: 4726.0
+    C0: 4726.0
     C_L: 6070.0
 
   Ti64:  # Ti-6Al-4V

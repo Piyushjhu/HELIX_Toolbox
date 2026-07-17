@@ -51,10 +51,10 @@ from helix_analysis_toolbox import AnalysisThread, load_config_from_file
 # to the repo. YAML takes precedence over JSON so users can migrate simply by
 # dropping a commented .yml next to the existing .json.
 _DEFAULT_CONFIG_BASENAMES = (
-    "helix_master_config.yml",
+    #"helix_master_config.yml",
     # "helix_master_config.yaml",
     #"helix_master_config.json",
-    #"helix_master_config_batch_process.json",
+    "helix_master_config_batch_process.yml",
 )
 
 

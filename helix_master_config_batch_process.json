@@ -192,27 +192,27 @@
       "C_L": 6000.0
     },
     "Ti": {
-      "density": 4510.0,
-      "bulk_wave_speed": 5020.0,
-      "C0": 5020.0,
+      "density": 4507.0,
+      "bulk_wave_speed": 4726.0,
+      "C0": 4726.0,
       "C_L": 6070.0
     },
     "Titanium": {
-      "density": 4510.0,
-      "bulk_wave_speed": 5020.0,
-      "C0": 5020.0,
+      "density": 4507.0,
+      "bulk_wave_speed": 4726.0,
+      "C0": 4726.0,
       "C_L": 6070.0
     },
     "Ti_Grade2": {
-      "density": 4510.0,
-      "bulk_wave_speed": 5020.0,
-      "C0": 5020.0,
+      "density": 4507.0,
+      "bulk_wave_speed": 4726.0,
+      "C0": 4726.0,
       "C_L": 6070.0
     },
     "CP-Ti": {
-      "density": 4510.0,
-      "bulk_wave_speed": 5020.0,
-      "C0": 5020.0,
+      "density": 4507.0,
+      "bulk_wave_speed": 4726.0,
+      "C0": 4726.0,
       "C_L": 6070.0
     },
     "Ti64": {

@@ -115,23 +115,23 @@ alpss_config:
   time_to_skip: 0.0
 
   # Duration of signal to extract starting from the detected start time (s).
-  # 5e-6 = 5 µs.
-  time_to_take: 5.0e-06
+  # 6e-6 = 6 µs.
+  time_to_take: 6.0e-06
 
   # Time window before the detected IQ start to include in the output (s).
-  t_before: 5.0e-08
+  t_before: 2.0e-08
 
   # Time window after the detected IQ start to include in the output (s).
-  t_after: 1.0e-07
+  t_after: 2.0e-07
 
   # ── IQ (signal-onset) detection ─────────────────────────────────────────────
   # IQ detection threshold relative to the peak signal amplitude.
   # Lower values → earlier start detected; raise if false triggers occur.
-  iq_threshold_factor: 0.85
+  iq_threshold_factor: 0.8
 
   # ── Frequency / spectrogram ─────────────────────────────────────────────────
-  freq_min: 1250000000.0    # Lower edge of the frequency band of interest (Hz)
-  freq_max: 3500000000.0    # Upper edge of the frequency band of interest (Hz)
+  freq_min: 1200000000.0    # Lower edge of the frequency band of interest (Hz)
+  freq_max: 3300000000.0    # Upper edge of the frequency band of interest (Hz)
 
   # Oscilloscope sample rate (samples/s). 128e9 = 128 GS/s.
   # FALLBACK ONLY: the true sample rate is auto-detected from each data file's
@@ -165,7 +165,7 @@ alpss_config:
 
   # Window length in nanoseconds (takes precedence over smoothing_window if set).
   # The code converts this to samples using sample_rate. Recommended: 5–10 ns.
-  smoothing_window_ns: 8.0
+  smoothing_window_ns: 6.0
 
   # Window length in samples (used only when smoothing_window_ns is null).
   smoothing_window: null
@@ -245,8 +245,8 @@ spade_config:
   experiment_hel_detection: true     # Run HEL (Hugoniot Elastic Limit) detection
 
   # ── Material defaults (overridden per-trace from material_properties section) ──
-  density: 8960.0           # Density (kg/m³)
-  acoustic_velocity: 3950.0 # Bulk wave speed (m/s) used for spall strength
+  density: 1           # Density (kg/m³)
+  acoustic_velocity: 1 # Bulk wave speed (m/s) used for spall strength
 
   # spall_detection_method controls the spall-detection algorithm:
   #   rdp            — RDP topology check (checkmark shape) + 5-segment fitting
@@ -262,14 +262,14 @@ spade_config:
   hel_angle_threshold_deg: 86.0
 
   # Minimum number of consecutive raw-data points that must lie in the plateau.
-  hel_detection_min_points: 5
+  hel_detection_min_points: 10
 
   # Minimum plateau velocity to accept as a valid HEL (m/s).
   # Increase if spurious low-velocity detections occur.
-  minimum_HEL_velocity_expected: 25.0
+  minimum_HEL_velocity_expected: 40.0
 
   # RDP epsilon (m/s) for knee-point detection in the HEL signal.
-  hel_rdp_epsilon: 0.5
+  hel_rdp_epsilon: 1.25
 
   # Required fractional drop from rise slope to plateau slope.
   # 0.9 → plateau slope must be < 10% of the rise slope.
@@ -298,7 +298,7 @@ spade_config:
 
   # ── Peak / prominence detection ───────────────────────────────────────────────
   # Fraction of peak velocity used as the prominence threshold.
-  prominence_factor: 0.02
+  prominence_factor: 0.01
 
   # Minimum separation between detected peaks (ns).
   peak_distance_ns: 10.0
@@ -306,7 +306,7 @@ spade_config:
   # ── Spall analysis window (ns, relative to aligned t=0) ──────────────────────
   # Only data inside this window is searched for the spall signature.
   spall_start_time_ns: 0.0
-  spall_end_time_ns: 60.0
+  spall_end_time_ns: 80.0
 
   # Velocity threshold (m/s) used to identify shock arrival (t=0 alignment).
   # Decrease if weak shocks are being missed; increase if noise triggers falsely.
@@ -320,18 +320,18 @@ spade_config:
   # These thresholds prevent false spall detections from post-shock ringing.
   #
   # Minimum pullback depth (m/s): ignores candidates shallower than this.
-  min_pullback_velocity: 20.0
+  min_pullback_velocity: 10.0
 
   # Minimum rebound / pullback ratio: rebound must recover at least this
   # fraction of the pullback depth. 0.03 = 3%.
-  min_recomp_ratio: 0.03
+  min_recomp_ratio: 0.025
 
   # Minimum velocity ratio: rebound peak must exceed valley by this factor.
-  # 1.05 means the rebound must be at least 5% above the valley.
-  min_recomp_velocity_ratio: 1.05
+  # 1.1 means the rebound must be at least 10% above the valley.
+  min_recomp_velocity_ratio: 1.025
 
   # Minimum sustained duration of the rebound (ns).
-  min_recomp_time_ns: 1.5
+  min_recomp_time_ns: 2.5
 
   # Smoothing window (ns, real time — not sample count) used to suppress noise
   # before searching for the pullback minimum (P3). Scales automatically with
@@ -345,21 +345,21 @@ spade_config:
   skip_smoothing: false       # Set true to disable additional smoothing in SPADE
 
   # ── Individual trace plots ────────────────────────────────────────────────────
-  plot_individual: true         # Save one plot per trace (spall + HEL)
+  plot_individual: false         # Save one plot per trace (spall + HEL)
   save_summary: true            # Save velocity_shots_summary.csv
   show_plots: false             # Show interactive plots (set true for debugging)
 
   # Axis limits for individual trace main panel (ns, m/s):
   x_min_main: 0.0
-  x_max_main: 200.0
+  x_max_main: 120.0
   y_min_main: 0.0
-  y_max_main: 500.0
+  y_max_main: 800.0
 
   # Axis limits for zoom panel:
   x_min_zoom: 0.0
-  x_max_zoom: 70.0
+  x_max_zoom: 80.0
   y_min_zoom: 0.0
-  y_max_zoom: 400.0
+  y_max_zoom: 800.0
 
   # Set true to compute axis limits automatically from data.
   auto_calculate_limits: false
@@ -472,28 +472,28 @@ material_properties:
     C0: 5240.0
     C_L: 6000.0
 
-  Ti:  # CP-Titanium / Grade 2
-    density: 4510.0
-    bulk_wave_speed: 5020.0
-    C0: 5020.0
+  Ti:  # CP-Titanium / Grade 2 (ISBN 0-520-04008-2)
+    density: 4507.0
+    bulk_wave_speed: 4726.0
+    C0: 4726.0
     C_L: 6070.0
 
   Titanium:
-    density: 4510.0
-    bulk_wave_speed: 5020.0
-    C0: 5020.0
+    density: 4507.0
+    bulk_wave_speed: 4726.0
+    C0: 4726.0
     C_L: 6070.0
 
   Ti_Grade2:
-    density: 4510.0
-    bulk_wave_speed: 5020.0
-    C0: 5020.0
+    density: 4507.0
+    bulk_wave_speed: 4726.0
+    C0: 4726.0
     C_L: 6070.0
 
   CP-Ti:
-    density: 4510.0
-    bulk_wave_speed: 5020.0
-    C0: 5020.0
+    density: 4507.0
+    bulk_wave_speed: 4726.0
+    C0: 4726.0
     C_L: 6070.0
 
   Ti64:  # Ti-6Al-4V
