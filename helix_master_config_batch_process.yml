@@ -551,3 +551,24 @@ material_properties:
     bulk_wave_speed: 4490.0
     C0: 4490.0
     C_L: 5770.0
+
+
+# -----------------------------------------------------------------------------
+# 6. IGSN → MATERIAL MAPPING
+#    Fallback used when a trace's parameter file has no usable
+#    'Sample material' column: the trace's Sample_IGSN (or, failing that, the
+#    IGSN prefix of its filename) is matched against the keys below and the
+#    mapped material name is then looked up in material_properties as usual.
+#
+#    Keys may be full IGSNs (JHAMAL00016-004) or parent-IGSN prefixes
+#    (JHAMAL00016, which matches every child like JHAMAL00016-004,
+#    JHAMAL00016-005, …). The longest matching key wins, so a full-IGSN entry
+#    overrides its parent prefix. Matching is case-insensitive.
+#
+#    The explicit 'Sample material' column in a parameter file always takes
+#    priority over this mapping.
+# -----------------------------------------------------------------------------
+igsn_material_map:
+
+  # All JHAMAL00016 children (JHAMAL00016-004, -005, …) are CP-Titanium.
+  JHAMAL00016: Ti

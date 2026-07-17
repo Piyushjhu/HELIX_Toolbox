@@ -413,7 +413,8 @@ class AnalysisThread(QThread):
     spade_auto_mode=True,
     spade_input_files=None,
      analysis_mode="both",
-     material_properties=None):
+     material_properties=None,
+     igsn_material_map=None):
         super().__init__()
         self.alpss_params = alpss_params
         self.spade_params = spade_params
@@ -424,6 +425,7 @@ class AnalysisThread(QThread):
         self.spade_input_files = spade_input_files
         self.analysis_mode = analysis_mode  # "alpss_only", "spade_only", or "both"
         self.material_properties = material_properties or {}  # Material properties from config
+        self.igsn_material_map = igsn_material_map or {}  # IGSN → material fallback mapping from config
 
         # Initialize trace counting for summary
         self.total_input_traces = 0
@@ -467,6 +469,7 @@ class AnalysisThread(QThread):
                 'alpss_params': self.alpss_params,
                 'spade_params': self.spade_params,
                 'material_properties': self.material_properties,
+                'igsn_material_map': self.igsn_material_map,
             }
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config_snapshot, f, indent=2, default=str)
@@ -589,6 +592,73 @@ class AnalysisThread(QThread):
                 return self.param_data[key]
 
         return {}
+
+    def get_material_from_igsn(self, base_name, matched_param=None):
+        """
+        Resolve a material name from the config igsn_material_map section.
+
+        The IGSN is taken from the parameter data ('Sample_IGSN' column) when
+        available, otherwise from the start of the filename
+        (e.g. 'JHAMAL00016-004_2026-04-23_...' → matches 'JHAMAL00016-004').
+        Map keys may be full IGSNs or parent-IGSN prefixes: the key
+        'JHAMAL00016' matches 'JHAMAL00016-004', 'JHAMAL00016-005', etc.
+        Longest matching key wins; matching is case-insensitive.
+
+        Returns:
+            Mapped material name, or None if no match.
+        """
+        if not self.igsn_material_map:
+            return None
+
+        # Collect candidate IGSN strings for this trace
+        candidates = []
+        if matched_param:
+            for key in ('Sample_IGSN', 'Sample IGSN', 'IGSN'):
+                val = str(matched_param.get(key, '')).strip()
+                if val and val.lower() not in ('nan', 'none'):
+                    candidates.append(val)
+        if base_name:
+            candidates.append(str(base_name).strip())
+
+        # Longest key first so a full IGSN beats its parent prefix
+        for map_key in sorted(self.igsn_material_map, key=lambda k: len(str(k)), reverse=True):
+            key_lower = str(map_key).strip().lower()
+            if not key_lower:
+                continue
+            for candidate in candidates:
+                if candidate.lower().startswith(key_lower):
+                    return str(self.igsn_material_map[map_key]).strip()
+        return None
+
+    def resolve_sample_material(self, base_name, matched_param=None):
+        """
+        Resolve the sample material for a trace.
+
+        Priority:
+        1. 'Sample material' column in the parameter file (plus common variants)
+        2. igsn_material_map from the config (IGSN → material fallback)
+        3. 'Unknown'
+        """
+        if matched_param:
+            if 'Sample material' in matched_param:
+                material_val = str(matched_param['Sample material']).strip()
+                if material_val and material_val.lower() not in ['nan', 'none', '']:
+                    return material_val
+            else:
+                # FALLBACK: Try other column-name variations
+                for key in ['Sample Material', 'Sample_Material', 'Material', 'material']:
+                    if key in matched_param:
+                        material_val = str(matched_param[key]).strip()
+                        if material_val and material_val.lower() not in ['nan', 'none', '']:
+                            return material_val
+
+        igsn_material = self.get_material_from_igsn(base_name, matched_param)
+        if igsn_material:
+            self.progress_signal.emit(
+                f"  Material for {base_name} resolved via IGSN map: {igsn_material}")
+            return igsn_material
+
+        return 'Unknown'
 
     def get_material_properties_from_config(self, material_name, default_density=None, default_acoustic_velocity=None):
         """
@@ -2036,26 +2106,10 @@ class AnalysisThread(QThread):
                                             break
                                     
                                     # Get material properties
-                                    # Priority: 'Sample material' column is the primary source (target material being tested)
-                                    sample_material = 'Unknown'
+                                    # Priority: 'Sample material' column, then IGSN map fallback
                                     matched_param = self.get_param_data_for_file(base_name)
-                                    if matched_param:
-                                        # PRIMARY: Use 'Sample material' column (standardized name)
-                                        if 'Sample material' in matched_param:
-                                            material_val = str(matched_param['Sample material']).strip()
-                                            if material_val and material_val.lower() not in ['nan', 'none', '']:
-                                                sample_material = material_val
-                                            else:
-                                                self.progress_signal.emit(f"  ⚠ 'Sample material' column exists but is empty/NaN for {base_name}")
-                                        else:
-                                            # FALLBACK: Try other variations
-                                            for key in ['Sample Material', 'Sample_Material', 'Material', 'material']:
-                                                if key in matched_param:
-                                                    material_val = str(matched_param[key]).strip()
-                                                    if material_val and material_val.lower() not in ['nan', 'none', '']:
-                                                        sample_material = material_val
-                                                        break
-                                    
+                                    sample_material = self.resolve_sample_material(base_name, matched_param)
+
                                     mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)
                                     density = matched_param.get('Density_kg_m3', mat_props['density']) if matched_param else mat_props['density']
                                     acoustic_velocity = matched_param.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed']) if matched_param else mat_props['bulk_wave_speed']
@@ -2278,26 +2332,10 @@ class AnalysisThread(QThread):
                                             break
                                     
                                     # Get material properties
-                                    # Priority: 'Sample material' column is the primary source (target material being tested)
-                                    sample_material = 'Unknown'
+                                    # Priority: 'Sample material' column, then IGSN map fallback
                                     matched_param = self.get_param_data_for_file(base_name)
-                                    if matched_param:
-                                        # PRIMARY: Use 'Sample material' column (standardized name)
-                                        if 'Sample material' in matched_param:
-                                            material_val = str(matched_param['Sample material']).strip()
-                                            if material_val and material_val.lower() not in ['nan', 'none', '']:
-                                                sample_material = material_val
-                                            else:
-                                                self.progress_signal.emit(f"  ⚠ 'Sample material' column exists but is empty/NaN for {base_name}")
-                                        else:
-                                            # FALLBACK: Try other variations
-                                            for key in ['Sample Material', 'Sample_Material', 'Material', 'material']:
-                                                if key in matched_param:
-                                                    material_val = str(matched_param[key]).strip()
-                                                    if material_val and material_val.lower() not in ['nan', 'none', '']:
-                                                        sample_material = material_val
-                                                        break
-                                    
+                                    sample_material = self.resolve_sample_material(base_name, matched_param)
+
                                     mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)
                                     density = matched_param.get('Density_kg_m3', mat_props['density']) if matched_param else mat_props['density']
                                     acoustic_velocity = matched_param.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed']) if matched_param else mat_props['bulk_wave_speed']
@@ -3152,7 +3190,7 @@ class AnalysisThread(QThread):
                                         window_size += 1
                                     gradient_smooth = uniform_filter1d(gradient, size=window_size, mode='nearest')
                                     angles_deg = np.degrees(np.arctan(np.abs(gradient_smooth)))
-                                sample_material = param_info.get('Sample material', 'Unknown')
+                                sample_material = self.resolve_sample_material(base_name, param_info)
                                 # Get material properties from config first, then database
                                 mat_props = self.get_material_properties_from_config(sample_material)
                                 density = param_info.get('Density_kg_m3', mat_props['density'])
@@ -9472,7 +9510,14 @@ class AnalysisThread(QThread):
                         else:
                             # Debug: show what columns are available in param_info
                             self.progress_signal.emit(f"  ⚠ param_info found but no material extracted. Available columns: {list(param_info.keys())}")
-                    
+
+                    # If still Unknown, fall back to the config igsn_material_map
+                    if material == 'Unknown':
+                        igsn_material = self.get_material_from_igsn(base_filename, param_info)
+                        if igsn_material:
+                            material = igsn_material
+                            self.progress_signal.emit(f"  ✓ Found material '{material}' via IGSN map")
+
                     self.progress_signal.emit(f"File: {base_filename} -> Pattern: {pdv_filename_pattern} -> Material: {material}")
                     
                     trace_data.append({
@@ -10261,6 +10306,14 @@ class AnalysisThread(QThread):
                 if existing_material and existing_material.lower() not in ['nan', 'none', 'unknown', '']:
                     enhanced_row['Material'] = existing_material
                     sample_material = existing_material
+
+            # If still Unknown, fall back to the config igsn_material_map
+            if sample_material == 'Unknown':
+                igsn_material = self.get_material_from_igsn(base_name, param_info)
+                if igsn_material:
+                    sample_material = igsn_material
+                    enhanced_row['Material'] = sample_material
+                    self.progress_signal.emit(f"  ✓ Material '{sample_material}' resolved via IGSN map for {base_name}")
 
             # Try to find corresponding ALPSS results file for additional data
             # Search both current output_dir and standard ALPSS output location
@@ -11128,11 +11181,9 @@ class AnalysisThread(QThread):
                                 base_name = base_name[:-len(suffix)]
                                 break
                     
-                        # Try to get material from parameter file using helper function
-                        sample_material = 'Unknown'
+                        # Try to get material from parameter file, falling back to the IGSN map
                         matched_param = self.get_param_data_for_file(base_name)
-                        if matched_param:
-                            sample_material = matched_param.get('Sample material', 'Unknown')
+                        sample_material = self.resolve_sample_material(base_name, matched_param)
                     
                         # Get material-specific properties from config first, then database
                         mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)

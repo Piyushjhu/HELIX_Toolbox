@@ -5,6 +5,11 @@ All notable changes to HELIX Toolbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **IGSN → Material Mapping**: New `igsn_material_map` section in the master config files maps IGSNs (or parent-IGSN prefixes like `JHAMAL00016`) to material names. Used as a fallback when a trace's parameter file has no usable `Sample material` column — the trace's `Sample_IGSN` (or the IGSN prefix of its filename) is matched against the map (longest key wins, case-insensitive) and the resolved material is then looked up in `material_properties` as usual. Material resolution across the pipeline (spall analysis, HEL detection, Data_Summary enhancement, combined velocity plots) is consolidated into a shared `resolve_sample_material()` helper, and the map is recorded in the per-run `Run_Config.json` snapshot
+
 ## [2.1.0] - 2026-07-16
 
 ### Added
