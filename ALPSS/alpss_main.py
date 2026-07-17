@@ -33,29 +33,22 @@ def gaussian_window(window_length, std):
     return np.exp(-0.5 * (n / std) ** 2)
 
 
-def _resolve_plot_saving_flags(inputs):
-    """Derive normalized plot-saving flags from legacy/new config values."""
-    dropdown_value_raw = inputs.get("save_all_plots", "no")
-    dropdown_value = str(dropdown_value_raw).strip().lower() if dropdown_value_raw is not None else "no"
+def _resolve_plot_location(inputs):
+    """Return True if per-file plots should go in a <file>_plots/ subfolder
+    instead of the main output directory.
 
-    save_all_raw = inputs.get("save_all_plots_enabled", dropdown_value_raw)
-    save_all_value = str(save_all_raw).strip().lower() if save_all_raw is not None else "no"
-
-    if save_all_value in ("subfolder", "main_dir", "yes", "true", "1"):
-        save_all_flag = "yes"
-    else:
-        save_all_flag = "no"
-
+    This is purely a "where" setting derived from save_all_plots / save_plots_in_subfolder.
+    It does NOT gate whether any plot gets saved -- each save_*_plot flag
+    (save_combined_plot, save_iq_start_time_plot) independently controls that.
+    """
     save_subfolder_raw = inputs.get("save_plots_in_subfolder")
     if save_subfolder_raw is None:
-        save_in_subfolder = dropdown_value == "subfolder"
-    else:
-        if isinstance(save_subfolder_raw, str):
-            save_in_subfolder = save_subfolder_raw.strip().lower() in ("1", "true", "yes", "subfolder")
-        else:
-            save_in_subfolder = bool(save_subfolder_raw)
-
-    return save_all_flag, save_in_subfolder
+        dropdown_value_raw = inputs.get("save_all_plots", "no")
+        dropdown_value = str(dropdown_value_raw).strip().lower() if dropdown_value_raw is not None else "no"
+        return dropdown_value == "subfolder"
+    if isinstance(save_subfolder_raw, str):
+        return save_subfolder_raw.strip().lower() in ("1", "true", "yes", "subfolder")
+    return bool(save_subfolder_raw)
 
 
 # detect the true sample rate directly from the experimental data file so that files
@@ -240,10 +233,11 @@ def alpss_main(**inputs):
         print(f"[{datetime.now()}] DEBUG: About to call original ALPSS plotting function...")
         fig = None
         
-        # Check if user wants to save plots (dropdown authoritative)
-        save_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
-        print(f"[{datetime.now()}] DEBUG PLOT PARAMS: save_all_plots_enabled='{save_plots}', save_plots_in_subfolder={save_in_subfolder}")
-        if save_plots == "yes":
+        # simple_plotting() only produces the combined summary plot, so it's
+        # gated solely by save_combined_plot -- no separate master switch.
+        save_combined_plot_flag = bool(inputs.get('save_combined_plot', True))
+        print(f"[{datetime.now()}] DEBUG PLOT PARAMS: save_combined_plot={save_combined_plot_flag}")
+        if save_combined_plot_flag:
             # Generate individual plots using simple_plotting
             try:
                 simple_plotting(
@@ -283,7 +277,7 @@ def alpss_main(**inputs):
             #     print(f"[{datetime.now()}] ERROR in plotting (combined plot): {e}\n{traceback.format_exc()}")
             fig = None  # Set to None since we're not generating the original combined plot
         else:
-            print(f"[{datetime.now()}] DEBUG: save_all_plots is not 'yes', skipping plot creation")
+            print(f"[{datetime.now()}] DEBUG: save_combined_plot is False, skipping plot creation")
 
         # function to save the output files if desired
         if inputs["save_data"] == "yes":
@@ -1315,23 +1309,19 @@ def simple_plotting(
 ):
     print(f"[{datetime.now()}] Creating simplified plots...")
     os.makedirs(inputs["out_files_dir"], exist_ok=True)
-    save_all_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
+    save_in_subfolder = _resolve_plot_location(inputs)
+    save_combined_plot = bool(inputs.get('save_combined_plot', True))
     base_filename = inputs["filename"][0:-4]
-    if save_all_plots == "yes":
-        if save_in_subfolder:
-            plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
-            os.makedirs(plots_subfolder, exist_ok=True)
-            print(f"[{datetime.now()}] Saving all plots in subfolder: {plots_subfolder}")
-            plot_dir = plots_subfolder
-        else:
-            plot_dir = inputs["out_files_dir"]
-            print(f"[{datetime.now()}] Saving plots in main output directory")
+    if save_combined_plot and save_in_subfolder:
+        plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
+        os.makedirs(plots_subfolder, exist_ok=True)
+        print(f"[{datetime.now()}] Saving combined plot in subfolder: {plots_subfolder}")
+        plot_dir = plots_subfolder
     else:
         plot_dir = inputs["out_files_dir"]
-        print(f"[{datetime.now()}] No plots to save")
+        if save_combined_plot:
+            print(f"[{datetime.now()}] Saving combined plot in main output directory")
     try:
-        save_combined_plot = inputs.get('save_combined_plot', True)
-        save_iq_start_time_plot = inputs.get('save_iq_start_time_plot', False)
         experiment_info = inputs.get('experiment_info', {})
         exp_id = experiment_info.get('exp_id', '')
         sample_material = experiment_info.get('sample_material', '')
@@ -1343,8 +1333,7 @@ def simple_plotting(
             title_suffix = f" - {sample_material}"
         else:
             title_suffix = ""
-        combined_enabled = (save_all_plots == "yes") and save_combined_plot
-        if combined_enabled:
+        if save_combined_plot:
             print(f"[{datetime.now()}] Creating combined plot (velocity, noise fraction, ROI spectrogram, total spectrogram, IQ analysis)...")
             fig_combined = plt.figure(figsize=(16, 20))
             time_len = len(vc_out["time_f"])
@@ -1445,10 +1434,8 @@ def simple_plotting(
             plt.savefig(os.path.join(plot_dir, f"{base_filename}--combined_plot.png"), dpi=300, bbox_inches='tight')
             plt.close(fig_combined)
             print(f"[{datetime.now()}] Combined plot saved successfully")
-        elif save_all_plots == "yes":
-            print(f"[{datetime.now()}] Combined plot disabled via GUI option; skipping summary figure.")
         else:
-            print(f"[{datetime.now()}] save_all_plots is not 'yes', skipping combined plot generation.")
+            print(f"[{datetime.now()}] save_combined_plot is False, skipping combined plot generation.")
         return None
     except Exception as e:
         print(f"[{datetime.now()}] ERROR in simple_plotting: {e}\n{traceback.format_exc()}")
@@ -1462,28 +1449,23 @@ def saving(
     print(f"[{datetime.now()}] Entered saving function")
     
     # Check if user wants to save all plots in subfolder
-    save_all_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
+    save_in_subfolder = _resolve_plot_location(inputs)
+    save_combined_plot = bool(inputs.get('save_combined_plot', True))
     base_filename = inputs["filename"][0:-4]  # Remove file extension
-    
-    if save_all_plots == "yes":
-        if save_in_subfolder:
-            # Create subfolder for this file's plots
-            plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
-            os.makedirs(plots_subfolder, exist_ok=True)
-            print(f"[{datetime.now()}] Saving main plots in subfolder: {plots_subfolder}")
-            plot_dir = plots_subfolder
-        else:
-            # Save plots in main output directory
-            plot_dir = inputs["out_files_dir"]
-            print(f"[{datetime.now()}] Saving main plots in main output directory")
+
+    if save_combined_plot and save_in_subfolder:
+        # Create subfolder for this file's plots
+        plots_subfolder = os.path.join(inputs["out_files_dir"], f"{base_filename}_plots")
+        os.makedirs(plots_subfolder, exist_ok=True)
+        print(f"[{datetime.now()}] Saving main plots in subfolder: {plots_subfolder}")
+        plot_dir = plots_subfolder
     else:
-        # No plots to save
+        # Save plots in main output directory
         plot_dir = inputs["out_files_dir"]
-        print(f"[{datetime.now()}] No plots to save")
-    
+
     try:
         # Save the main plots.png if figure exists and user wants plots
-        if fig is not None and save_all_plots == "yes":
+        if fig is not None and save_combined_plot:
             print(f"[{datetime.now()}] Saving main plots.png...")
             fig.savefig(
                 fname=os.path.join(plot_dir, base_filename + "--plots.png"),
@@ -1493,7 +1475,7 @@ def saving(
             )
             print(f"[{datetime.now()}] Saved main plots.png.")
         else:
-            print(f"[{datetime.now()}] Skipping main plots.png (fig is None or save_all_plots is 'no')")
+            print(f"[{datetime.now()}] Skipping main plots.png (fig is None or save_combined_plot is False)")
         
         # Always save inputs file (needed for debugging)
         inputs_df = pd.DataFrame.from_dict(inputs, orient="index", columns=["Input"])
@@ -1995,8 +1977,8 @@ def spall_doi_finder(**inputs):
     time_us = time_adjusted * 1e6
 
     # Resolve plot flags ONCE (prevents repeated logic + accidental plot creation in batch runs)
-    save_all_plots, save_in_subfolder = _resolve_plot_saving_flags(inputs)
-    save_iq_start_time_plot = inputs.get('save_iq_start_time_plot', False)
+    save_in_subfolder = _resolve_plot_location(inputs)
+    save_iq_start_time_plot = bool(inputs.get('save_iq_start_time_plot', False))
     display_plots = str(inputs.get("display_plots", "no")).strip().lower() == "yes"
 
     # NOTE: The following diagnostic IQ figure was previously created for EVERY file and never closed,
@@ -2034,7 +2016,7 @@ def spall_doi_finder(**inputs):
         ax1.legend(fontsize=12)
         ax1.tick_params(axis="both", labelsize=20)
     
-    if save_all_plots == "yes" and save_iq_start_time_plot:
+    if save_iq_start_time_plot:
         if save_in_subfolder:
             # Create subfolder for this file's plots
             base_filename = inputs["filename"][0:-4]  # Remove file extension

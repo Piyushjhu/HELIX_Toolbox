@@ -79,10 +79,13 @@ alpss_config:
   # ── Output control ──────────────────────────────────────────────────────────
   save_data: "yes"          # Save CSV outputs (yes/no)
   display_plots: "no"       # Show interactive plots during processing (yes/no)
-  # Plot saving options:
-  #   no         — no individual ALPSS plots
-  #   subfolder  — save plots to <output>/<file>_plots/ subdirectory (recommended)
-  #   main_dir   — save plots alongside CSVs in the main output directory
+  # Master switch for per-file plots. "no" suppresses every plot — including
+  # save_combined_plot / save_iq_start_time_plot near the bottom of this section,
+  # regardless of how those are set. "subfolder"/"main_dir" enable plotting and
+  # pick the destination:
+  #   no         — no plots saved, period
+  #   subfolder  — save enabled plots to <output>/<file>_plots/ subdirectory (recommended)
+  #   main_dir   — save enabled plots alongside CSVs in the main output directory
   save_all_plots: "no"
   spall_calculation: "no"   # Run ALPSS built-in spall calculation (use SPADE instead)
 
@@ -201,6 +204,8 @@ alpss_config:
   save_velocity_smooth_uncert_csv: true  # Smoothed velocity + uncertainty (used by SPADE)
   save_results_csv: true                 # Summary of ALPSS results per file
   save_noise_csv: true                   # Noise fraction trace
+  # Which plots to generate -- only takes effect when save_all_plots above is
+  # "subfolder" or "main_dir"; both are forced off while save_all_plots is "no".
   save_combined_plot: true               # Combined overview plot per file
   save_iq_start_time_plot: false         # IQ onset detection diagnostic plot
 

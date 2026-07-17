@@ -445,6 +445,11 @@ class AnalysisThread(QThread):
         self.traces_rejected = 0
         self.rejection_reasons = {}  # Track reasons for rejection
         self._warned_skip_unknown_override = False
+        # sample_rate is auto-detected per file inside alpss_main and never written
+        # back to self.alpss_params, so the configured fallback alone doesn't tell
+        # you what was actually used. Track the real per-file value here so
+        # _save_run_config can report it accurately.
+        self._alpss_effective_sample_rate_by_file = {}
 
     def _get_summary_filename(self):
         """Return the CSV filename for the consolidated data summary.
@@ -482,6 +487,9 @@ class AnalysisThread(QThread):
                 'spade_params': self.spade_params,
                 'material_properties': self.material_properties,
                 'igsn_material_map': self.igsn_material_map,
+                # alpss_params['sample_rate'] is only the configured fallback;
+                # this records what was actually detected/used per input file.
+                'alpss_effective_sample_rate_by_file': self._alpss_effective_sample_rate_by_file,
             }
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config_snapshot, f, indent=2, default=str)
@@ -1768,6 +1776,7 @@ class AnalysisThread(QThread):
             import alpss_main as _alpss_module
             importlib.reload(_alpss_module)
             alpss_main = _alpss_module.alpss_main
+            detect_sample_rate = _alpss_module.detect_sample_rate
 
             import spall_analysis as _spade_module
             importlib.reload(_spade_module)
@@ -1818,7 +1827,21 @@ class AnalysisThread(QThread):
                     alpss_params['filename'] = os.path.basename(input_file)
                     alpss_params['exp_data_dir'] = os.path.dirname(input_file)
                     alpss_params['out_files_dir'] = self.output_dir
-                    
+
+                    # Resolve the actual sample rate up front so alpss_params (and the
+                    # eventual run-config snapshot) reflects what alpss_main will really
+                    # use, not just the configured fallback. alpss_main re-detects this
+                    # itself internally, but never reports it back to the caller.
+                    try:
+                        detected_rate = detect_sample_rate(**alpss_params)
+                        alpss_params['sample_rate'] = detected_rate
+                        self._alpss_effective_sample_rate_by_file[alpss_params['filename']] = detected_rate
+                    except Exception as rate_err:
+                        self._alpss_effective_sample_rate_by_file[alpss_params['filename']] = {
+                            'error': str(rate_err),
+                            'fallback_used': self.alpss_params.get('sample_rate'),
+                        }
+
                     # Debug: Print output directory being used for ALPSS
                     self.progress_signal.emit(f"[DEBUG] ALPSS output directory: {os.path.abspath(self.output_dir)}")
 
@@ -16293,11 +16316,12 @@ Output Files:
         
     def get_alpss_params(self):
         """Get ALPSS parameters from GUI"""
-        # Determine save_all_plots strictly from dropdown (authoritative)
+        # save_all_plots is the master switch: "no" suppresses every per-file plot;
+        # "subfolder"/"main_dir" enable plotting and pick the destination folder.
         dropdown_value = self.save_all_plots.currentText()
         save_plots_value = 'yes' if dropdown_value in ['subfolder', 'main_dir'] else 'no'
         plots_enabled = (save_plots_value == 'yes')
-        
+
         return {
             'filename': 'example_file.csv',  # Will be updated per file in thread
             'save_data': self.save_data.currentText(),

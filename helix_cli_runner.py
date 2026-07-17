@@ -106,44 +106,27 @@ def _transform_alpss_params_for_analysis(alpss_params: Dict) -> Dict:
     # Make a copy to avoid modifying the original
     params = alpss_params.copy()
     
-    # Convert save_all_plots dropdown value to ALPSS-expected format
-    # This matches get_alpss_params() lines 6402-6411
-    # Handle both cases: config with raw dropdown value OR already transformed
-    if 'save_all_plots' in params and 'save_all_plots_enabled' not in params:
-        # Raw config format - need to transformface
-        
-        dropdown_value = params['save_all_plots']
-        save_plots_value = 'yes' if dropdown_value in ['subfolder', 'main_dir'] else 'no'
-        plots_enabled = (save_plots_value == 'yes')
-        
-        params['save_all_plots_enabled'] = save_plots_value
+    # save_all_plots is the master switch: "no" suppresses every per-file plot
+    # regardless of save_combined_plot / save_iq_start_time_plot below; "subfolder"
+    # and "main_dir" both enable plotting and additionally pick the destination
+    # folder. This gating happens once, here, so the resolved value written into
+    # Run_Config.json is the actual effective value -- ALPSS itself just trusts
+    # save_combined_plot/save_iq_start_time_plot as handed to it, matching
+    # get_alpss_params() in the GUI.
+    if 'save_plots_in_subfolder' not in params:
+        dropdown_value = params.get('save_all_plots', 'no')
         params['save_plots_in_subfolder'] = (dropdown_value == 'subfolder')
-    elif 'save_all_plots_enabled' in params:
-        # Already transformed - just ensure plots_enabled is set correctly
-        save_plots_value = params['save_all_plots_enabled']
-        plots_enabled = (save_plots_value == 'yes')
-        if 'save_plots_in_subfolder' not in params:
-            # Infer from save_all_plots if available
-            if 'save_all_plots' in params:
-                params['save_plots_in_subfolder'] = (params['save_all_plots'] == 'subfolder')
-            else:
-                params['save_plots_in_subfolder'] = False
-    else:
-        # Neither present - default to no plots
-        plots_enabled = False
-        params['save_all_plots_enabled'] = 'no'
-        params['save_plots_in_subfolder'] = False
-    
-    # Gate plot flags by plots_enabled (matches get_alpss_params() lines 6462-6469)
+    if 'save_all_plots_enabled' not in params:
+        dropdown_value = params.get('save_all_plots', 'no')
+        params['save_all_plots_enabled'] = 'yes' if dropdown_value in ('subfolder', 'main_dir') else 'no'
+    plots_enabled = (params['save_all_plots_enabled'] == 'yes')
+
     plot_flags = {
         'save_combined_plot': True,
         'save_iq_start_time_plot': False,
     }
     for flag, default in plot_flags.items():
-        if flag in params:
-            params[flag] = bool(params[flag]) and plots_enabled
-        else:
-            params[flag] = (default and plots_enabled)
+        params[flag] = bool(params.get(flag, default)) and plots_enabled
     
     # Convert blur_kernel_x and blur_kernel_y to blur_kernel tuple
     # This matches get_alpss_params() line 6438
