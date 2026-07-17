@@ -8,7 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **IGSN → Material Mapping**: New `igsn_material_map` section in the master config files maps IGSNs (or parent-IGSN prefixes like `JHAMAL00016`) to material names. Used as a fallback when a trace's parameter file has no usable `Sample material` column — the trace's `Sample_IGSN` (or the IGSN prefix of its filename) is matched against the map (longest key wins, case-insensitive) and the resolved material is then looked up in `material_properties` as usual. Material resolution across the pipeline (spall analysis, HEL detection, Data_Summary enhancement, combined velocity plots) is consolidated into a shared `resolve_sample_material()` helper, and the map is recorded in the per-run `Run_Config.json` snapshot
+- **IGSN → Material Mapping**: New `igsn_material_map` section in the master config files maps IGSNs (or parent-IGSN prefixes like `JHAMAL00016`) to material names (longest key wins, case-insensitive), and the resolved material is then looked up in `material_properties` as usual. The map now **takes priority** over a trace's parameter-file `Sample material` column, so a known sample's IGSN always wins over a stale or missing parameter-file value; the parameter-file column is used only as a fallback when the IGSN has no map entry. Material resolution across the pipeline (spall analysis, HEL detection, Data_Summary enhancement, combined velocity plots, and `batch_summary_plot.py`) is consolidated into a shared `resolve_sample_material()` / `refresh_material_column()`, which also treats `"[]"` (an empty-list artifact left by some parameter-file exports) as an invalid material value alongside `nan`/`none`/empty. The map is recorded in the per-run `Run_Config.json` snapshot
+- **`pullback_smoothing_ns`** (`spade_config`): the smoothing window used before searching for the post-plateau spall pullback (P3) is now sized in real time (ns) rather than a fixed sample count, so it scales correctly across oscilloscope sample rates from 2 GS/s to 128+ GS/s instead of silently becoming a no-op at high sample rates
+- Added `pyyaml` to `ALPSS/requirements.txt` (required for YAML config support); README troubleshooting updated accordingly
+
+### Fixed
+- **ALPSS**: rows with unparseable/NaN values (e.g. a truncated final oscilloscope sample) are now dropped before FFT-based smoothing in IQ start-time detection. Previously a single bad row would NaN out the entire smoothed amplitude trace via FFT convolution, crashing detection for the whole file
+
+### Removed
+- Removed unused `alpss_config` keys `use_robust_iq_detection`, `iq_smoothing_window_ns`, `iq_skip_start_ns`, `iq_persistence_ns` from the default/master config files — the code path they controlled had already been removed; only `iq_threshold_factor` remains configurable for IQ onset detection
+- Removed the vestigial `analysis_model` key from `spade_config` in the default/master config files — calculations have used the hybrid approach unconditionally since v2.1.0, and the key was already a no-op
 
 ## [2.1.0] - 2026-07-16
 

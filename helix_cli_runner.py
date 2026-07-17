@@ -51,10 +51,10 @@ from helix_analysis_toolbox import AnalysisThread, load_config_from_file
 # to the repo. YAML takes precedence over JSON so users can migrate simply by
 # dropping a commented .yml next to the existing .json.
 _DEFAULT_CONFIG_BASENAMES = (
-    # "helix_master_config.yml",
+    "helix_master_config.yml",
     # "helix_master_config.yaml",
     #"helix_master_config.json",
-    "helix_master_config_batch_process.json",
+    #"helix_master_config_batch_process.json",
 )
 
 
@@ -242,17 +242,16 @@ def _transform_alpss_params_for_analysis(alpss_params: Dict) -> Dict:
                 if isinstance(params[param], (int, float)):
                     params[param] = int(params[param])
             
-            # Ensure float parameters for IQ detection are floats
-            if param in ['iq_smoothing_window_ns', 'iq_skip_start_ns', 'iq_persistence_ns', 
-                        'iq_threshold_factor', 'iq_baseline_fraction']:
+            # Ensure float parameter for IQ threshold detection
+            if param == 'iq_threshold_factor':
                 if isinstance(params[param], (int, float, str)):
                     try:
                         params[param] = float(params[param])
                     except (ValueError, TypeError):
                         pass  # Keep original if conversion fails
-    
+
     # Ensure boolean parameters are actually booleans
-    boolean_params = ['use_notch_filter', 'use_robust_iq_detection',
+    boolean_params = ['use_notch_filter',
                      'save_velocity_csv', 'save_velocity_smooth_csv',
                      'save_velocity_uncert_csv', 'save_velocity_smooth_uncert_csv',
                      'save_results_csv', 'save_noise_csv']

@@ -27,6 +27,18 @@ from pathlib import Path
 
 # Excel support will be checked dynamically when needed
 
+# Values that mean "no material recorded", including the "[]" empty-list
+# artifact some LMI/AIM-DRC parameter exports leave in 'Sample material'
+# when the field wasn't filled in upstream.
+INVALID_MATERIAL_VALUES = {'', 'nan', 'none', 'unknown', '[]', '[ ]'}
+
+
+def _is_valid_material_value(value):
+    """True if value looks like a real material name rather than a blank/placeholder."""
+    if value is None:
+        return False
+    return str(value).strip().lower() not in INVALID_MATERIAL_VALUES
+
 # ---------------------------------------------------------------------------
 # PyQt5 / display bootstrap
 #
@@ -635,30 +647,59 @@ class AnalysisThread(QThread):
         Resolve the sample material for a trace.
 
         Priority:
-        1. 'Sample material' column in the parameter file (plus common variants)
-        2. igsn_material_map from the config (IGSN → material fallback)
+        1. igsn_material_map from the config (IGSN → material), so a known
+           sample's IGSN always wins over whatever is in the parameter file.
+        2. 'Sample material' column in the parameter file (plus common variants)
         3. 'Unknown'
-        """
-        if matched_param:
-            if 'Sample material' in matched_param:
-                material_val = str(matched_param['Sample material']).strip()
-                if material_val and material_val.lower() not in ['nan', 'none', '']:
-                    return material_val
-            else:
-                # FALLBACK: Try other column-name variations
-                for key in ['Sample Material', 'Sample_Material', 'Material', 'material']:
-                    if key in matched_param:
-                        material_val = str(matched_param[key]).strip()
-                        if material_val and material_val.lower() not in ['nan', 'none', '']:
-                            return material_val
 
+        Note: 'Flyer_material' is deliberately never used here — it describes
+        the flyer, not the target sample being tested.
+        """
         igsn_material = self.get_material_from_igsn(base_name, matched_param)
-        if igsn_material:
+        if igsn_material and _is_valid_material_value(igsn_material):
             self.progress_signal.emit(
                 f"  Material for {base_name} resolved via IGSN map: {igsn_material}")
             return igsn_material
 
+        if matched_param:
+            for key in ('Sample material', 'Sample Material', 'Sample_Material', 'Material', 'material'):
+                if key in matched_param:
+                    material_val = str(matched_param[key]).strip()
+                    if _is_valid_material_value(material_val):
+                        return material_val
+
         return 'Unknown'
+
+    def refresh_material_column(self, df):
+        """
+        Re-resolve the 'Material' column of a summary dataframe loaded from disk.
+
+        Summary CSVs from earlier runs can have stale/invalid Material values
+        (e.g. '[]' from a parameter-file export bug, or values recorded before
+        igsn_material_map existed in the config). Simply NaN-filling a stale
+        column would leave those in place, so every row is re-resolved through
+        resolve_sample_material — IGSN map first, parameter-file value as
+        fallback — using the row's own Sample_IGSN/Material/Filename values.
+        """
+        if df is None or df.empty:
+            return df
+
+        igsn_col = next((c for c in ('Sample_IGSN', 'Sample IGSN', 'IGSN') if c in df.columns), None)
+        material_source_col = 'Sample material' if 'Sample material' in df.columns else (
+            'Material' if 'Material' in df.columns else None)
+        name_col = 'Filename' if 'Filename' in df.columns else None
+
+        def resolve_row(row):
+            matched_param = {}
+            if igsn_col is not None:
+                matched_param['Sample_IGSN'] = row[igsn_col]
+            if material_source_col is not None:
+                matched_param['Sample material'] = row[material_source_col]
+            base_name = row[name_col] if name_col is not None else ''
+            return self.resolve_sample_material(base_name, matched_param)
+
+        df['Material'] = df.apply(resolve_row, axis=1)
+        return df
 
     def get_material_properties_from_config(self, material_name, default_density=None, default_acoustic_velocity=None):
         """
@@ -871,6 +912,7 @@ class AnalysisThread(QThread):
                 'min_recomp_ratio': spade_kwargs.get('min_recomp_ratio', self.spade_params.get('min_recomp_ratio', 0.1)),
                 'min_recomp_velocity_ratio': spade_kwargs.get('min_recomp_velocity_ratio', self.spade_params.get('min_recomp_velocity_ratio', 1.05)),
                 'min_recomp_time_ns': spade_kwargs.get('min_recomp_time_ns', self.spade_params.get('min_recomp_time_ns', 2.5)),
+                'pullback_smoothing_ns': spade_kwargs.get('pullback_smoothing_ns', self.spade_params.get('pullback_smoothing_ns', 2.0)),
             }
             
             # Initialize variables
@@ -7777,8 +7819,17 @@ class AnalysisThread(QThread):
 
         # Moderate smoothing to suppress sample-level noise while preserving
         # broad/flat minimum regions and shallow recompression bumps.
-        # Window is ~2% of the post-plateau length, floored at 5 points.
-        sw = min(20, max(5, len(post_plateau_data) // 10))
+        #
+        # The window is sized in real time (ns), not a fixed sample count:
+        # oscilloscope sample rate varies a lot across datasets (2 GS/s to
+        # 128+ GS/s), so a fixed sample-count window silently becomes a no-op
+        # at high sample rates (e.g. 20 samples at 128 GS/s is only 0.16 ns —
+        # not enough to smooth away a sub-ns noise wiggle, which can then get
+        # mistaken for the pullback minimum instead of the true, later one).
+        dt_ns = float(np.median(np.diff(time))) if len(time) > 1 else 1.0
+        pullback_smoothing_ns = float(config.get('pullback_smoothing_ns', 2.0))
+        sw = max(5, int(round(pullback_smoothing_ns / dt_ns))) if dt_ns > 0 else 20
+        sw = min(sw, len(post_plateau_data))
         if len(post_plateau_data) >= sw:
             post_plateau_smooth = uniform_filter1d(post_plateau_data.astype(float),
                                                    size=sw, mode='nearest')
@@ -9385,38 +9436,6 @@ class AnalysisThread(QThread):
             traces_skipped_initial = 0  # Traces skipped before processing loop
             rejection_reasons_local = {}
 
-            # Helper function to extract material from parameter info
-            def extract_material(param_info_dict):
-                if not param_info_dict or not isinstance(param_info_dict, dict):
-                    return 'Unknown'
-                # Normalize keys once
-                normalized = {}
-                for k, v in param_info_dict.items():
-                    key_norm = ''.join(ch for ch in k.lower() if ch.isalnum())
-                    normalized[key_norm] = v
-                # Preferred explicit columns
-                preferred_keys = [
-                    'samplematerial', 'samplemat', 'sample', 'material', 'flyermaterial'
-                ]
-                for pk in preferred_keys:
-                    if pk in normalized and str(normalized[pk]).strip() != '':
-                        return str(normalized[pk]).strip()
-                # Fallback: scan values for common material tokens
-                for v in param_info_dict.values():
-                    val = str(v).strip()
-                    if not val:
-                        continue
-                    low = val.lower()
-                    if any(tok in low for tok in ['al', 'aluminum', 'aluminium']):
-                        return val
-                    if any(tok in low for tok in ['cu', 'copper']):
-                        return val
-                    if any(tok in low for tok in ['ti', 'titanium']):
-                        return val
-                    if 'steel' in low:
-                        return val
-                return 'Unknown'
-
             # Collect traces with their materials
             trace_data = []
             for file_path in sorted(files):
@@ -9475,48 +9494,10 @@ class AnalysisThread(QThread):
                                     sample_keys = list(self.param_data.keys())[:3]
                                     self.progress_signal.emit(f"  Sample param_data keys: {sample_keys}")
                         
-                        # Extract material from "Sample material" column
-                        # Priority: 'Sample material' column is the primary source (target material being tested)
-                        if param_info:
-                            # PRIMARY: Look for 'Sample material' column first (standardized name)
-                            if 'Sample material' in param_info:
-                                material_val = str(param_info['Sample material']).strip()
-                                if material_val and material_val.lower() not in ['nan', 'none', '']:
-                                    material = material_val
-                                    self.progress_signal.emit(f"  ✓ Found material '{material}' from 'Sample material' column")
-                                else:
-                                    self.progress_signal.emit(f"  ⚠ 'Sample material' column exists but is empty/NaN")
-                            else:
-                                # FALLBACK: Try other column name variations if 'Sample material' not found
-                                material_keys = [
-                                    'Sample Material', 'Sample_Material',
-                                    'sample_material', 'samplematerial', 'SampleMaterial',
-                                    'Material', 'material', 'Target material', 'Target Material',
-                                    'Flyer_material', 'Flyer Material'
-                                ]
-                                for key in material_keys:
-                                    if key in param_info:
-                                        material_val = str(param_info[key]).strip()
-                                        if material_val and material_val.lower() not in ['nan', 'none', '']:
-                                            material = material_val
-                                            self.progress_signal.emit(f"  Found material '{material}' from column '{key}' (fallback)")
-                                            break
-                    
-                    # If still Unknown, try the extract_material helper (but don't use it if we found a match)
-                    if material == 'Unknown' and param_info:
-                        material = extract_material(param_info)
-                        if material != 'Unknown':
-                            self.progress_signal.emit(f"  Found material '{material}' via extract_material helper")
-                        else:
-                            # Debug: show what columns are available in param_info
-                            self.progress_signal.emit(f"  ⚠ param_info found but no material extracted. Available columns: {list(param_info.keys())}")
-
-                    # If still Unknown, fall back to the config igsn_material_map
-                    if material == 'Unknown':
-                        igsn_material = self.get_material_from_igsn(base_filename, param_info)
-                        if igsn_material:
-                            material = igsn_material
-                            self.progress_signal.emit(f"  ✓ Found material '{material}' via IGSN map")
+                        # Resolve material: igsn_material_map takes precedence over the
+                        # parameter file's 'Sample material' column (see resolve_sample_material).
+                        material = self.resolve_sample_material(base_filename, param_info)
+                        self.progress_signal.emit(f"  Material for {base_filename}: '{material}'")
 
                     self.progress_signal.emit(f"File: {base_filename} -> Pattern: {pdv_filename_pattern} -> Material: {material}")
                     
@@ -10268,52 +10249,16 @@ class AnalysisThread(QThread):
             for key, value in param_info.items():
                 enhanced_row[key] = value
 
-            # Explicitly set Material column from 'Sample material' if available
-            # Priority: 'Sample material' column is the primary source (target material being tested)
-            sample_material = 'Unknown'
-            if param_info:
-                # PRIMARY: Look for 'Sample material' column first (this is the target material)
-                # This column name is standardized when parameter files are loaded
-                if 'Sample material' in param_info:
-                    material_val = str(param_info['Sample material']).strip()
-                    if material_val and material_val.lower() not in ['nan', 'none', '']:
-                        sample_material = material_val
-                        self.progress_signal.emit(f"  ✓ Found material '{sample_material}' from 'Sample material' column for {base_name}")
-                    else:
-                        self.progress_signal.emit(f"  ⚠ 'Sample material' column exists but is empty/NaN for {base_name}")
-                else:
-                    # FALLBACK: Try other column name variations if 'Sample material' not found
-                    material_keys = [
-                        'Sample Material', 'Sample_Material',
-                        'sample_material', 'samplematerial', 'SampleMaterial',
-                        'Material', 'material', 'Target material', 'Target Material',
-                        'Flyer_material', 'Flyer Material'
-                    ]
-                    for key in material_keys:
-                        if key in param_info:
-                            material_val = str(param_info[key]).strip()
-                            if material_val and material_val.lower() not in ['nan', 'none', '']:
-                                sample_material = material_val
-                                self.progress_signal.emit(f"  Found material '{sample_material}' from column '{key}' for {base_name} (fallback)")
-                                break
-            
-            # Set Material column explicitly
-            enhanced_row['Material'] = sample_material
-            
-            # If Material is still Unknown, try to get it from existing row (in case it was already set)
+            # Resolve material: igsn_material_map takes precedence over the parameter
+            # file's 'Sample material' column (see resolve_sample_material). Falls back
+            # to whatever Material value is already on the row if neither resolves.
+            sample_material = self.resolve_sample_material(base_name, param_info)
             if sample_material == 'Unknown' and 'Material' in row:
                 existing_material = str(row['Material']).strip()
-                if existing_material and existing_material.lower() not in ['nan', 'none', 'unknown', '']:
-                    enhanced_row['Material'] = existing_material
+                if _is_valid_material_value(existing_material):
                     sample_material = existing_material
-
-            # If still Unknown, fall back to the config igsn_material_map
-            if sample_material == 'Unknown':
-                igsn_material = self.get_material_from_igsn(base_name, param_info)
-                if igsn_material:
-                    sample_material = igsn_material
-                    enhanced_row['Material'] = sample_material
-                    self.progress_signal.emit(f"  ✓ Material '{sample_material}' resolved via IGSN map for {base_name}")
+            enhanced_row['Material'] = sample_material
+            self.progress_signal.emit(f"  Material for {base_name}: '{sample_material}'")
 
             # Try to find corresponding ALPSS results file for additional data
             # Search both current output_dir and standard ALPSS output location
@@ -11074,12 +11019,7 @@ class AnalysisThread(QThread):
             if enhanced_spall_df is not None and not enhanced_spall_df.empty:
                 # Use the enhanced dataframe that's already loaded
                 summary_df = enhanced_spall_df.copy()
-                # Ensure Material column exists and is not all NaN
-                if 'Material' not in summary_df.columns:
-                    summary_df['Material'] = 'Unknown'
-                else:
-                    # Fill NaN Material values with 'Unknown'
-                    summary_df['Material'] = summary_df['Material'].fillna('Unknown')
+                summary_df = self.refresh_material_column(summary_df)
                 # Ensure required columns exist with correct names for SPADE plotting function
                 if 'Spall_Strength_GPa_Final' in summary_df.columns:
                     summary_df['Spall Strength (GPa)'] = summary_df['Spall_Strength_GPa_Final']
@@ -11093,27 +11033,7 @@ class AnalysisThread(QThread):
                     summary_df['Peak Shock Stress Uncertainty (GPa)'] = summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
             elif os.path.exists(enhanced_summary_csv):
                 summary_df = pd.read_csv(enhanced_summary_csv)
-                # Ensure Material column exists and is not all NaN
-                if 'Material' not in summary_df.columns:
-                    # Try to get Material from 'Sample material' column
-                    if 'Sample material' in summary_df.columns:
-                        summary_df['Material'] = summary_df['Sample material'].fillna('Unknown')
-                        # Convert to string and clean
-                        summary_df['Material'] = summary_df['Material'].astype(str).str.strip()
-                        summary_df['Material'] = summary_df['Material'].replace(['nan', 'None', ''], 'Unknown')
-                    else:
-                        summary_df['Material'] = 'Unknown'
-                else:
-                    # Fill NaN Material values with 'Unknown', but first try 'Sample material'
-                    nan_mask = summary_df['Material'].isna() | (summary_df['Material'].astype(str).str.strip().isin(['nan', 'None', '', 'Unknown']))
-                    if 'Sample material' in summary_df.columns and nan_mask.any():
-                        # Fill NaN Material with Sample material where available
-                        summary_df.loc[nan_mask, 'Material'] = summary_df.loc[nan_mask, 'Sample material'].fillna('Unknown')
-                    else:
-                        summary_df['Material'] = summary_df['Material'].fillna('Unknown')
-                    # Clean Material column
-                    summary_df['Material'] = summary_df['Material'].astype(str).str.strip()
-                    summary_df['Material'] = summary_df['Material'].replace(['nan', 'None', ''], 'Unknown')
+                summary_df = self.refresh_material_column(summary_df)
                 # Map column names if needed
                 if 'Spall_Strength_GPa_Final' in summary_df.columns:
                     summary_df['Spall Strength (GPa)'] = summary_df['Spall_Strength_GPa_Final']
@@ -11127,27 +11047,7 @@ class AnalysisThread(QThread):
                     summary_df['Peak Shock Stress Uncertainty (GPa)'] = summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
             elif os.path.exists(summary_csv):
                 summary_df = pd.read_csv(summary_csv)
-                # Ensure Material column exists and is not all NaN
-                if 'Material' not in summary_df.columns:
-                    # Try to get Material from 'Sample material' column
-                    if 'Sample material' in summary_df.columns:
-                        summary_df['Material'] = summary_df['Sample material'].fillna('Unknown')
-                        # Convert to string and clean
-                        summary_df['Material'] = summary_df['Material'].astype(str).str.strip()
-                        summary_df['Material'] = summary_df['Material'].replace(['nan', 'None', ''], 'Unknown')
-                    else:
-                        summary_df['Material'] = 'Unknown'
-                else:
-                    # Fill NaN Material values with 'Unknown', but first try 'Sample material'
-                    nan_mask = summary_df['Material'].isna() | (summary_df['Material'].astype(str).str.strip().isin(['nan', 'None', '', 'Unknown']))
-                    if 'Sample material' in summary_df.columns and nan_mask.any():
-                        # Fill NaN Material with Sample material where available
-                        summary_df.loc[nan_mask, 'Material'] = summary_df.loc[nan_mask, 'Sample material'].fillna('Unknown')
-                    else:
-                        summary_df['Material'] = summary_df['Material'].fillna('Unknown')
-                    # Clean Material column
-                    summary_df['Material'] = summary_df['Material'].astype(str).str.strip()
-                    summary_df['Material'] = summary_df['Material'].replace(['nan', 'None', ''], 'Unknown')
+                summary_df = self.refresh_material_column(summary_df)
             else:
                 self.progress_signal.emit(f"[WARNING] No spall summary file found (neither {self._get_summary_filename()} nor spall_summary.csv)")
                 summary_df = None

@@ -1874,6 +1874,23 @@ def spall_doi_finder(**inputs):
     # rename the columns of the data
     data.columns = ["Time", "Ampl"]
 
+    # Drop any unparseable/NaN rows (e.g. a final oscilloscope sample truncated
+    # mid-write). This must happen before any FFT-based processing: scipy's
+    # convolve() below picks the FFT method for arrays this large, and FFT
+    # convolution is a global operation, so a single NaN anywhere in the trace
+    # would otherwise turn the *entire* smoothed amplitude into NaN and crash
+    # IQ start-time detection for the whole file.
+    data["Time"] = pd.to_numeric(data["Time"], errors="coerce")
+    data["Ampl"] = pd.to_numeric(data["Ampl"], errors="coerce")
+    n_rows_before = len(data)
+    data = data.dropna(subset=["Time", "Ampl"])
+    n_dropped = n_rows_before - len(data)
+    if n_dropped > 0:
+        print(
+            f"Warning: dropped {n_dropped} unparseable/NaN row(s) from "
+            f"{inputs['filename']} (likely a truncated final oscilloscope sample)"
+        )
+
     # put the data into numpy arrays. Zero the time data
     time = data["Time"].to_numpy()
     time = time - time[0]

@@ -31,7 +31,7 @@ cli_settings:
   # *** EDIT THIS *** — replace with the absolute path to your raw PDV data folder.
   # Example (macOS/Linux): /Users/you/experiments/shot_2026_04/raw_csv
   # Example (Windows):     C:/Users/you/experiments/shot_2026_04/raw_csv
-  input_dir: /path/to/pdv/files
+  input_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016/JHAMAL00016-004
 
   # Explicit list of files to process.  Set to null to use input_dir + input_pattern.
   # Example:  input_files: [file1.csv, file2.csv]
@@ -44,14 +44,14 @@ cli_settings:
   #   <output_dir>/ALPSS_output/   → ALPSS results
   #   <output_dir>/SPADE_analysis/ → SPADE results and plots
   # *** EDIT THIS *** — replace with the absolute path where you want results saved.
-  output_dir: /path/to/output
+  output_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016/JHAMAL00016-004/Output
 
   # Folder containing experiment parameter files (CSV/Excel).
   # Must have a column matching PDV filenames so metadata (material, laser
   # energy, waveplate angle, row/column …) is attached to each trace.
   # Set to null to skip parameter enrichment.
   # *** EDIT THIS *** — replace with your parameter folder, or set to: null
-  param_folder: /path/to/parameter/folder
+  param_folder: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016/Parameters
 
   # Analysis mode:
   #   both       — run ALPSS then SPADE (full pipeline, default)
@@ -66,7 +66,7 @@ cli_settings:
 
   # Used only when spade_mode: manual
   spade_input_files: null
-  spade_input_dir: /path/to/existing/velocity/files
+  spade_input_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016/JHAMAL00016-004/Output
   spade_input_pattern: "*--vel-smooth-with-uncert.csv"
 
 
@@ -101,7 +101,7 @@ alpss_config:
 
   # Duration of signal to extract starting from the detected start time (s).
   # 4e-6 = 4 µs, for example.
-  time_to_take: 4.0e-06
+  time_to_take: 6.0e-06
 
   # Time window before the detected IQ start to include in the output (s).
   t_before: 2.0e-08
@@ -110,26 +110,13 @@ alpss_config:
   t_after: 2.0e-07
 
   # ── IQ (signal-onset) detection ─────────────────────────────────────────────
-  # Use the robust IQ detection pipeline (recommended).
-  use_robust_iq_detection: true
-
   # IQ detection threshold relative to the peak signal amplitude.
   # Lower values → earlier start detected; raise if false triggers occur.
   iq_threshold_factor: 0.8
 
-  # Smoothing window (ns) applied to the IQ magnitude before onset detection.
-  iq_smoothing_window_ns: 5.0
-
-  # Skip this many ns at the very beginning of the trace (avoids edge artefacts).
-  iq_skip_start_ns: 1.0
-
-  # Minimum number of ns the signal must stay above the threshold after the
-  # candidate onset for the detection to be accepted (persistence filter).
-  iq_persistence_ns: 0.5
-
   # ── Frequency / spectrogram ─────────────────────────────────────────────────
   freq_min: 1200000000.0    # Lower edge of the frequency band of interest (Hz)
-  freq_max: 3000000000.0    # Upper edge of the frequency band of interest (Hz)
+  freq_max: 3300000000.0    # Upper edge of the frequency band of interest (Hz)
 
   # Oscilloscope sample rate (samples/s).  128e9 = 128 GS/s.
   # FALLBACK ONLY: the true sample rate is auto-detected from each data file's
@@ -234,12 +221,6 @@ spade_config:
   acoustic_velocity: 3950.0 # Bulk wave speed (m/s) used for spall strength
 
   # ── Spall analysis model ─────────────────────────────────────────────────────
-  # analysis_model selects how spall strength and strain rate are computed:
-  #   max_min        — velocity peak & valley directly from the trace
-  #   hybrid_5_segment — 5-segment linear fit for both strength and strain rate
-  #   hybrid         — max_min for spall strength, 5-segment for strain rate (default)
-  analysis_model: "hybrid"
-
   # spall_detection_method controls the spall-detection algorithm:
   #   rdp            — RDP topology check (checkmark shape) + 5-segment fitting
   #   5-segment      — skip RDP; use horizontal-plateau 5-segment only (faster)
@@ -248,7 +229,7 @@ spade_config:
   # ── Spall analysis window (ns, relative to aligned t=0) ──────────────────────
   # Only data inside this window is searched for the spall signature.
   spall_start_time_ns: 0.0
-  spall_end_time_ns: 90.0
+  spall_end_time_ns: 80.0
 
   # Velocity threshold (m/s) used to identify shock arrival (t=0 alignment).
   # Decrease if weak shocks are being missed; increase if noise triggers falsely.
@@ -270,19 +251,25 @@ spade_config:
 
   # Minimum rebound / pullback ratio: rebound must recover at least this
   # fraction of the pullback depth.  0.03 = 3%.
-  min_recomp_ratio: 0.03
+  min_recomp_ratio: 0.015
 
   # Minimum velocity ratio: rebound peak must exceed valley by this factor.
   # 1.1 means the rebound must be at least 10% above the valley.
-  min_recomp_velocity_ratio: 1.1
+  min_recomp_velocity_ratio: 1.015
 
   # Minimum sustained duration of the rebound (ns).
   min_recomp_time_ns: 2.5
 
+  # Smoothing window (ns, real time — not sample count) used to suppress noise
+  # before searching for the pullback minimum (P3). Scales automatically with
+  # each file's sample rate. Raise if a shallow noise wiggle right after the
+  # peak is still being mistaken for the pullback minimum.
+  pullback_smoothing_ns: 2.0
+
   # ── HEL detection ─────────────────────────────────────────────────────────────
   # Time window (ns, relative to t=0) searched for the elastic precursor plateau.
   hel_start_time_ns: 0
-  hel_end_time_ns: 20
+  hel_end_time_ns: 15
 
   # Minimum plateau velocity to accept as a valid HEL (m/s).
   # Increase if spurious low-velocity detections occur.
@@ -529,18 +516,18 @@ material_properties:
 
 # -----------------------------------------------------------------------------
 # 6. IGSN → MATERIAL MAPPING
-#    Fallback used when a trace's parameter file has no usable
-#    'Sample material' column: the trace's Sample_IGSN (or, failing that, the
-#    IGSN prefix of its filename) is matched against the keys below and the
-#    mapped material name is then looked up in material_properties as usual.
+#    Resolves a trace's material from its Sample_IGSN (or, failing that, the
+#    IGSN prefix of its filename): the IGSN is matched against the keys below
+#    and the mapped material name is then looked up in material_properties.
 #
 #    Keys may be full IGSNs (JHAMAL00016-004) or parent-IGSN prefixes
 #    (JHAMAL00016, which matches every child like JHAMAL00016-004,
 #    JHAMAL00016-005, …). The longest matching key wins, so a full-IGSN entry
 #    overrides its parent prefix. Matching is case-insensitive.
 #
-#    The explicit 'Sample material' column in a parameter file always takes
-#    priority over this mapping.
+#    This mapping takes priority over the 'Sample material' column in the
+#    parameter file — the parameter file's value is only used as a fallback
+#    when the trace's IGSN has no match here.
 # -----------------------------------------------------------------------------
 igsn_material_map:
 

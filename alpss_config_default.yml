@@ -46,22 +46,9 @@ t_before: 2.0e-08
 t_after: 2.0e-07
 
 # ── IQ signal-onset detection ─────────────────────────────────────────────────
-# Use the robust pipeline (threshold + smoothing + persistence filter).
-use_robust_iq_detection: true
-
 # Fraction of peak amplitude used as the onset threshold.
 # 0.8 = 80% of peak.  Lower → earlier detection; higher → fewer false starts.
 iq_threshold_factor: 0.8
-
-# Gaussian smoothing window (ns) applied before onset detection.
-iq_smoothing_window_ns: 5.0
-
-# Ignore the first N ns of the trace to avoid edge transients.
-iq_skip_start_ns: 1.0
-
-# Persistence: the signal must stay above threshold for this many ns before
-# the onset is accepted.
-iq_persistence_ns: 0.5
 
 # ── Frequency / spectrogram ───────────────────────────────────────────────────
 freq_min: 1200000000.0    # Lower edge of the useful Doppler band (Hz)

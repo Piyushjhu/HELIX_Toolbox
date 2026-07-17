@@ -22,13 +22,6 @@ experiment_hel_detection: true     # Detect the Hugoniot Elastic Limit plateau
 density: 8960.0           # Density (kg/m³)
 acoustic_velocity: 3950.0 # Bulk wave speed (m/s)
 
-# ── Spall analysis model ──────────────────────────────────────────────────────
-# Selects how spall strength and strain rate are computed:
-#   max_min        — velocity peak & valley read directly from the trace
-#   hybrid_5_segment — 5-segment linear fit for both quantities
-#   hybrid         — max_min for spall strength + 5-segment for strain rate (recommended)
-analysis_model: "hybrid"
-
 # ── Spall detection algorithm ─────────────────────────────────────────────────
 # Selects the underlying spall-detection pipeline:
 #   rdp       — RDP topology check (checkmark shape) + 5-segment fitting
@@ -64,6 +57,11 @@ align_velocity_threshold_ms: 20.0
 #
 # Rebound must sustain for at least this many ns.
 # min_recomp_time_ns: 2.5
+#
+# Smoothing window (ns, real time — not sample count) used to suppress noise
+# before searching for the pullback minimum (P3). Scales automatically with
+# each file's sample rate.
+# pullback_smoothing_ns: 2.0
 
 # ── HEL (Hugoniot Elastic Limit) detection ────────────────────────────────────
 # See HEL_DETECTION_ALGORITHM.md for the full algorithm description.

@@ -1149,10 +1149,12 @@ display them in the notebooks alongside your own results.
 
 **Error: "Failed to load config"**
 - Verify config file paths are correct
-- Check that config files are valid JSON
+- Check that config files are valid JSON or YAML
+- "YAML support requires PyYAML": your environment is missing PyYAML — run `pip install pyyaml` (or `pip install -r requirements.txt`), or switch to a `.json` config
 
 **Error: "ModuleNotFoundError"**
-- Install missing dependencies: `pip install pandas numpy matplotlib scipy PyQt5 openpyxl`
+- Install missing dependencies: `pip install -r requirements.txt`
+- Or individually: `pip install pandas numpy matplotlib scipy PyQt5 openpyxl pyyaml`
 
 **Error: "velocity_shots_summary.csv not found" (Post-processing)**
 - Check that `spade_output_dir` points to the correct directory

@@ -35,6 +35,7 @@ def _load_batch_settings():
         "subfolder_pattern": cs.get("subfolder_pattern", "*"),
         "output_subdir":     cs.get("output_subdir_name", "Output"),
         "combined_output":   cs.get("combined_output_dir") or None,
+        "igsn_material_map": cfg.get("igsn_material_map", {}),
     }
 
 
@@ -42,20 +43,49 @@ def _load_batch_settings():
 
 _INVALID_MATERIAL = {"", "nan", "None", "Unknown", "[]", "[ ]", "none", "unknown"}
 
-def _infer_material(df):
-    """Return the first non-empty material column found, standardised as 'Material'."""
-    for col in ("Sample material", "Material", "Flyer_material", "sample_material"):
-        if col in df.columns:
-            vals = df[col].astype(str).str.strip()
-            valid = vals[~vals.isin(_INVALID_MATERIAL)]
-            if not valid.empty:
-                df["Material"] = vals
-                return df
-    df["Material"] = "Unknown"
+
+def _material_from_igsn(igsn, igsn_material_map):
+    """Match an IGSN against the config's igsn_material_map (longest key wins)."""
+    if not igsn_material_map:
+        return None
+    igsn = str(igsn).strip().lower()
+    if not igsn:
+        return None
+    for map_key in sorted(igsn_material_map, key=lambda k: len(str(k)), reverse=True):
+        key_lower = str(map_key).strip().lower()
+        if key_lower and igsn.startswith(key_lower):
+            return str(igsn_material_map[map_key]).strip()
+    return None
+
+
+def _infer_material(df, igsn_material_map=None):
+    """Resolve a per-row 'Material' column.
+
+    Priority: igsn_material_map (config IGSN -> material) takes precedence
+    over whatever is recorded in 'Sample material'/'Material' columns, so a
+    known sample's IGSN always wins over a stale or missing parameter-file
+    value. 'Flyer_material' is never used here — it describes the flyer, not
+    the target sample.
+    """
+    source_col = next((c for c in ("Sample material", "Material", "sample_material") if c in df.columns), None)
+    igsn_col = next((c for c in ("Sample_IGSN", "Sample IGSN", "IGSN") if c in df.columns), None)
+
+    def resolve(row):
+        if igsn_col is not None:
+            mapped = _material_from_igsn(row[igsn_col], igsn_material_map)
+            if mapped:
+                return mapped
+        if source_col is not None:
+            val = str(row[source_col]).strip()
+            if val not in _INVALID_MATERIAL:
+                return val
+        return "Unknown"
+
+    df["Material"] = df.apply(resolve, axis=1)
     return df
 
 
-def _load_spade_dir(spade_dir, label):
+def _load_spade_dir(spade_dir, label, igsn_material_map=None):
     """Return (spall_df, hel_df) from one SPADE_analysis folder, or (None, None).
 
     Looks for *-Data_Summary.csv files (new naming: IGSN-shotnum-Data_Summary.csv).
@@ -70,7 +100,7 @@ def _load_spade_dir(spade_dir, label):
         frames = []
         for path in data_summary_files:
             df = pd.read_csv(path)
-            df = _infer_material(df)
+            df = _infer_material(df, igsn_material_map)
             df["_subfolder"] = label
             frames.append(df)
             print(f"  [data]  {len(df):>4d} rows  ← {path}")
@@ -88,7 +118,7 @@ def _load_spade_dir(spade_dir, label):
 
         if os.path.exists(spall_path):
             df = pd.read_csv(spall_path)
-            df = _infer_material(df)
+            df = _infer_material(df, igsn_material_map)
             df["_subfolder"] = label
             spall_df = df
             print(f"  [spall] {len(df):>4d} rows  ← {spall_path}")
@@ -97,7 +127,7 @@ def _load_spade_dir(spade_dir, label):
 
         if os.path.exists(vel_path):
             df = pd.read_csv(vel_path)
-            df = _infer_material(df)
+            df = _infer_material(df, igsn_material_map)
             df["_subfolder"] = label
             hel_df = df
             print(f"  [hel]   {len(df):>4d} rows  ← {vel_path}")
@@ -115,13 +145,14 @@ def collect_data(settings):
     pattern  = settings["subfolder_pattern"]
     subdir   = settings["output_subdir"]
     combined = settings["combined_output"]
+    igsn_material_map = settings.get("igsn_material_map", {})
 
     spall_frames, hel_frames, raw_frames = [], [], []
 
     if combined:
         spade_dir = os.path.join(combined, "SPADE_analysis")
         print(f"\nCombined output mode: {spade_dir}")
-        s, h = _load_spade_dir(spade_dir, label=os.path.basename(parent))
+        s, h = _load_spade_dir(spade_dir, label=os.path.basename(parent), igsn_material_map=igsn_material_map)
         if s is not None: spall_frames.append(s); raw_frames.append(s)
         if h is not None and h is not s: hel_frames.append(h)
         elif h is not None: hel_frames.append(h)
@@ -133,7 +164,7 @@ def collect_data(settings):
             label = os.path.basename(sf)
             print(f"\n  [{label}]")
             spade_dir = os.path.join(sf, subdir, "SPADE_analysis")
-            s, h = _load_spade_dir(spade_dir, label=label)
+            s, h = _load_spade_dir(spade_dir, label=label, igsn_material_map=igsn_material_map)
             if s is not None:
                 spall_frames.append(s)
                 raw_frames.append(s)
