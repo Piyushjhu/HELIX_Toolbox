@@ -244,9 +244,12 @@ spade_config:
   experiment_spall_analysis: true    # Run spall strength analysis
   experiment_hel_detection: true     # Run HEL (Hugoniot Elastic Limit) detection
 
-  # ── Material defaults (overridden per-trace from material_properties section) ──
-  density: 1           # Density (kg/m³)
-  acoustic_velocity: 1 # Bulk wave speed (m/s) used for spall strength
+  # NOTE: there is no material-defaults fallback here. Density/wave-speed always
+  # come from material_properties below (or the parameter file's explicit
+  # Density_kg_m3/Bulk_Wave_Speed_m_s columns) on a per-trace basis. If a
+  # trace's material can't be resolved from any of those, that trace is
+  # recorded as "Mat not found" in the summary CSVs instead of being computed
+  # with a guessed density/velocity.
 
   # spall_detection_method controls the spall-detection algorithm:
   #   rdp            — RDP topology check (checkmark shape) + 5-segment fitting

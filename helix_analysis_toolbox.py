@@ -709,72 +709,57 @@ class AnalysisThread(QThread):
         df['Material'] = df.apply(resolve_row, axis=1)
         return df
 
-    def get_material_properties_from_config(self, material_name, default_density=None, default_acoustic_velocity=None):
+    def get_material_properties_from_config(self, material_name):
         """
-        Get material properties from config first, then fall back to database.
-        
+        Resolve material properties strictly from configured sources -- no
+        fallback/default values are substituted for an unrecognized material.
+
         Priority order:
-        1. Config material_properties section (if material found)
-        2. Parameter file explicit columns (Density_kg_m3, Bulk_Wave_Speed_m_s)
-        3. Material properties database (material_properties.py)
-        4. Config defaults (spade_params density/acoustic_velocity or alpss_params density/C0)
-        5. Hardcoded defaults (Copper properties)
-        
+        1. Config material_properties section (exact or case-insensitive match)
+        2. Material properties database (material_properties.py)
+
+        If neither source has the material, 'material_found' is False and
+        'density'/'bulk_wave_speed'/'C_L' are all None. Callers must check
+        'material_found' and treat an unresolved material as an error for
+        that trace (e.g. record "Mat not found") rather than compute with a
+        guessed density/velocity -- do not add a fallback here.
+
         Args:
             material_name: Name of the material to look up
-            default_density: Default density to use if not found (kg/m³)
-            default_acoustic_velocity: Default bulk wave speed to use if not found (m/s)
-            
+
         Returns:
-            Dictionary with 'density', 'bulk_wave_speed', 'material_found', 'material_name', 'source'
+            Dictionary with 'density', 'bulk_wave_speed', 'C_L',
+            'material_found', 'material_name', 'source'
         """
         # Clean material name
         material_name = str(material_name).strip() if material_name else 'Unknown'
-        
-        # Get defaults from config if not provided
-        if default_density is None:
-            default_density = self.spade_params.get('density') or self.alpss_params.get('density', 8960)
-        if default_acoustic_velocity is None:
-            default_acoustic_velocity = (self.spade_params.get('acoustic_velocity') or 
-                                       self.alpss_params.get('C0') or 3950)
-        
-        # Priority 1: Check config material_properties section
-        if self.material_properties and material_name in self.material_properties:
-            config_props = self.material_properties[material_name]
-            # Default C_L to bulk_wave_speed if not specified
-            default_C_L = config_props.get('bulk_wave_speed', config_props.get('C0', default_acoustic_velocity))
+
+        def _config_entry(config_props, resolved_name):
+            bulk_wave_speed = config_props.get('bulk_wave_speed', config_props.get('C0'))
+            density = config_props.get('density')
             return {
-                'density': float(config_props.get('density', default_density)),
-                'bulk_wave_speed': float(config_props.get('bulk_wave_speed', 
-                                                          config_props.get('C0', default_acoustic_velocity))),
-                'C_L': float(config_props.get('C_L', default_C_L)),
+                'density': float(density) if density is not None else None,
+                'bulk_wave_speed': float(bulk_wave_speed) if bulk_wave_speed is not None else None,
+                'C_L': float(config_props.get('C_L', bulk_wave_speed)) if config_props.get('C_L', bulk_wave_speed) is not None else None,
                 'material_found': True,
-                'material_name': material_name,
+                'material_name': resolved_name,
                 'source': 'config'
             }
-        
+
+        # Priority 1: Check config material_properties section (exact match)
+        if self.material_properties and material_name in self.material_properties:
+            return _config_entry(self.material_properties[material_name], material_name)
+
         # Try case-insensitive match in config
         if self.material_properties:
             for config_mat_name, config_props in self.material_properties.items():
                 if config_mat_name.lower() == material_name.lower():
-                    # Default C_L to bulk_wave_speed if not specified
-                    default_C_L = config_props.get('bulk_wave_speed', config_props.get('C0', default_acoustic_velocity))
-                    return {
-                        'density': float(config_props.get('density', default_density)),
-                        'bulk_wave_speed': float(config_props.get('bulk_wave_speed',
-                                                                  config_props.get('C0', default_acoustic_velocity))),
-                        'C_L': float(config_props.get('C_L', default_C_L)),
-                        'material_found': True,
-                        'material_name': config_mat_name,
-                        'source': 'config'
-                    }
-        
-        # Priority 2 & 3: Use database function (which also checks parameter file if passed)
-        mat_props = get_material_properties(material_name, default_density, default_acoustic_velocity)
-        mat_props['source'] = 'database' if mat_props['material_found'] else 'default'
-        # Add C_L if not present (default to bulk_wave_speed for database materials)
-        if 'C_L' not in mat_props:
-            mat_props['C_L'] = mat_props.get('bulk_wave_speed', default_acoustic_velocity)
+                    return _config_entry(config_props, config_mat_name)
+
+        # Priority 2: Use the material_properties.py database -- also no fallback
+        mat_props = get_material_properties(material_name)
+        mat_props['source'] = 'database' if mat_props['material_found'] else None
+        mat_props.setdefault('C_L', mat_props.get('bulk_wave_speed'))
         return mat_props
 
     def detect_dns_and_process_spall(self, file_path, base_name, density, acoustic_velocity, 
@@ -810,7 +795,14 @@ class AnalysisThread(QThread):
             'Processing_Status': 'Failed',
             'DNS_Classification': 'Unknown'
         }
-        
+
+        # No material resolved (not in config material_properties, not in the
+        # material_properties.py database, and no explicit Density_kg_m3/
+        # Bulk_Wave_Speed_m_s override) -- do not guess; flag and stop here.
+        if density is None or acoustic_velocity is None:
+            results['Processing_Status'] = 'Mat not found'
+            return results
+
         try:
             # Step 1: Load CSV and handle headers
             try:
@@ -1276,7 +1268,7 @@ class AnalysisThread(QThread):
             
             if pd.notna(plateau_velocity) and plateau_velocity > 0:
                 # Get material properties for EOS calculation
-                mat_props = self.get_material_properties_from_config(sample_material, density, acoustic_velocity)
+                mat_props = self.get_material_properties_from_config(sample_material)
                 
                 # Get S parameter for Hugoniot EOS: U = c + S*u_p
                 S = mat_props.get('S', mat_props.get('slope_parameter', None))
@@ -2152,10 +2144,6 @@ class AnalysisThread(QThread):
                                 print(spall_msg2)  # Also print to terminal
                                 print(spall_msg3)  # Also print to terminal
                                 
-                                # Get material properties for each file
-                                default_density = self.spade_params.get('density', 8960)
-                                default_acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
-                                
                                 for i, vel_file in enumerate(vel_files):
                                     print(f"SPADE Processing file {i+1}/{len(vel_files)}: {os.path.basename(vel_file)}")
                                     self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(vel_files)}: {os.path.basename(vel_file)}")
@@ -2175,7 +2163,7 @@ class AnalysisThread(QThread):
                                     matched_param = self.get_param_data_for_file(base_name)
                                     sample_material = self.resolve_sample_material(base_name, matched_param)
 
-                                    mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)
+                                    mat_props = self.get_material_properties_from_config(sample_material)
                                     density = matched_param.get('Density_kg_m3', mat_props['density']) if matched_param else mat_props['density']
                                     acoustic_velocity = matched_param.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed']) if matched_param else mat_props['bulk_wave_speed']
                                     
@@ -2381,10 +2369,6 @@ class AnalysisThread(QThread):
                                 self.progress_signal.emit(spall_msg)
                                 print(spall_msg)  # Also print to terminal
                                 
-                                # Get material properties for each file
-                                default_density = self.spade_params.get('density', 8960)
-                                default_acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
-                                
                                 for i, vel_file in enumerate(self.spade_input_files):
                                     self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(self.spade_input_files)}: {os.path.basename(vel_file)}")
                                     
@@ -2401,7 +2385,7 @@ class AnalysisThread(QThread):
                                     matched_param = self.get_param_data_for_file(base_name)
                                     sample_material = self.resolve_sample_material(base_name, matched_param)
 
-                                    mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)
+                                    mat_props = self.get_material_properties_from_config(sample_material)
                                     density = matched_param.get('Density_kg_m3', mat_props['density']) if matched_param else mat_props['density']
                                     acoustic_velocity = matched_param.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed']) if matched_param else mat_props['bulk_wave_speed']
                                     
@@ -3268,6 +3252,9 @@ class AnalysisThread(QThread):
                                     source_msg = f" (from {source})" if source != "unknown" else ""
                                     self.progress_signal.emit(
                                         f"Using {mat_props['material_name']} properties: ρ={density:.0f} kg/m³, c={acoustic_velocity:.0f} m/s{source_msg}")
+                                else:
+                                    self.progress_signal.emit(
+                                        f"Mat not found for {base_name} (material='{sample_material}') -- HEL strain rate will not be calculated for this trace")
                                 hel_plot_end = (
                                     hel_end if hel_end is not None and hel_end > hel_start else np.max(time_aligned_iq)
                                 )
@@ -3558,8 +3545,9 @@ class AnalysisThread(QThread):
                         t_hel_s = hel_time_detection * 1e-9
                         t_0_s = t_0_ns * 1e-9  # Should be 0.0 in HEL-aligned time
                         
-                        # Calculate strain rate using C_L from material properties
-                        if np.isfinite(C_L) and np.isfinite(free_surface_velocity) and np.isfinite(U_0) and np.isfinite(t_hel_s) and np.isfinite(t_0_s):
+                        # Calculate strain rate using C_L from material properties.
+                        # C_L is None when the material couldn't be resolved -- no fallback.
+                        if C_L is not None and np.isfinite(C_L) and np.isfinite(free_surface_velocity) and np.isfinite(U_0) and np.isfinite(t_hel_s) and np.isfinite(t_0_s):
                             hel_strain_rate = self.elastic_shock_strain_rate(
                                 C_L=C_L,
                                 U_hel=free_surface_velocity,
@@ -3585,7 +3573,10 @@ class AnalysisThread(QThread):
                                     f"   HEL strain rate for {base_name}: {hel_strain_rate:.2e} s⁻¹")
                         else:
                             hel_strain_rate = np.nan  # Ensure it's set to NaN if calculation fails
-                            self.progress_signal.emit(f"Warning: Invalid values for HEL strain rate calculation for {base_name} (C_L={C_L}, U_hel={free_surface_velocity}, U_0={U_0}, t_hel={t_hel_s}, t_0={t_0_s})")
+                            if C_L is None:
+                                self.progress_signal.emit(f"   HEL strain rate for {base_name}: Not calculated (Mat not found -- no C_L)")
+                            else:
+                                self.progress_signal.emit(f"Warning: Invalid values for HEL strain rate calculation for {base_name} (C_L={C_L}, U_hel={free_surface_velocity}, U_0={U_0}, t_hel={t_hel_s}, t_0={t_0_s})")
                     except Exception as strain_error:
                         hel_strain_rate = np.nan  # Ensure it's set to NaN if exception occurs
                         self.progress_signal.emit(f"Warning: Could not calculate HEL strain rate for {base_name}: {str(strain_error)}")
@@ -3612,6 +3603,8 @@ class AnalysisThread(QThread):
                 
                 shot_data = {
                     'file_name': base_name,
+                    'sample_material': sample_material,
+                    'material_status': 'OK' if mat_props['material_found'] else 'Mat not found',
                     'mean_velocity_300_400ns_ms': mean_velocity_300_400,
                     'time_window_used': time_window_used,
                     'uncertainty_avg_ms': np.nanmean(uncertainty_data),
@@ -11083,10 +11076,6 @@ class AnalysisThread(QThread):
                                   'Spall Strength (GPa)' in summary_df.columns)
                 
                 if not already_enhanced:
-                    # Get default density and acoustic velocity from GUI/spade_params (used as fallback)
-                    default_density = self.spade_params.get('density', 8960)
-                    default_acoustic_velocity = self.spade_params.get('acoustic_velocity', 3950)
-                    
                     # Use parameter file data passed to AnalysisThread
                     param_data = self.param_data if self.param_data else {}
                     
@@ -11109,7 +11098,7 @@ class AnalysisThread(QThread):
                         sample_material = self.resolve_sample_material(base_name, matched_param)
                     
                         # Get material-specific properties from config first, then database
-                        mat_props = self.get_material_properties_from_config(sample_material, default_density, default_acoustic_velocity)
+                        mat_props = self.get_material_properties_from_config(sample_material)
                         # Parameter file can override (highest priority)
                         if matched_param:
                             density = matched_param.get('Density_kg_m3', mat_props['density'])
@@ -11123,6 +11112,7 @@ class AnalysisThread(QThread):
                         enhanced_row['Acoustic_Velocity_m_s'] = acoustic_velocity
                         enhanced_row['Material_Found_In_Database'] = mat_props['material_found']
                         enhanced_row['Material_Properties_Source'] = mat_props.get('source', 'unknown')
+                        enhanced_row['Material_Status'] = 'OK' if mat_props['material_found'] or density is not None else 'Mat not found'
                     
                         # Only merge ALPSS results if spall_calculation is enabled
                         # When spall_calculation is "no", we only use SPADE data

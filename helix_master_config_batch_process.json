@@ -80,8 +80,6 @@
     "experiment_velocity_shots": true,
     "experiment_spall_analysis": true,
     "experiment_hel_detection": true,
-    "density": 8960.0,
-    "acoustic_velocity": 3950.0,
     "spall_detection_method": "5-segment",
     "hel_start_time_ns": 0,
     "hel_end_time_ns": 15,

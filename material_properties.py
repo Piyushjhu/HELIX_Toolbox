@@ -63,46 +63,37 @@ MATERIAL_DATABASE = {
     'Graphite': {'density': 2260, 'bulk_wave_speed': 2500},
 }
 
-# Default fallback values (using Copper as reference)
-DEFAULT_DENSITY = 8960  # kg/m³
-DEFAULT_BULK_WAVE_SPEED = 3940  # m/s
-
-
-def get_material_properties(material_name, default_density=None, default_acoustic_velocity=None):
+def get_material_properties(material_name):
     """
     Get material properties from the database.
-    
+
+    No fallback values are substituted for an unrecognized material -- callers
+    must treat 'material_found': False as an error condition (e.g. flag the
+    trace as "Mat not found") rather than compute with a guessed density/speed.
+
     Parameters:
     -----------
     material_name : str
         Name of the material to look up
-    default_density : float, optional
-        Default density to use if material not found (kg/m³)
-    default_acoustic_velocity : float, optional
-        Default bulk wave speed to use if material not found (m/s)
-        
+
     Returns:
     --------
     dict : Dictionary containing:
-        - 'density': float (kg/m³)
-        - 'bulk_wave_speed': float (m/s)
+        - 'density': float (kg/m³) or None if not found
+        - 'bulk_wave_speed': float (m/s) or None if not found
         - 'material_found': bool (True if found in database)
         - 'material_name': str (the material name used)
     """
     # Clean up the material name
     material_name = str(material_name).strip()
-    
-    # Set fallback values
-    fallback_density = default_density if default_density is not None else DEFAULT_DENSITY
-    fallback_velocity = default_acoustic_velocity if default_acoustic_velocity is not None else DEFAULT_BULK_WAVE_SPEED
-    
+
     # Try exact match first
     if material_name in MATERIAL_DATABASE:
         props = MATERIAL_DATABASE[material_name].copy()
         props['material_found'] = True
         props['material_name'] = material_name
         return props
-    
+
     # Try case-insensitive match
     for db_name, db_props in MATERIAL_DATABASE.items():
         if db_name.lower() == material_name.lower():
@@ -110,11 +101,11 @@ def get_material_properties(material_name, default_density=None, default_acousti
             props['material_found'] = True
             props['material_name'] = db_name
             return props
-    
-    # Material not found, use defaults
+
+    # Material not found -- no fallback
     return {
-        'density': fallback_density,
-        'bulk_wave_speed': fallback_velocity,
+        'density': None,
+        'bulk_wave_speed': None,
         'material_found': False,
         'material_name': material_name
     }
