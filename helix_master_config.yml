@@ -30,7 +30,7 @@ cli_settings:
   # *** EDIT THIS *** — replace with the absolute path to your raw PDV data folder.
   # Example (macOS/Linux): /Users/you/experiments/shot_2026_04/raw_csv
   # Example (Windows):     C:/Users/you/experiments/shot_2026_04/raw_csv
-  input_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/Output_new
+  input_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/PDV_files/2026-08-03_13-35-09/pdv_trace
 
   # Explicit list of files to process.  Set to null to use input_dir + input_pattern.
   # Example:  input_files: [file1.csv, file2.csv]
@@ -43,7 +43,7 @@ cli_settings:
   #   <output_dir>/ALPSS_output/   → ALPSS results
   #   <output_dir>/SPADE_analysis/ → SPADE results and plots
   # *** EDIT THIS *** — replace with the absolute path where you want results saved.
-  output_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/Output_new/SPADE
+  output_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/Output_Aug26
 
   # Folder containing experiment parameter files (CSV/Excel).
   # Must have a column matching PDV filenames so metadata (material, laser
@@ -56,12 +56,12 @@ cli_settings:
   #   both       — run ALPSS then SPADE (full pipeline, default)
   #   alpss_only — stop after ALPSS velocity extraction
   #   spade_only — run SPADE only (requires pre-existing velocity files)
-  analysis_mode: spade_only
+  analysis_mode: both
 
   # SPADE input mode:
   #   auto   — SPADE reads the velocity files produced by ALPSS in this run
   #   manual — SPADE reads files listed in spade_input_dir / spade_input_files
-  spade_mode: manual
+  spade_mode: auto
 
   # Used only when spade_mode: manual
   spade_input_files: null
@@ -257,7 +257,7 @@ spade_config:
   # before searching for the pullback minimum (P3). Scales automatically with
   # each file's sample rate. Raise if a shallow noise wiggle right after the
   # peak is still being mistaken for the pullback minimum.
-  pullback_smoothing_ns: 2.0
+  pullback_smoothing_ns: 10.0
 
   # ── HEL detection ─────────────────────────────────────────────────────────────
   # Time window (ns, relative to t=0) searched for the elastic precursor plateau.
@@ -303,10 +303,6 @@ spade_config:
   # Minimum separation between detected peaks (ns).
   peak_distance_ns: 10.0
 
-  # ── SPADE smoothing (applied before feature detection) ───────────────────────
-  spade_smooth_window: 11    # Savitzky-Golay window length (samples, must be odd)
-  polyorder: 1               # Savitzky-Golay polynomial order
-  skip_smoothing: false      # Set true to disable additional smoothing in SPADE
 
   # ── MAD outlier filter ────────────────────────────────────────────────────────
   # Removes outlier peak-velocity values per material / laser-energy bracket.

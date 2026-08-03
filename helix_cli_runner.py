@@ -302,10 +302,6 @@ def _transform_spade_params_for_analysis(spade_params: Dict) -> Dict:
     if 'save_summary_table' not in params:
         params['save_summary_table'] = _to_bool(params.get('save_summary', True), default=True)
 
-    # Smooth window naming (some configs used spade_smooth_window)
-    if 'smooth_window' not in params and 'spade_smooth_window' in params:
-        params['smooth_window'] = params['spade_smooth_window']
-
     # Signal length handling (GUI stores None for "Full Signal")
     if 'signal_length_ns' not in params:
         signal_length_value = params.get('signal_length')

@@ -1772,29 +1772,16 @@ class AnalysisThread(QThread):
                             self.progress_signal.emit(
                                 f"SPADE Processing file 1/{len(vel_files)}: Starting SPADE analysis...")
 
-                            # Add skip_smoothing parameter to avoid double
-                            # smoothing (configurable via config file)
-                            spade_params_with_skip = self.spade_params.copy()
-                            # Get skip_smoothing from config (default: True to avoid double smoothing)
-                            skip_smoothing = self.spade_params.get('skip_smoothing', True)
-                            spade_params_with_skip['skip_smoothing'] = skip_smoothing
-
-                            # Remove smooth_window and polyorder when skipping
-                            # smoothing to avoid confusion
-                            if spade_params_with_skip.get(
-                                'skip_smoothing', False):
-                                spade_params_with_skip.pop(
-                                    'smooth_window', None)
-                                spade_params_with_skip.pop('polyorder', None)
+                            spade_call_params = self.spade_params.copy()
 
                             # Add parameter data for enhanced legends if
                             # available
                             if self.param_data:
-                                spade_params_with_skip['param_data'] = self.param_data
+                                spade_call_params['param_data'] = self.param_data
                                 self.progress_signal.emit(
                                     "Using parameter data for enhanced legends")
                             else:
-                                spade_params_with_skip['param_data'] = None
+                                spade_call_params['param_data'] = None
 
                             # Create subfolder for individual spall plots if plot_individual is enabled
                             plot_individual_enabled = self.spade_params.get('plot_individual', False)
@@ -1891,7 +1878,7 @@ class AnalysisThread(QThread):
                                         analysis_model=analysis_model,
                                         plot_dir=spall_plot_dir,
                                         sample_material=sample_material,  # Pass material for EOS calculation
-                                        **{k: v for k, v in spade_params_with_skip.items() if k not in ['plot_individual', 'density', 'acoustic_velocity', 'analysis_model']}
+                                        **{k: v for k, v in spade_call_params.items() if k not in ['plot_individual', 'density', 'acoustic_velocity', 'analysis_model']}
                                     )
                                     
                                     # Add material info
@@ -2014,26 +2001,15 @@ class AnalysisThread(QThread):
                         self.progress_signal.emit(
                             f"SPADE Processing file 1/{len(self.spade_input_files)}: Starting SPADE analysis...")
 
-                        # Add skip_smoothing parameter to avoid double
-                        # smoothing (configurable via config file)
-                        spade_params_with_skip = self.spade_params.copy()
-                        # Get skip_smoothing from config (default: True to avoid double smoothing)
-                        skip_smoothing = self.spade_params.get('skip_smoothing', True)
-                        spade_params_with_skip['skip_smoothing'] = skip_smoothing
-
-                        # Remove smooth_window and polyorder when skipping
-                        # smoothing to avoid confusion
-                        if spade_params_with_skip.get('skip_smoothing', False):
-                            spade_params_with_skip.pop('smooth_window', None)
-                            spade_params_with_skip.pop('polyorder', None)
+                        spade_call_params = self.spade_params.copy()
 
                         # Add parameter data for enhanced legends if available
                         if self.param_data:
-                            spade_params_with_skip['param_data'] = self.param_data
+                            spade_call_params['param_data'] = self.param_data
                             self.progress_signal.emit(
                                 "Using parameter data for enhanced legends")
                         else:
-                            spade_params_with_skip['param_data'] = None
+                            spade_call_params['param_data'] = None
 
                         # Create subfolder for individual spall plots if plot_individual is enabled
                         plot_individual_enabled = self.spade_params.get('plot_individual', False)
@@ -2113,7 +2089,7 @@ class AnalysisThread(QThread):
                                         analysis_model=analysis_model,
                                         plot_dir=spall_plot_dir,
                                         sample_material=sample_material,  # Pass material for EOS calculation
-                                        **{k: v for k, v in spade_params_with_skip.items() if k not in ['plot_individual', 'density', 'acoustic_velocity', 'analysis_model']}
+                                        **{k: v for k, v in spade_call_params.items() if k not in ['plot_individual', 'density', 'acoustic_velocity', 'analysis_model']}
                                     )
                                     
                                     # Add material info
@@ -12720,10 +12696,6 @@ class HELIXAnalysisToolbox(QMainWindow):
                 self.prominence_factor.setValue(params['prominence_factor'])
             if hasattr(self, 'peak_distance_ns') and 'peak_distance_ns' in params:
                 self.peak_distance_ns.setValue(params['peak_distance_ns'])
-            if hasattr(self, 'spade_smooth_window') and 'smooth_window' in params:
-                self.spade_smooth_window.setValue(params['smooth_window'])
-            if hasattr(self, 'polyorder') and 'polyorder' in params:
-                self.polyorder.setValue(params['polyorder'])
             if hasattr(self, 'plot_individual') and 'plot_individual' in params:
                 if hasattr(self.plot_individual, 'setChecked'):
                     self.plot_individual.setChecked(params['plot_individual'])
@@ -14547,19 +14519,6 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.peak_distance_ns.setSuffix(" ns")
         filter_layout.addWidget(self.peak_distance_ns, 0, 3)
         
-        filter_layout.addWidget(QLabel("Smooth Window:"), 1, 0)
-        self.spade_smooth_window = QSpinBox()
-        self.spade_smooth_window.setRange(3, 1001)
-        self.spade_smooth_window.setValue(101)
-        self.spade_smooth_window.setSingleStep(2)
-        filter_layout.addWidget(self.spade_smooth_window, 1, 1)
-        
-        filter_layout.addWidget(QLabel("Polyorder:"), 1, 2)
-        self.polyorder = QSpinBox()
-        self.polyorder.setRange(1, 5)
-        self.polyorder.setValue(1)
-        filter_layout.addWidget(self.polyorder, 1, 3)
-        
         layout.addWidget(filter_group)
 
         # Spall detection window parameters
@@ -15935,8 +15894,6 @@ Output Files:
             'signal_length_ns': signal_length_ns,
             'prominence_factor': self.prominence_factor.value(),
             'peak_distance_ns': self.peak_distance_ns.value(),
-            'smooth_window': self.spade_smooth_window.value(),
-            'polyorder': self.polyorder.value(),
             'plot_individual': self.plot_individual.isChecked(),
             'save_summary_table': self.save_summary.isChecked(),
             'show_plots': self.show_plots.isChecked(),

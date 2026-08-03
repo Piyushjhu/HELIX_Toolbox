@@ -332,10 +332,6 @@ spade_config:
   # peak is still being mistaken for the pullback minimum.
   pullback_smoothing_ns: 2.0
 
-  # ── SPADE smoothing (applied before feature detection) ───────────────────────
-  spade_smooth_window: 11    # Savitzky-Golay window length (samples, must be odd)
-  polyorder: 1                # Savitzky-Golay polynomial order
-  skip_smoothing: false       # Set true to disable additional smoothing in SPADE
 
   # ── Individual trace plots ────────────────────────────────────────────────────
   plot_individual: true         # Save one plot per trace (spall + HEL)
