@@ -7667,7 +7667,7 @@ class AnalysisThread(QThread):
             ]
             
             # Calculate strain rate from Line 3 (P2 to P3) even for DNS
-            strain_rate = abs(m3) * 1e9 / acoustic_velocity if m3 != 0 else 0.0
+            strain_rate = abs(m3) * 1e9 / (2.0 * acoustic_velocity) if m3 != 0 else 0.0  # e_dot = |du_fs/dt| / (2*c_b): free-surface factor of 2
             
             # Return DNS but include plateau velocity, shock stress, strain rate, and fits for visualization
             return False, f"DNS: P3 too close to zero ({v_p3:.2f} m/s, threshold=±10 m/s)", {
@@ -7815,7 +7815,7 @@ class AnalysisThread(QThread):
             ]
             
             # Calculate strain rate from Line 3 (P2 to P3) even for DNS
-            strain_rate = abs(m3) * 1e9 / acoustic_velocity if m3 != 0 else 0.0
+            strain_rate = abs(m3) * 1e9 / (2.0 * acoustic_velocity) if m3 != 0 else 0.0  # e_dot = |du_fs/dt| / (2*c_b): free-surface factor of 2
             
             # Return DNS but include plateau velocity, shock stress, strain rate, and fits for visualization
             return False, dns_reason, {
@@ -7888,7 +7888,7 @@ class AnalysisThread(QThread):
         spall_strength_gpa = 0.5 * density * acoustic_velocity * pullback_velocity / 1e9
 
         # Strain rate from pullback slope
-        strain_rate = abs(m3) * 1e9 / acoustic_velocity if m3 != 0 else 0.0
+        strain_rate = abs(m3) * 1e9 / (2.0 * acoustic_velocity) if m3 != 0 else 0.0  # e_dot = |du_fs/dt| / (2*c_b): free-surface factor of 2
 
         # Shock stress from plateau
         peak_shock_stress = density * acoustic_velocity * v_plateau_mean / 1e9
@@ -7899,7 +7899,7 @@ class AnalysisThread(QThread):
         pullback_velocity_unc = np.sqrt(plateau_unc**2 + p3_unc**2)
         spall_strength_unc_gpa = 0.5 * density * acoustic_velocity * pullback_velocity_unc / 1e9
         delta_t_release_ns = abs(t_p3 - t_last_plateau)
-        strain_rate_unc = pullback_velocity_unc * 1e9 / (acoustic_velocity * delta_t_release_ns) if delta_t_release_ns > 0 else 0.0
+        strain_rate_unc = pullback_velocity_unc * 1e9 / (2.0 * acoustic_velocity * delta_t_release_ns) if delta_t_release_ns > 0 else 0.0
 
         results = {
             'Processing Status': 'Success',
