@@ -728,8 +728,13 @@ class AnalysisThread(QThread):
             material_name: Name of the material to look up
 
         Returns:
-            Dictionary with 'density', 'bulk_wave_speed', 'C_L',
+            Dictionary with 'density', 'bulk_wave_speed', 'C_L', 'S',
             'material_found', 'material_name', 'source'
+
+        'S' is the Hugoniot slope (Us = C0 + S*up). Like the other
+        properties it has no default: if the config entry does not define
+        it, 'S' is None and callers must flag the trace (e.g. "S missing")
+        instead of substituting a value.
         """
         # Clean material name
         material_name = str(material_name).strip() if material_name else 'Unknown'
@@ -741,6 +746,7 @@ class AnalysisThread(QThread):
                 'density': float(density) if density is not None else None,
                 'bulk_wave_speed': float(bulk_wave_speed) if bulk_wave_speed is not None else None,
                 'C_L': float(config_props.get('C_L', bulk_wave_speed)) if config_props.get('C_L', bulk_wave_speed) is not None else None,
+                'S': float(config_props['S']) if config_props.get('S') is not None else None,
                 'material_found': True,
                 'material_name': resolved_name,
                 'source': 'config'
@@ -757,9 +763,11 @@ class AnalysisThread(QThread):
                     return _config_entry(config_props, config_mat_name)
 
         # Priority 2: Use the material_properties.py database -- also no fallback
+        # (the database does not define Hugoniot slopes, so 'S' is None here)
         mat_props = get_material_properties(material_name)
         mat_props['source'] = 'database' if mat_props['material_found'] else None
         mat_props.setdefault('C_L', mat_props.get('bulk_wave_speed'))
+        mat_props.setdefault('S', None)
         return mat_props
 
     def detect_dns_and_process_spall(self, file_path, base_name, density, acoustic_velocity, 
@@ -779,7 +787,6 @@ class AnalysisThread(QThread):
             dict: Results dictionary with spall strength, DNS classification, and diagnostics
         """
         import pandas as pd
-        # Note: find_peaks no longer used - replaced by RDP topology check
         
         results = {
             'Filename': base_name,
@@ -793,7 +800,8 @@ class AnalysisThread(QThread):
             'Pullback_Velocity_m_s': np.nan,
             'Pullback_Velocity_Unc_m_s': np.nan,
             'Processing_Status': 'Failed',
-            'DNS_Classification': 'Unknown'
+            'DNS_Classification': 'Unknown',
+            'Analysis_Notes': ''
         }
 
         # No material resolved (not in config material_properties, not in the
@@ -859,21 +867,35 @@ class AnalysisThread(QThread):
             alignment_method_used = None
             
             if use_hel_alignment:
-                # Use HEL-style alignment: velocity > 0 and increasing for 10 ns
-                min_velocity_threshold = self.spade_params.get('minimum_HEL_velocity_expected', 10.0)
-                hel_t0, hel_t0_idx, time_aligned_hel = self.find_hel_t0_alignment(
-                    time_valid_ns, vel_valid, min_velocity_threshold
-                )
-                
-                if hel_t0 is not None and hel_t0_idx is not None:
-                    # HEL alignment succeeded
-                    t0 = hel_t0 / 1e9  # Convert back to seconds for consistency
-                    alignment_method_used = "HEL"
-                    t_aligned_ns = (time_s - t0) * 1e9
-                else:
-                    # HEL alignment failed - fall back to threshold alignment
-                    alignment_method_used = "threshold_fallback"
-                    # Will fall through to threshold alignment below
+                t0_method_plot = self.spade_params.get('hel_t0_method', 'alpss_signal_start')
+
+                # Prefer the physical shock-arrival time ALPSS detected for this trace
+                # (t_start_corrected), so this plot's t=0 matches the HEL detection and the
+                # spall/binary-metal analysis rather than a per-trace velocity-domain foot.
+                if t0_method_plot == 'alpss_signal_start':
+                    alpss_t0_ns = self._load_alpss_signal_start_ns(file_path)
+                    if alpss_t0_ns is not None:
+                        t0 = alpss_t0_ns / 1e9  # ns -> seconds
+                        alignment_method_used = "ALPSS"
+                        t_aligned_ns = (time_s - t0) * 1e9
+
+                if t0 is None:
+                    # Fallback (or explicit velocity-domain methods): foot-of-rise detector.
+                    min_velocity_threshold = self.spade_params.get('minimum_HEL_velocity_expected', 10.0)
+                    fallback_method = 'signal_start' if t0_method_plot == 'alpss_signal_start' else t0_method_plot
+                    hel_t0, hel_t0_idx, time_aligned_hel = self.find_hel_t0_alignment(
+                        time_valid_ns, vel_valid, min_velocity_threshold, method=fallback_method
+                    )
+
+                    if hel_t0 is not None and hel_t0_idx is not None:
+                        # HEL alignment succeeded
+                        t0 = hel_t0 / 1e9  # Convert back to seconds for consistency
+                        alignment_method_used = "HEL"
+                        t_aligned_ns = (time_s - t0) * 1e9
+                    else:
+                        # HEL alignment failed - fall back to threshold alignment
+                        alignment_method_used = "threshold_fallback"
+                        # Will fall through to threshold alignment below
             
             # Fallback to threshold alignment if HEL alignment not enabled or failed
             if t0 is None:
@@ -901,298 +923,109 @@ class AnalysisThread(QThread):
             vel_window = vel_clean[window_mask]
             uncert_window = uncertainty[window_mask]
             
-            # Step 4: RDP Topology Check (The "Scanner")
-            # This replaces the old 'find_peaks' logic.
-            # We scan for the specific "Plateau -> Drop -> Rebound" shape using RDP simplification.
-            
-            # Get RDP configuration from spade_kwargs or use defaults
-            rdp_config = {
-                'spall_rdp_epsilon': spade_kwargs.get('spall_rdp_epsilon', self.spade_params.get('spall_rdp_epsilon', 5.0)),
-                'min_pullback_velocity': spade_kwargs.get('min_pullback_velocity', 10.0),
+            # Step 4: Build spall analysis configuration
+            spall_config = {
                 'min_recomp_ratio': spade_kwargs.get('min_recomp_ratio', self.spade_params.get('min_recomp_ratio', 0.1)),
                 'min_recomp_velocity_ratio': spade_kwargs.get('min_recomp_velocity_ratio', self.spade_params.get('min_recomp_velocity_ratio', 1.05)),
                 'min_recomp_time_ns': spade_kwargs.get('min_recomp_time_ns', self.spade_params.get('min_recomp_time_ns', 2.5)),
                 'pullback_smoothing_ns': spade_kwargs.get('pullback_smoothing_ns', self.spade_params.get('pullback_smoothing_ns', 2.0)),
             }
-            
+
             # Initialize variables
-            rdp_keys = None
             is_dns = False
             dns_reason = None
-            rdp_points = None  # For visualization
+
+            # Step 5: Extract Key Velocities (basic max/min diagnostics; refined
+            # by the horizontal-plateau fit results below when the fit succeeds)
+            results['First_Maxima_m_s'] = np.nanmax(vel_window) if len(vel_window) > 0 else np.nan
+            results['Minima_m_s'] = np.nanmin(vel_window) if len(vel_window) > 0 else np.nan
+            results['Second_Maxima_m_s'] = np.nan
+            results['Pullback_Velocity_m_s'] = np.nan
+            results['Pullback_Velocity_Unc_m_s'] = np.nan
+            pullback_unc = np.nan  # Initialize for later use in uncertainty calculation
             
-            # Check spall detection method
-            spall_detection_method = rdp_config.get('spall_detection_method', '5-segment').lower()
-            
-            # Generate RDP simplified points for visualization (even if detection fails)
-            try:
-                rdp_epsilon = rdp_config.get('spall_rdp_epsilon', 5.0)
-                rdp_indices = self.ramer_douglas_peucker_indices(time_window, vel_window, rdp_epsilon)
-                if len(rdp_indices) >= 2:
-                    rdp_points = np.column_stack((time_window[rdp_indices], vel_window[rdp_indices]))
-                    self.progress_signal.emit(f"  [RDP] {base_name}: Generated {len(rdp_indices)} simplified vertices (epsilon={rdp_epsilon:.1f} m/s)")
-            except Exception as e:
-                self.progress_signal.emit(f"  [WARNING] Could not generate RDP points for visualization: {str(e)}")
-                rdp_points = None
-            
-            # Run RDP-based spall detection (only if using RDP method)
-            if spall_detection_method == 'rdp':
-                is_spall_rdp, rdp_reason, rdp_keys = self.detect_spall_rdp(time_window, vel_window, rdp_config)
-                self.progress_signal.emit(f"  [RDP] {base_name}: Detection result: {'Valid Spall' if is_spall_rdp else rdp_reason}")
-            else:
-                # Skip RDP detection for legacy 5-segment method
-                is_spall_rdp = True  # Assume spall, let SPADE decide
-                rdp_reason = "Skipped (using legacy 5-segment)"
-                rdp_keys = None
-            
-            # Update Results based on RDP Detection (only when using RDP method)
-            if spall_detection_method == 'rdp':
-                if not is_spall_rdp:
-                    is_dns = True
-                    dns_reason = rdp_reason
-                    results['DNS_Classification'] = dns_reason
-                    results['Spall_Strength_GPa'] = "DNS"  # Mark immediately
-                    self.progress_signal.emit(f"  [DNS] {base_name}: {rdp_reason} - Will still attempt plateau velocity calculation")
-                else:
-                    is_dns = False
-                    dns_reason = None
-                    results['DNS_Classification'] = "Valid Spall"
-                    if rdp_keys:
-                        self.progress_signal.emit(f"  [RDP] {base_name}: Valid spall signature detected (pullback: {rdp_keys.get('pullback_velocity', 0):.2f} m/s, rebound: {rdp_keys.get('rebound_velocity', 0):.2f} m/s)")
-                    else:
-                        self.progress_signal.emit(f"  [RDP] {base_name}: Valid spall signature detected")
-            else:
-                # For legacy 5-segment method, don't pre-classify as DNS - let SPADE decide
-                is_dns = False
-                dns_reason = None
-                self.progress_signal.emit(f"  [SPADE-5SEG] {base_name}: Skipping RDP classification - SPADE will determine spall/DNS")
-            
-            # Step 5: Extract Key Velocities (From RDP Geometry)
-            # If RDP found features, we use them for robust statistics.
-            # If DNS, we try to extract what we can or leave NaN.
-            
-            if rdp_keys:
-                # Map RDP indices (which are relative to window) back to values
-                idx_peak = rdp_keys['shock_peak_idx']
-                idx_plat = rdp_keys['plateau_idx']
-                idx_min = rdp_keys['min_idx']
-                idx_recomp = rdp_keys['recomp_idx']
-                
-                # Extract values from raw window data at these robust indices
-                v_peak = vel_window[idx_peak]
-                v_plat = vel_window[idx_plat]
-                v_min = vel_window[idx_min]
-                v_recomp = vel_window[idx_recomp]
-                
-                # Store diagnostic velocities (matching RDP-detected geometry)
-                results['First_Maxima_m_s'] = v_peak
-                results['Minima_m_s'] = v_min
-                results['Second_Maxima_m_s'] = v_recomp
-                results['Pullback_Velocity_m_s'] = rdp_keys['pullback_velocity']  # From RDP detection
-                
-                # Compute pullback velocity uncertainty
-                peak_unc = uncert_window[idx_plat] if idx_plat < len(uncert_window) else 0
-                valley_unc = uncert_window[idx_min] if idx_min < len(uncert_window) else 0
-                pullback_unc = np.sqrt(peak_unc**2 + valley_unc**2) if np.isfinite(peak_unc) and np.isfinite(valley_unc) else np.nan
-                results['Pullback_Velocity_Unc_m_s'] = pullback_unc
-            else:
-                # Fallback for DNS cases (Basic max/min)
-                results['First_Maxima_m_s'] = np.nanmax(vel_window) if len(vel_window) > 0 else np.nan
-                results['Minima_m_s'] = np.nanmin(vel_window) if len(vel_window) > 0 else np.nan
-                results['Second_Maxima_m_s'] = np.nan
-                results['Pullback_Velocity_m_s'] = np.nan
-                results['Pullback_Velocity_Unc_m_s'] = np.nan
-                pullback_unc = np.nan  # Initialize for later use in uncertainty calculation
-            
-            # Step 6: Spall Analysis - Choose Method
+            # Step 6: Spall Analysis - Horizontal Plateau 5-Segment
             spade_lines_info = None
             spade_intersections = None
             result_dict = None
-            
-            # Get spall detection method from config (default: 5-segment for legacy compatibility)
-            spall_detection_method = rdp_config.get('spall_detection_method', '5-segment').lower()
-            
-            if not is_dns:
-                if spall_detection_method == 'rdp':
-                    # Use RDP-guided fitting for precise segment boundaries
-                    self.progress_signal.emit(f"  [RDP-FIT] {base_name}: Starting RDP-guided 5-segment analysis")
-                    is_spall_fit, fit_reason, fit_results = self.analyze_spall_rdp_5_segment(
-                        time_window, vel_window, rdp_config
-                    )
-                    
-                    if is_spall_fit:
-                        # Successfully fitted - extract results
-                        P_indices = fit_results['indices']
-                        P_velocities = fit_results['velocities']
-                        P_times = fit_results['times']
-                        fits = fit_results['fits']
-                        
-                        # Create result_dict compatible with existing code
-                        # Calculate plateau mean velocity (average between P1 and P2, or just P1 if P1==P2)
-                        if P_indices['P1'] == P_indices['P2']:
-                            plateau_mean_vel = P_velocities['P1']
-                        else:
-                            plateau_mean_vel = np.mean(vel_window[P_indices['P1']:P_indices['P2']+1])
-                        
-                        result_dict = {
-                            'Processing Status': 'Success',
-                            'First Maxima (m/s)': P_velocities['P1'],
-                            'Minima (m/s)': P_velocities['P3'],
-                            'Second Maxima (m/s)': P_velocities['P4'],
-                            'Pullback Velocity (m/s)': fit_results['pullback_velocity'],
-                            'Pullback Velocity Uncertainty (m/s)': float(pullback_unc) if np.isfinite(pullback_unc) else 0.0,
-                            'Strain Rate (s^-1)': 0.0,  # Will calculate below
-                            'Strain Rate Uncertainty (s^-1)': 0.0,  # Will calculate below
-                            'Spall Strength (GPa)': 0.0,  # Will calculate below
-                            'Spall Strength Uncertainty (GPa)': 0.5 * density * acoustic_velocity * float(pullback_unc) / 1e9 if np.isfinite(pullback_unc) else 0.0,
-                            'Plateau Mean Velocity (m/s)': plateau_mean_vel  # Mean plateau velocity
-                        }
-                        
-                        # Calculate spall strength using impedance matching
-                        # pullback_velocity is in m/s, density in kg/m³, acoustic_velocity in m/s
-                        # Formula: σ = 0.5 * ρ * c * Δu_p
-                        # Result in Pa, divide by 1e9 for GPa
-                        pullback_velocity_ms = fit_results['pullback_velocity']
-                        spall_strength_gpa = 0.5 * density * acoustic_velocity * pullback_velocity_ms / 1e9
-                        result_dict['Spall Strength (GPa)'] = spall_strength_gpa
-                        
-                        # Calculate shock stress from plateau velocity
-                        # Formula: σ = ρ * c * u_p / 1e9 (for GPa)
-                        plateau_mean_vel = result_dict['Plateau Mean Velocity (m/s)']
-                        peak_shock_stress = density * acoustic_velocity * plateau_mean_vel / 1e9
-                        result_dict['Peak Shock Stress (GPa)'] = peak_shock_stress
-                        result_dict['Peak Shock Stress Uncertainty (GPa)'] = 0.0
-                        
-                        # Calculate strain rate from release segment (P2 -> P3)
-                        strain_rate = 0.0
-                        if fits['seg3_release'] and fits['seg3_release']['m'] != 0:
-                            release_slope_ms_per_ns = fits['seg3_release']['m']
-                            release_slope_ms_per_s = abs(release_slope_ms_per_ns) * 1e9
-                            strain_rate = release_slope_ms_per_s / acoustic_velocity
-                            result_dict['Strain Rate (s^-1)'] = strain_rate
-                            # Strain rate uncertainty from pullback velocity uncertainty
-                            delta_t_release_ns = abs(P_times['P3'] - P_times['P2'])
-                            if np.isfinite(pullback_unc) and delta_t_release_ns > 0:
-                                result_dict['Strain Rate Uncertainty (s^-1)'] = float(pullback_unc) * 1e9 / (acoustic_velocity * delta_t_release_ns)
 
-                        # Store fits and intersections for plotting
-                        spade_lines_info = fits
-                        spade_intersections = [(time_window[P_indices['P1']], P_velocities['P1']),
-                                             (time_window[P_indices['P2']], P_velocities['P2']),
-                                             (time_window[P_indices['P3']], P_velocities['P3']),
-                                             (time_window[P_indices['P4']], P_velocities['P4'])]
-                        
-                        self.progress_signal.emit(f"  [RDP-FIT] {base_name}: Spall={spall_strength_gpa:.3f} GPa, Strain Rate={strain_rate:.2e} s^-1, Shock={peak_shock_stress:.3f} GPa")
-                        self.progress_signal.emit(f"    P1={P_times['P1']:.1f}ns ({P_velocities['P1']:.1f}m/s), P2={P_times['P2']:.1f}ns ({P_velocities['P2']:.1f}m/s)")
-                        self.progress_signal.emit(f"    P3={P_times['P3']:.1f}ns ({P_velocities['P3']:.1f}m/s), P4={P_times['P4']:.1f}ns ({P_velocities['P4']:.1f}m/s)")
-                        
-                    else:
-                        # RDP fitting failed - mark as DNS
-                        is_dns = True
-                        dns_reason = fit_reason
-                        results['DNS_Classification'] = dns_reason
-                        self.progress_signal.emit(f"  [RDP-FIT] {base_name}: {fit_reason}")
-                        
-                        # Fallback to basic plateau detection for shock stress
-                        plateau_vel = np.nanmax(vel_window[:len(vel_window)//3])
-                        result_dict = {
-                            'Processing Status': 'DNS', 
-                            'Plateau Mean Velocity (m/s)': plateau_vel,
-                            'Peak Shock Stress (GPa)': density * acoustic_velocity * plateau_vel / 1e9,
-                            'Peak Shock Stress Uncertainty (GPa)': 0.0
-                        }
+            # Use horizontal plateau constraint method
+            self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: Using horizontal plateau 5-segment analysis")
+            
+            is_spall_plat, plat_reason, plat_results = self.analyze_spall_horizontal_plateau(
+                time_window, vel_window, uncert_window, density, acoustic_velocity, spall_config
+            )
+            
+            if is_spall_plat:
+                # Success - extract results
+                result_dict = plat_results
+                fits_dict = plat_results.get('fits', None)
+                spade_intersections = plat_results.get('intersections', None)
+                # Convert fits dictionary to list format expected by plotting function
+                if fits_dict and isinstance(fits_dict, dict):
+                    spade_lines_info = [
+                        (fits_dict.get('seg1_rise', {}).get('m', 0), fits_dict.get('seg1_rise', {}).get('c', 0)),
+                        (fits_dict.get('seg2_plateau', {}).get('m', 0), fits_dict.get('seg2_plateau', {}).get('c', 0)),
+                        (fits_dict.get('seg3_release', {}).get('m', 0), fits_dict.get('seg3_release', {}).get('c', 0)),
+                        (fits_dict.get('seg4_recomp', {}).get('m', 0), fits_dict.get('seg4_recomp', {}).get('c', 0)),
+                        (fits_dict.get('seg5_tail', {}).get('m', 0), fits_dict.get('seg5_tail', {}).get('c', 0))
+                    ]
+                    print(f"  [HORIZ-PLAT] {base_name}: Success case - Converted fits dict to list: {len(spade_lines_info)} segments")
+                    sys.stdout.flush()
+                else:
+                    print(f"  [HORIZ-PLAT] {base_name}: Success case - No fits dict found: fits_dict={fits_dict}")
+                    sys.stdout.flush()
+                    spade_lines_info = None
                 
-                else:  # spall_detection_method == '5-segment' (Horizontal Plateau method)
-                    # Use horizontal plateau constraint method
-                    self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: Using horizontal plateau 5-segment analysis")
-                    
-                    is_spall_plat, plat_reason, plat_results = self.analyze_spall_horizontal_plateau(
-                        time_window, vel_window, uncert_window, density, acoustic_velocity, rdp_config
-                    )
-                    
-                    if is_spall_plat:
-                        # Success - extract results
-                        result_dict = plat_results
-                        fits_dict = plat_results.get('fits', None)
-                        spade_intersections = plat_results.get('intersections', None)
-                        # Convert fits dictionary to list format expected by plotting function
-                        if fits_dict and isinstance(fits_dict, dict):
-                            spade_lines_info = [
-                                (fits_dict.get('seg1_rise', {}).get('m', 0), fits_dict.get('seg1_rise', {}).get('c', 0)),
-                                (fits_dict.get('seg2_plateau', {}).get('m', 0), fits_dict.get('seg2_plateau', {}).get('c', 0)),
-                                (fits_dict.get('seg3_release', {}).get('m', 0), fits_dict.get('seg3_release', {}).get('c', 0)),
-                                (fits_dict.get('seg4_recomp', {}).get('m', 0), fits_dict.get('seg4_recomp', {}).get('c', 0)),
-                                (fits_dict.get('seg5_tail', {}).get('m', 0), fits_dict.get('seg5_tail', {}).get('c', 0))
-                            ]
-                            print(f"  [HORIZ-PLAT] {base_name}: Success case - Converted fits dict to list: {len(spade_lines_info)} segments")
-                            sys.stdout.flush()
-                        else:
-                            print(f"  [HORIZ-PLAT] {base_name}: Success case - No fits dict found: fits_dict={fits_dict}")
-                            sys.stdout.flush()
-                            spade_lines_info = None
-                        
-                        spall_val = plat_results.get('Spall Strength (GPa)', 0)
-                        strain_val = plat_results.get('Strain Rate (s^-1)', 0)
-                        shock_val = plat_results.get('Peak Shock Stress (GPa)', 0)
-                        self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: Spall={spall_val:.3f} GPa, Strain Rate={strain_val:.2e} s^-1, Shock={shock_val:.3f} GPa")
-                    else:
-                        # Horizontal plateau method detected DNS
-                        is_dns = True
-                        dns_reason = plat_reason
-                        results['DNS_Classification'] = dns_reason
-                        results['Spall_Strength_GPa'] = "DNS"
-                        self.progress_signal.emit(f"  [DNS] {base_name}: {plat_reason}")
-                        
-                        # Use results from method (now includes plateau velocity and shock stress)
-                        result_dict = plat_results if plat_results else {}
-                        # Ensure required fields are present even if method returned empty dict (fallback)
-                        if not result_dict or 'Plateau Mean Velocity (m/s)' not in result_dict:
-                            plateau_vel = np.nanmax(vel_window[:len(vel_window)//3])
-                            result_dict = {
-                                'Processing Status': 'DNS',
-                                'Plateau Mean Velocity (m/s)': plateau_vel,
-                                'Peak Shock Stress (GPa)': density * acoustic_velocity * plateau_vel / 1e9,
-                                'Peak Shock Stress Uncertainty (GPa)': 0.0
-                            }
-                        else:
-                            # Log what we got from the method
-                            plat_vel = result_dict.get('Plateau Mean Velocity (m/s)', 'N/A')
-                            shock_stress = result_dict.get('Peak Shock Stress (GPa)', 'N/A')
-                            self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: DNS case - Plateau={plat_vel} m/s, Shock={shock_stress} GPa")
-                            # Extract fits and intersections for visualization (even for DNS cases)
-                            fits_dict = result_dict.get('fits', None)
-                            spade_intersections = result_dict.get('intersections', None)
-                            # Convert fits dictionary to list format expected by plotting function
-                            if fits_dict and isinstance(fits_dict, dict):
-                                spade_lines_info = [
-                                    (fits_dict.get('seg1_rise', {}).get('m', 0), fits_dict.get('seg1_rise', {}).get('c', 0)),
-                                    (fits_dict.get('seg2_plateau', {}).get('m', 0), fits_dict.get('seg2_plateau', {}).get('c', 0)),
-                                    (fits_dict.get('seg3_release', {}).get('m', 0), fits_dict.get('seg3_release', {}).get('c', 0)),
-                                    (fits_dict.get('seg4_recomp', {}).get('m', 0), fits_dict.get('seg4_recomp', {}).get('c', 0)),
-                                    (fits_dict.get('seg5_tail', {}).get('m', 0), fits_dict.get('seg5_tail', {}).get('c', 0))
-                                ]
-                                print(f"  [HORIZ-PLAT] {base_name}: DNS case - Converted fits dict to list: {len(spade_lines_info)} segments, intersections: {len(spade_intersections) if spade_intersections else 0} points")
-                                sys.stdout.flush()
-                                if spade_intersections:
-                                    self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: DNS case - Will show 5-segment lines for visualization")
-                            else:
-                                print(f"  [HORIZ-PLAT] {base_name}: DNS case - No fits dict found: fits_dict={fits_dict}, type={type(fits_dict)}")
-                                sys.stdout.flush()
-                                spade_lines_info = None
-                                spade_intersections = None
+                spall_val = plat_results.get('Spall Strength (GPa)', 0)
+                strain_val = plat_results.get('Strain Rate (s^-1)', 0)
+                shock_val = plat_results.get('Peak Shock Stress (GPa)', 0)
+                self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: Spall={spall_val:.3f} GPa, Strain Rate={strain_val:.2e} s^-1, Shock={shock_val:.3f} GPa")
             else:
-                # DNS case - still need plateau velocity for shock stress
-                method_label = "RDP-FIT" if spall_detection_method == 'rdp' else "SPADE-5SEG"
-                self.progress_signal.emit(f"  [{method_label}] {base_name}: Skipping fit (DNS from RDP detection)")
-                # Use first third of signal as plateau approximation
-                plateau_vel = np.nanmax(vel_window[:len(vel_window)//3])
-                peak_shock_stress = density * acoustic_velocity * plateau_vel / 1e9
-                result_dict = {
-                    'Processing Status': 'DNS', 
-                    'Plateau Mean Velocity (m/s)': plateau_vel,
-                    'Peak Shock Stress (GPa)': peak_shock_stress,
-                    'Peak Shock Stress Uncertainty (GPa)': 0.0
-                }
+                # Horizontal plateau method detected DNS
+                is_dns = True
+                dns_reason = plat_reason
+                results['DNS_Classification'] = dns_reason
+                results['Spall_Strength_GPa'] = "DNS"
+                self.progress_signal.emit(f"  [DNS] {base_name}: {plat_reason}")
+                
+                # Use results from method (now includes plateau velocity and shock stress)
+                result_dict = plat_results if plat_results else {}
+                # Ensure required fields are present even if method returned empty dict (fallback)
+                if not result_dict or 'Plateau Mean Velocity (m/s)' not in result_dict:
+                    plateau_vel = np.nanmax(vel_window[:len(vel_window)//3])
+                    result_dict = {
+                        'Processing Status': 'DNS',
+                        'Plateau Mean Velocity (m/s)': plateau_vel,
+                        'Peak Shock Stress (GPa)': density * acoustic_velocity * plateau_vel / 1e9,
+                        'Peak Shock Stress Uncertainty (GPa)': 0.0
+                    }
+                else:
+                    # Log what we got from the method
+                    plat_vel = result_dict.get('Plateau Mean Velocity (m/s)', 'N/A')
+                    shock_stress = result_dict.get('Peak Shock Stress (GPa)', 'N/A')
+                    self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: DNS case - Plateau={plat_vel} m/s, Shock={shock_stress} GPa")
+                    # Extract fits and intersections for visualization (even for DNS cases)
+                    fits_dict = result_dict.get('fits', None)
+                    spade_intersections = result_dict.get('intersections', None)
+                    # Convert fits dictionary to list format expected by plotting function
+                    if fits_dict and isinstance(fits_dict, dict):
+                        spade_lines_info = [
+                            (fits_dict.get('seg1_rise', {}).get('m', 0), fits_dict.get('seg1_rise', {}).get('c', 0)),
+                            (fits_dict.get('seg2_plateau', {}).get('m', 0), fits_dict.get('seg2_plateau', {}).get('c', 0)),
+                            (fits_dict.get('seg3_release', {}).get('m', 0), fits_dict.get('seg3_release', {}).get('c', 0)),
+                            (fits_dict.get('seg4_recomp', {}).get('m', 0), fits_dict.get('seg4_recomp', {}).get('c', 0)),
+                            (fits_dict.get('seg5_tail', {}).get('m', 0), fits_dict.get('seg5_tail', {}).get('c', 0))
+                        ]
+                        print(f"  [HORIZ-PLAT] {base_name}: DNS case - Converted fits dict to list: {len(spade_lines_info)} segments, intersections: {len(spade_intersections) if spade_intersections else 0} points")
+                        sys.stdout.flush()
+                        if spade_intersections:
+                            self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: DNS case - Will show 5-segment lines for visualization")
+                    else:
+                        print(f"  [HORIZ-PLAT] {base_name}: DNS case - No fits dict found: fits_dict={fits_dict}, type={type(fits_dict)}")
+                        sys.stdout.flush()
+                        spade_lines_info = None
+                        spade_intersections = None
             
             # DEBUG: Log processing status
             if result_dict:
@@ -1269,38 +1102,34 @@ class AnalysisThread(QThread):
             if pd.notna(plateau_velocity) and plateau_velocity > 0:
                 # Get material properties for EOS calculation
                 mat_props = self.get_material_properties_from_config(sample_material)
-                
-                # Get S parameter for Hugoniot EOS: U = c + S*u_p
-                S = mat_props.get('S', mat_props.get('slope_parameter', None))
+
+                # Hugoniot slope S must be defined for the material (config
+                # material_properties section). No default/backup value is
+                # ever substituted: without S the shock stress stays NaN and
+                # the trace is flagged in Analysis_Notes.
+                S = mat_props.get('S')
                 if S is None:
-                    # Use default S values based on common materials
-                    material_lower = str(sample_material).lower()
-                    if 'cu' in material_lower or 'copper' in material_lower:
-                        S = 1.49
-                    elif 'zn' in material_lower or 'zinc' in material_lower:
-                        S = 1.30
-                    elif 'al' in material_lower or 'aluminum' in material_lower or 'aluminium' in material_lower:
-                        S = 1.34
-                    elif 'brass' in material_lower:
-                        S = 1.43
-                    else:
-                        S = 1.49  # Default to Cu value
-                
-                # Calculate using EOS method
-                # plateau_velocity is free surface velocity (u_fs)
-                u_p = plateau_velocity / 2.0  # Particle velocity = free surface velocity / 2
-                shock_velocity = acoustic_velocity + S * u_p  # U = c + S*u_p
-                peak_shock_stress = density * shock_velocity * u_p * 1e-9  # σ = ρ * U * u_p (GPa)
-                
-                # Calculate uncertainty if velocity uncertainty is available
-                velocity_unc = result_dict.get('Plateau Mean Velocity Uncertainty (m/s)', np.nan)
-                if pd.isna(velocity_unc):
-                    velocity_unc = result_dict.get('Peak Velocity Uncertainty (m/s)', np.nan)
-                
-                if pd.notna(velocity_unc) and velocity_unc > 0:
-                    # Propagate uncertainty: δσ = ρ * (c + 2*S*u_p) * δu_p * 1e-9
-                    u_p_unc = velocity_unc / 2.0  # Uncertainty in particle velocity
-                    peak_shock_stress_unc = density * (acoustic_velocity + 2 * S * u_p) * u_p_unc * 1e-9
+                    note = f"ERROR: Hugoniot slope 'S' missing for material '{sample_material}' - Peak Shock Stress not calculated"
+                    results['Analysis_Notes'] = note
+                    self.progress_signal.emit(f"  [ERROR] {base_name}: {note}")
+                    print(f"  [ERROR] {base_name}: {note}")
+                    sys.stdout.flush()
+                else:
+                    # Calculate using EOS method
+                    # plateau_velocity is free surface velocity (u_fs)
+                    u_p = plateau_velocity / 2.0  # Particle velocity = free surface velocity / 2
+                    shock_velocity = acoustic_velocity + S * u_p  # U = c + S*u_p
+                    peak_shock_stress = density * shock_velocity * u_p * 1e-9  # σ = ρ * U * u_p (GPa)
+
+                    # Calculate uncertainty if velocity uncertainty is available
+                    velocity_unc = result_dict.get('Plateau Mean Velocity Uncertainty (m/s)', np.nan)
+                    if pd.isna(velocity_unc):
+                        velocity_unc = result_dict.get('Peak Velocity Uncertainty (m/s)', np.nan)
+
+                    if pd.notna(velocity_unc) and velocity_unc > 0:
+                        # Propagate uncertainty: δσ = ρ * (c + 2*S*u_p) * δu_p * 1e-9
+                        u_p_unc = velocity_unc / 2.0  # Uncertainty in particle velocity
+                        peak_shock_stress_unc = density * (acoustic_velocity + 2 * S * u_p) * u_p_unc * 1e-9
             
             # Step 8: Final classification
             # is_dns flag is already set by RDP check (Step 4) or SPADE verification (Step 6a)
@@ -1359,36 +1188,26 @@ class AnalysisThread(QThread):
                 effective_plot_path = plot_path
 
             if effective_plot_path:
-                # Always use custom plotting to show RDP visualization
-                if True:  # Always generate custom plot with RDP visualization
-                    self.progress_signal.emit(f"  [PLOT] Generating individual spall plot for {base_name}: {effective_plot_path}")
-                    try:
-                        # Extract indices for plotting (use RDP indices if available, otherwise None)
-                        peak_idx = rdp_keys['shock_peak_idx'] if rdp_keys and 'shock_peak_idx' in rdp_keys else None
-                        valley_idx = rdp_keys['min_idx'] if rdp_keys and 'min_idx' in rdp_keys else None
-                        
-                        self.progress_signal.emit(f"  [PLOT] Calling _plot_generic_spall_analysis with plot_path={effective_plot_path}, peak_idx={peak_idx}, valley_idx={valley_idx}")
-                        self._plot_generic_spall_analysis(
-                            effective_plot_path, time_window, vel_window, uncert_window,
-                            peak_idx, valley_idx,
-                            results.get('Spall_Strength_GPa', spall_strength),
-                            results.get('Spall_Strength_Unc_GPa', spall_unc),
-                            base_name,
-                            analysis_model='hybrid',  # Use 'hybrid' to indicate mixed approach
-                            lines_info=spade_lines_info,
-                            intersections=spade_intersections,
-                            rdp_keys=rdp_keys,  # Pass RDP detection results
-                            rdp_points=rdp_points  # Pass RDP simplified points for visualization
-                        )
-                        # Verify plot was actually created
-                        if os.path.exists(effective_plot_path):
-                            self.progress_signal.emit(f"  [PLOT] ✓ Successfully generated plot for {base_name}: {effective_plot_path} (file exists)")
-                        else:
-                            self.progress_signal.emit(f"  [PLOT] ⚠ WARNING: Plot function returned without error, but file does not exist: {effective_plot_path}")
-                    except Exception as plot_error:
-                        import traceback
-                        self.progress_signal.emit(f"  [PLOT] ✗ ERROR: Could not generate spall plot for {base_name}: {str(plot_error)}")
-                        self.progress_signal.emit(f"  [PLOT] Error traceback: {traceback.format_exc()}")
+                self.progress_signal.emit(f"  [PLOT] Generating individual spall plot for {base_name}: {effective_plot_path}")
+                try:
+                    self._plot_generic_spall_analysis(
+                        effective_plot_path, time_window, vel_window, uncert_window,
+                        results.get('Spall_Strength_GPa', spall_strength),
+                        results.get('Spall_Strength_Unc_GPa', spall_unc),
+                        base_name,
+                        analysis_model='hybrid',  # Use 'hybrid' to indicate mixed approach
+                        lines_info=spade_lines_info,
+                        intersections=spade_intersections
+                    )
+                    # Verify plot was actually created
+                    if os.path.exists(effective_plot_path):
+                        self.progress_signal.emit(f"  [PLOT] ✓ Successfully generated plot for {base_name}: {effective_plot_path} (file exists)")
+                    else:
+                        self.progress_signal.emit(f"  [PLOT] ⚠ WARNING: Plot function returned without error, but file does not exist: {effective_plot_path}")
+                except Exception as plot_error:
+                    import traceback
+                    self.progress_signal.emit(f"  [PLOT] ✗ ERROR: Could not generate spall plot for {base_name}: {str(plot_error)}")
+                    self.progress_signal.emit(f"  [PLOT] Error traceback: {traceback.format_exc()}")
             else:
                 print(f"  [PLOT] No plot_path provided for {base_name} (plot_individual may be disabled or spall_analysis not enabled)")
                 sys.stdout.flush()
@@ -1405,25 +1224,9 @@ class AnalysisThread(QThread):
 
 
     def _plot_generic_spall_analysis(self, plot_path, time_window, vel_window, uncert_window,
-                                     peak_idx, valley_idx, spall_strength, spall_unc, base_name,
-                                     analysis_model='max_min', lines_info=None, intersections=None,
-                                     rdp_keys=None, rdp_points=None):
-        """Generate generic spall analysis plot for any analysis model
-        
-        Parameters
-        ----------
-        rdp_keys : dict, optional
-            Dictionary with RDP-detected key points:
-            - 'shock_peak_idx': Index of shock peak
-            - 'plateau_idx': Index of plateau end
-            - 'min_idx': Index of pullback minimum
-            - 'recomp_idx': Index of recompression point
-            - 'pullback_velocity': Magnitude of pullback (m/s)
-            - 'rebound_velocity': Magnitude of rebound (m/s)
-        rdp_points : numpy.ndarray, optional
-            Array of RDP simplified points (Nx2: [time, velocity])
-            Used to visualize the RDP-simplified trace overlaid on the raw data
-        """
+                                     spall_strength, spall_unc, base_name,
+                                     analysis_model='max_min', lines_info=None, intersections=None):
+        """Generate generic spall analysis plot for any analysis model"""
         try:
             import matplotlib.pyplot as plt
             import numpy as np
@@ -1438,107 +1241,6 @@ class AnalysisThread(QThread):
                 ax.fill_between(time_window, vel_window - uncert_window, vel_window + uncert_window,
                                alpha=0.2, color='blue', label='Uncertainty')
             
-            # Plot RDP simplified points (only when using RDP detection method)
-            # For legacy 5-segment method, skip RDP visualization entirely
-            if rdp_points is not None and len(rdp_points) > 0 and rdp_keys is not None:
-                ax.plot(rdp_points[:, 0], rdp_points[:, 1], 'o-', 
-                       color='purple', markersize=6, linewidth=1.5, alpha=0.6,
-                       label='RDP Simplified', zorder=5)
-                # Debug: Log RDP points for troubleshooting
-                self.progress_signal.emit(f"  [RDP PLOT] {base_name}: Plotting {len(rdp_points)} RDP simplified points")
-            elif rdp_keys is not None:
-                # RDP method is active but no points
-                self.progress_signal.emit(f"  [RDP PLOT] {base_name}: No RDP points to plot (rdp_points={rdp_points})")
-            else:
-                # Legacy 5-segment method - skip RDP visualization
-                self.progress_signal.emit(f"  [LEGACY] {base_name}: Skipping RDP visualization (using legacy 5-segment method)")
-            
-            # Mark RDP-detected key points (only when using RDP method)
-            if rdp_keys:
-                self.progress_signal.emit(f"  [RDP PLOT] {base_name}: Plotting RDP key points: {list(rdp_keys.keys())}")
-            if rdp_keys:
-                # Shock Peak
-                if 'shock_peak_idx' in rdp_keys:
-                    idx = rdp_keys['shock_peak_idx']
-                    if idx < len(time_window):
-                        ax.plot(time_window[idx], vel_window[idx], 'r*', 
-                               markersize=14, markeredgewidth=2, markeredgecolor='darkred',
-                               label='RDP: Shock Peak', zorder=6)
-                        ax.text(time_window[idx], vel_window[idx], ' Peak', 
-                               fontsize=9, color='darkred', fontweight='bold',
-                               ha='left', va='bottom')
-                
-                # Plateau End
-                if 'plateau_idx' in rdp_keys:
-                    idx = rdp_keys['plateau_idx']
-                    if idx < len(time_window):
-                        ax.plot(time_window[idx], vel_window[idx], 'mo', 
-                               markersize=10, markeredgewidth=2, markeredgecolor='darkmagenta',
-                               label='RDP: Plateau End', zorder=6)
-                        ax.text(time_window[idx], vel_window[idx], ' Plateau', 
-                               fontsize=9, color='darkmagenta', fontweight='bold',
-                               ha='left', va='top')
-                
-                # Pullback Minimum
-                if 'min_idx' in rdp_keys:
-                    idx = rdp_keys['min_idx']
-                    if idx < len(time_window):
-                        ax.plot(time_window[idx], vel_window[idx], 'go', 
-                               markersize=12, markeredgewidth=2, markeredgecolor='darkgreen',
-                               label='RDP: Pullback Min', zorder=6)
-                        ax.text(time_window[idx], vel_window[idx], ' Min', 
-                               fontsize=9, color='darkgreen', fontweight='bold',
-                               ha='left', va='top')
-                
-                # Recompression Point
-                if 'recomp_idx' in rdp_keys:
-                    idx = rdp_keys['recomp_idx']
-                    if idx < len(time_window):
-                        ax.plot(time_window[idx], vel_window[idx], 'co', 
-                               markersize=10, markeredgewidth=2, markeredgecolor='darkcyan',
-                               label='RDP: Recompression', zorder=6)
-                        ax.text(time_window[idx], vel_window[idx], ' Recomp', 
-                               fontsize=9, color='darkcyan', fontweight='bold',
-                               ha='left', va='bottom')
-                
-                # Draw RDP-detected pattern: Plateau -> Min -> Recomp
-                if all(k in rdp_keys for k in ['plateau_idx', 'min_idx', 'recomp_idx']):
-                    idx_plat = rdp_keys['plateau_idx']
-                    idx_min = rdp_keys['min_idx']
-                    idx_recomp = rdp_keys['recomp_idx']
-                    if all(idx < len(time_window) for idx in [idx_plat, idx_min, idx_recomp]):
-                        # Draw pullback (plateau to min)
-                        ax.plot([time_window[idx_plat], time_window[idx_min]], 
-                               [vel_window[idx_plat], vel_window[idx_min]], 
-                               'g--', linewidth=2.5, alpha=0.7, 
-                               label=f'RDP Pullback: {rdp_keys.get("pullback_velocity", 0):.1f} m/s', zorder=4)
-                        # Draw rebound (min to recomp)
-                        ax.plot([time_window[idx_min], time_window[idx_recomp]], 
-                               [vel_window[idx_min], vel_window[idx_recomp]], 
-                               'c--', linewidth=2.5, alpha=0.7,
-                               label=f'RDP Rebound: {rdp_keys.get("rebound_velocity", 0):.1f} m/s', zorder=4)
-            
-            # Mark peak and valley (fallback for non-RDP cases or additional markers)
-            if peak_idx is not None and peak_idx < len(time_window):
-                # Only plot if not already marked by RDP
-                if not rdp_keys or 'shock_peak_idx' not in rdp_keys or rdp_keys['shock_peak_idx'] != peak_idx:
-                    ax.plot(time_window[peak_idx], vel_window[peak_idx], 'ro', markersize=8, 
-                           label=f'Peak: {vel_window[peak_idx]:.1f} m/s', alpha=0.5)
-            if valley_idx is not None and valley_idx < len(time_window):
-                # Only plot if not already marked by RDP
-                if not rdp_keys or 'min_idx' not in rdp_keys or rdp_keys['min_idx'] != valley_idx:
-                    ax.plot(time_window[valley_idx], vel_window[valley_idx], 'go', markersize=8,
-                           label=f'Valley: {vel_window[valley_idx]:.1f} m/s', alpha=0.5)
-            
-            # Draw line between peak and valley if both exist (fallback)
-            if (peak_idx is not None and valley_idx is not None and 
-                peak_idx < len(time_window) and valley_idx < len(time_window)):
-                # Only draw if RDP didn't already draw it
-                if not (rdp_keys and all(k in rdp_keys for k in ['plateau_idx', 'min_idx'])):
-                    ax.plot([time_window[peak_idx], time_window[valley_idx]], 
-                           [vel_window[peak_idx], vel_window[valley_idx]], 
-                           'r--', linewidth=2, alpha=0.5, label='Pullback')
-
             # Overlay hybrid 5-segment fit if available (from strain rate calculation)
             # Note: We now always use hybrid_5_segment for strain rate, so lines_info should be available
             if lines_info and intersections:
@@ -2127,16 +1829,12 @@ class AnalysisThread(QThread):
                                 # The parameter is kept for backward compatibility with config files but ignored in calculations
                                 analysis_model = 'hybrid'  # Placeholder - actual calculations use hybrid approach
                                 
-                                # RDP configuration
-                                rdp_epsilon = self.spade_params.get('spall_rdp_epsilon', 5.0)
-                                min_pullback = self.spade_params.get('min_pullback_velocity', 10.0)
+                                # Spall detection configuration
                                 min_recomp_ratio = self.spade_params.get('min_recomp_ratio', 0.1)
-                                spall_detection_method = self.spade_params.get('spall_detection_method', '5-segment').lower()
-                                
-                                method_desc = "RDP-Guided 5-Segment Fitting" if spall_detection_method == 'rdp' else "Legacy SPADE 5-Segment Analysis"
-                                spall_msg = f"  [SPALL] Detection Method: {method_desc}"
+
+                                spall_msg = f"  [SPALL] Detection Method: Horizontal Plateau 5-Segment Analysis"
                                 self.progress_signal.emit(spall_msg)
-                                spall_msg2 = f"  [SPALL] RDP epsilon={rdp_epsilon:.1f} m/s, min_pullback={min_pullback:.1f} m/s, min_recomp_ratio={min_recomp_ratio:.2f}"
+                                spall_msg2 = f"  [SPALL] min_recomp_ratio={min_recomp_ratio:.2f}"
                                 self.progress_signal.emit(spall_msg2)
                                 spall_msg3 = f"  [SPALL] Analysis window=[{spall_start_time:.1f}, {spall_end_time:.1f}] ns, threshold={threshold_velocity:.1f} m/s"
                                 self.progress_signal.emit(spall_msg3)
@@ -2147,8 +1845,8 @@ class AnalysisThread(QThread):
                                 for i, vel_file in enumerate(vel_files):
                                     print(f"SPADE Processing file {i+1}/{len(vel_files)}: {os.path.basename(vel_file)}")
                                     self.progress_signal.emit(f"SPADE Processing file {i+1}/{len(vel_files)}: {os.path.basename(vel_file)}")
-                                    print(f"  [RDP] Starting RDP-based spall detection for {os.path.basename(vel_file)}")
-                                    self.progress_signal.emit(f"  [RDP] Starting RDP-based spall detection for {os.path.basename(vel_file)}")
+                                    print(f"  [SPALL] Starting spall detection for {os.path.basename(vel_file)}")
+                                    self.progress_signal.emit(f"  [SPALL] Starting spall detection for {os.path.basename(vel_file)}")
                                     
                                     # Get base name for material lookup
                                     base_name = os.path.splitext(os.path.basename(vel_file))[0]
@@ -2574,6 +2272,55 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"Error during analysis: {error_msg}")
             self.progress_signal.emit(f"Traceback: {traceback.format_exc()}")
             self.finished_signal.emit(False, error_msg)
+
+    def _load_alpss_signal_start_ns(self, velocity_file_path):
+        """
+        Return the physical signal-start time (t=0) ALPSS detected for this trace, in
+        nanoseconds, or None if it cannot be resolved.
+
+        ALPSS writes ``t_start_corrected`` -- the IQ/spectrogram shock-arrival time that
+        the spall (binary-metal) analysis uses as t=0 -- to the ``<base>--results.csv``
+        sidecar as the row ``Signal Start Time`` (in seconds). The velocity CSV shares the
+        same absolute time base (``time_f``), so subtracting this value zeroes the trace at
+        the same physical arrival used everywhere else in the pipeline. Anchoring HEL to it
+        keeps t=0 consistent across traces instead of re-deriving a per-trace velocity-domain
+        foot of rise.
+        """
+        import os
+        import numpy as np
+        import pandas as pd
+
+        if not velocity_file_path:
+            return None
+
+        # Derive the results sidecar path from the velocity filename.
+        results_path = None
+        for suffix in ('--vel-smooth-with-uncert.csv', '--velocity--smooth.csv',
+                       '--velocity.csv'):
+            if velocity_file_path.endswith(suffix):
+                results_path = velocity_file_path[:-len(suffix)] + '--results.csv'
+                break
+        if results_path is None or not os.path.exists(results_path):
+            return None
+
+        try:
+            res = pd.read_csv(results_path, header=None)
+        except Exception:
+            return None
+        if res.shape[1] < 2:
+            return None
+
+        names = res.iloc[:, 0].astype(str).str.strip()
+        match = res.loc[names == 'Signal Start Time']
+        if match.empty:
+            return None
+        try:
+            t_start_s = float(match.iloc[0, 1])
+        except (ValueError, TypeError):
+            return None
+        if not np.isfinite(t_start_s):
+            return None
+        return t_start_s * 1e9  # seconds -> nanoseconds
 
     def find_hel_t0_alignment(self, time_data, velocity_data, min_velocity_threshold=10.0, method=None):
         """
@@ -3017,26 +2764,46 @@ class AnalysisThread(QThread):
                 # Default ("signal_start") locates the foot of the main rise via a robust
                 # baseline + backtrack algorithm; "first_positive" preserves legacy behavior.
                 min_hel_velocity_for_t0 = self.spade_params.get('minimum_HEL_velocity_expected', 10.0)
-                t0_method = self.spade_params.get('hel_t0_method', 'signal_start')
-                hel_t0, hel_t0_idx, time_aligned_iq_candidate = self.find_hel_t0_alignment(
-                    time_data, velocity_filtered,
-                    min_velocity_threshold=min_hel_velocity_for_t0,
-                    method=t0_method,
-                )
+                t0_method = self.spade_params.get('hel_t0_method', 'alpss_signal_start')
 
-                if hel_t0 is not None and hel_t0_idx is not None:
-                    time_aligned_iq = time_aligned_iq_candidate
-                    self.progress_signal.emit(
-                        f"  [trace-t0] t=0 at {hel_t0:.2f} ns (method='{t0_method}', for velocity alignment / plots)"
+                hel_t0 = None
+                hel_t0_idx = None
+
+                # Preferred: anchor HEL t=0 to the physical shock-arrival time ALPSS already
+                # detected for this trace (t_start_corrected -- the same t=0 the spall/
+                # binary-metal analysis uses). This keeps the HEL window consistent across
+                # traces instead of re-deriving a per-trace velocity-domain foot of rise.
+                if t0_method == 'alpss_signal_start':
+                    alpss_t0_ns = self._load_alpss_signal_start_ns(file_path)
+                    if alpss_t0_ns is not None:
+                        hel_t0 = float(alpss_t0_ns)
+                        hel_t0_idx = int(np.argmin(np.abs(time_data - hel_t0)))
+                        time_aligned_iq = time_data - hel_t0
+                        self.progress_signal.emit(
+                            f"  [trace-t0] t=0 at {hel_t0:.2f} ns (ALPSS signal-start, matches spall analysis)"
+                        )
+
+                # Fallback (or explicit velocity-domain methods): foot-of-rise detector.
+                if hel_t0 is None:
+                    fallback_method = 'signal_start' if t0_method == 'alpss_signal_start' else t0_method
+                    hel_t0, hel_t0_idx, time_aligned_iq_candidate = self.find_hel_t0_alignment(
+                        time_data, velocity_filtered,
+                        min_velocity_threshold=min_hel_velocity_for_t0,
+                        method=fallback_method,
                     )
-                else:
-                    # Fallback: use velocity threshold alignment if no valid point found
-                    time_aligned_iq = time_aligned
-                    hel_t0 = t0 if 't0' in locals() else (time_data[0] if len(time_data) > 0 else 0.0)
-                    hel_t0_idx = t0_idx if 't0_idx' in locals() else 0
-                    self.progress_signal.emit(
-                        f"  [trace-t0] Warning: signal-start detection failed; falling back to velocity threshold alignment"
-                    )
+                    if hel_t0 is not None and hel_t0_idx is not None:
+                        time_aligned_iq = time_aligned_iq_candidate
+                        self.progress_signal.emit(
+                            f"  [trace-t0] t=0 at {hel_t0:.2f} ns (method='{fallback_method}', for velocity alignment / plots)"
+                        )
+                    else:
+                        # Last resort: use velocity threshold alignment if no valid point found
+                        time_aligned_iq = time_aligned
+                        hel_t0 = t0 if 't0' in locals() else (time_data[0] if len(time_data) > 0 else 0.0)
+                        hel_t0_idx = t0_idx if 't0_idx' in locals() else 0
+                        self.progress_signal.emit(
+                            f"  [trace-t0] Warning: signal-start detection failed; falling back to velocity threshold alignment"
+                        )
                 
                 hel_detection_enabled = (self.spade_params.get('hel_detection_enabled', False) or 
                                         self.spade_params.get('experiment_hel_detection', False))
@@ -3059,7 +2826,7 @@ class AnalysisThread(QThread):
                         hel_rdp_epsilon = self.spade_params.get('hel_rdp_epsilon', 3.0)
                         hel_slope_drop_ratio = self.spade_params.get('hel_slope_drop_ratio', 0.2)
                         hel_min_plateau_duration = self.spade_params.get('hel_min_plateau_duration', 2.0)
-                        t0_method_msg = self.spade_params.get('hel_t0_method', 'signal_start')
+                        t0_method_msg = self.spade_params.get('hel_t0_method', 'alpss_signal_start')
                         hel_msg = (f"  [HEL] Using RDP+Linear hybrid method: time window=[{hel_start:.1f}, {hel_end if hel_end is not None else 'None'}] ns "
                                   f"(aligned via t0_method='{t0_method_msg}'), min_velocity={min_hel_velocity:.1f} m/s, "
                                   f"rdp_epsilon={hel_rdp_epsilon:.1f} m/s, slope_drop_ratio={hel_slope_drop_ratio:.2f}, "
@@ -7578,130 +7345,6 @@ class AnalysisThread(QThread):
         indices = rdp_recursive(0, len(time) - 1)
         return np.array(sorted(set(indices)))  # Ensure sorted and unique
     
-    def analyze_spall_rdp_5_segment(self, time, velocity, config):
-        """
-        Performs RDP-Guided 5-Segment Linear Analysis.
-        Uses RDP vertices to define exact boundaries for linear regressions.
-        
-        Segments:
-        1. Rise (Start -> P1/Peak)
-        2. Plateau (P1 -> P2/Knee)
-        3. Release (P2 -> P3/Minima)
-        4. Recompression (P3 -> P4/Recomp)
-        5. Tail (P4 -> End)
-        
-        Returns:
-            is_spall (bool): True if valid spall detected
-            reason (str): Detection reason or failure reason
-            results (dict): Contains indices, velocities, fits, and physics results
-        """
-        import numpy as np
-        
-        # 1. Run RDP to get vertices
-        epsilon = config.get('spall_rdp_epsilon', 5.0)
-        rdp_indices = self.ramer_douglas_peucker_indices(time, velocity, epsilon)
-        
-        if len(rdp_indices) < 4:
-            return False, "DNS: Insufficient RDP vertices (need at least 4)", {}
-        
-        rdp_vel = velocity[rdp_indices]
-        rdp_time = time[rdp_indices]
-        
-        # 2. Feature Mapping (Identify P1, P2, P3, P4)
-        # A. Find P1 (Global Max / Shock Peak)
-        idx_p1_loc = np.argmax(rdp_vel)
-        idx_p1_global = rdp_indices[idx_p1_loc]
-        
-        # B. Find P3 (Deepest Valley after P1)
-        if idx_p1_loc >= len(rdp_vel) - 1:
-            return False, "DNS: No data after peak", {}
-        
-        post_peak_indices = rdp_indices[idx_p1_loc:]
-        post_peak_vel = velocity[post_peak_indices]
-        
-        idx_min_loc = np.argmin(post_peak_vel)
-        idx_p3_global = post_peak_indices[idx_min_loc]
-        
-        # Validation: If P3 is the very last point, we have no recompression (DNS)
-        if idx_p3_global == rdp_indices[-1]:
-            return False, "DNS: No recompression features (Minima is at end)", {}
-        
-        # C. Find P2 (Plateau Knee)
-        # P2 is the vertex between P1 and P3
-        # If no vertices exist between P1 and P3, then P1 == P2 (Triangular Wave)
-        intermediate_indices = [i for i in rdp_indices if idx_p1_global < i < idx_p3_global]
-        
-        if not intermediate_indices:
-            idx_p2_global = idx_p1_global  # Triangular wave case
-        else:
-            # P2 is the last vertex before the drop to P3
-            idx_p2_global = intermediate_indices[-1]
-        
-        # D. Find P4 (Recompression Peak)
-        # Look for the max velocity AFTER P3
-        p3_loc_in_rdp = np.where(rdp_indices == idx_p3_global)[0][0]
-        
-        if p3_loc_in_rdp >= len(rdp_indices) - 1:
-            return False, "DNS: Trace ends at minima", {}
-        
-        post_p3_indices = rdp_indices[p3_loc_in_rdp+1:]
-        post_p3_vel = velocity[post_p3_indices]
-        
-        idx_max_recomp_loc = np.argmax(post_p3_vel)
-        idx_p4_global = post_p3_indices[idx_max_recomp_loc]
-        
-        # Check Recompression Magnitude (DNS Check)
-        v_p2 = velocity[idx_p2_global]
-        v_p3 = velocity[idx_p3_global]
-        v_p4 = velocity[idx_p4_global]
-        
-        min_recomp_ratio = config.get('min_recomp_ratio', 0.1)
-        pullback_mag = v_p2 - v_p3
-        rebound_mag = v_p4 - v_p3
-        
-        if rebound_mag < (pullback_mag * min_recomp_ratio):
-            return False, f"DNS: Rebound too small ({rebound_mag:.1f} < {pullback_mag*min_recomp_ratio:.1f})", {}
-        
-        # 3. Perform Segment-wise Linear Fits
-        def fit_line(start_idx, end_idx, name):
-            """Fit linear regression to segment"""
-            if start_idx >= end_idx:
-                return None  # Handle P1==P2 case
-            t_seg = time[start_idx:end_idx+1]
-            v_seg = velocity[start_idx:end_idx+1]
-            if len(t_seg) < 2:
-                return None
-            
-            m, c = np.polyfit(t_seg, v_seg, 1)
-            return {'m': m, 'c': c, 't_range': (t_seg[0], t_seg[-1]), 
-                    'start_idx': start_idx, 'end_idx': end_idx}
-        
-        fits = {}
-        fits['seg1_rise'] = fit_line(0, idx_p1_global, "Rise")
-        fits['seg2_plateau'] = fit_line(idx_p1_global, idx_p2_global, "Plateau")
-        fits['seg3_release'] = fit_line(idx_p2_global, idx_p3_global, "Release")
-        fits['seg4_recomp'] = fit_line(idx_p3_global, idx_p4_global, "Recompression")
-        fits['seg5_tail'] = fit_line(idx_p4_global, len(time)-1, "Tail")
-        
-        # 4. Calculate Physics Results
-        spall_strength_velocity = v_p2 - v_p3
-        
-        results = {
-            'is_spall': True,
-            'indices': {'P1': idx_p1_global, 'P2': idx_p2_global, 
-                       'P3': idx_p3_global, 'P4': idx_p4_global},
-            'velocities': {'P1': velocity[idx_p1_global], 'P2': v_p2, 
-                          'P3': v_p3, 'P4': v_p4},
-            'times': {'P1': time[idx_p1_global], 'P2': time[idx_p2_global],
-                     'P3': time[idx_p3_global], 'P4': time[idx_p4_global]},
-            'fits': fits,
-            'pullback_velocity': spall_strength_velocity,
-            'pullback_mag': pullback_mag,
-            'rebound_mag': rebound_mag
-        }
-        
-        return True, "Success: RDP-guided 5-segment fit", results
-    
     def analyze_spall_horizontal_plateau(self, time, velocity, uncert, density, acoustic_velocity, config):
         """
         Spall analysis with Horizontal Plateau Constraint to prevent P1/P2 shifting.
@@ -8277,117 +7920,6 @@ class AnalysisThread(QThread):
         }
         
         return True, "Success: Horizontal plateau constraint", results
-    
-    def detect_spall_rdp(self, time, velocity, config):
-        """
-        Detects Spallation using RDP topology to find the "Checkmark" (Plateau -> Drop -> Rebound) shape.
-        Replaces older find_peaks based DNS detection.
-        
-        Parameters
-        ----------
-        time : numpy.ndarray
-            Time array (ns) - already in spall window
-        velocity : numpy.ndarray
-            Velocity array (m/s) - already filtered and in spall window
-        config : dict
-            Configuration dictionary with:
-                - 'spall_rdp_epsilon': RDP epsilon for spall detection (default: 5.0 m/s)
-                - 'min_pullback_velocity': Minimum pullback magnitude (default: 10.0 m/s)
-                - 'min_recomp_ratio': Minimum rebound ratio (default: 0.1, i.e., 10% of drop)
-        
-        Returns
-        -------
-        is_spall : bool
-            True if valid spall signature found
-        reason : str
-            DNS classification reason or "Valid Spall"
-        key_points : dict or None
-            Dictionary with indices of key features:
-                - 'shock_peak_idx': Index of global maximum (shock peak)
-                - 'plateau_idx': Index of plateau end (before pullback)
-                - 'min_idx': Index of pullback minimum
-                - 'recomp_idx': Index of recompression point
-                - 'pullback_velocity': Magnitude of pullback (m/s)
-        """
-        # 1. Parameters
-        epsilon = config.get('spall_rdp_epsilon', 5.0)  # Larger than HEL epsilon (e.g., 5-8 m/s)
-        min_pullback_vel = config.get('min_pullback_velocity', 10.0)
-        min_recomp_ratio = config.get('min_recomp_ratio', 0.1)  # Rebound must be 10% of drop
-        
-        # 2. RDP Simplification
-        try:
-            rdp_indices = self.ramer_douglas_peucker_indices(time, velocity, epsilon)
-        except Exception as e:
-            return False, f"Failed: RDP error ({str(e)})", None
-            
-        if len(rdp_indices) < 2:
-            return False, "DNS: Trace too short/simple after RDP", None
-            
-        rdp_vel = velocity[rdp_indices]
-        rdp_time = time[rdp_indices]
-        
-        # 3. Find Global Maximum (Shock Peak)
-        if len(rdp_vel) < 3:
-            return False, "DNS: Trace too short/simple", None
-
-        max_idx_local = np.argmax(rdp_vel)
-        max_idx_global = rdp_indices[max_idx_local]
-        
-        # The spall event (valley) must happen AFTER the shock peak
-        if max_idx_local >= len(rdp_vel) - 2:
-            return False, "DNS: Trace ends before spall signature", None
-            
-        # 4. Topology Search: "Drop -> Rebound"
-        # We iterate through the simplified vertices AFTER the peak
-        
-        post_peak_vel = rdp_vel[max_idx_local:]
-        post_peak_indices = rdp_indices[max_idx_local:]
-        post_peak_time = rdp_time[max_idx_local:]
-        
-        found_candidate = False
-        best_candidate = None
-        
-        # Iterate through triplets: [Start, Min, End]
-        for i in range(len(post_peak_vel) - 2):
-            v_start = post_peak_vel[i]      # Potential end of plateau
-            v_min = post_peak_vel[i+1]      # Potential pullback minimum
-            v_end = post_peak_vel[i+2]      # Potential recompression
-            
-            # Check 1: Geometry must be a Valley (Down then Up)
-            if v_min < v_start and v_end > v_min:
-                
-                # Check 2: Magnitude of Drop (Pullback Strength)
-                pullback_mag = v_start - v_min
-                if pullback_mag < min_pullback_vel:
-                    continue  # Too small, probably noise
-                    
-                # Check 3: Magnitude of Rebound (Recompression)
-                # This implicitly handles the "P4 <= P3" check
-                rebound_mag = v_end - v_min
-                if rebound_mag < (pullback_mag * min_recomp_ratio):
-                    continue  # No significant re-acceleration
-                    
-                # Valid Spall Signature Found
-                found_candidate = True
-                
-                # Store indices (these are indices in the original window arrays)
-                best_candidate = {
-                    'shock_peak_idx': max_idx_global,
-                    'plateau_idx': post_peak_indices[i],
-                    'min_idx': post_peak_indices[i+1],
-                    'recomp_idx': post_peak_indices[i+2],
-                    'pullback_velocity': pullback_mag,
-                    'rebound_velocity': rebound_mag,
-                    'plateau_velocity': v_start,
-                    'min_velocity': v_min,
-                    'recomp_velocity': v_end
-                }
-                break  # Stop at the first valid spall signature
-                
-        if not found_candidate:
-            return False, "DNS: No valid Pullback-Recompression signature found (RDP)", None
-            
-        return True, "Valid Spall", best_candidate
     
     def detect_hel_rdp(self, time, velocity, config):
         """
@@ -10426,6 +9958,7 @@ class AnalysisThread(QThread):
                 # 5. SPADE analysis results
                 'DNS_Classification',
                 'Processing_Status',
+                'Analysis_Notes',
                 'Spall_OK',
                 'First_Maxima_m_s',
                 'Minima_m_s',
@@ -11258,6 +10791,7 @@ class AnalysisThread(QThread):
                         # 5. SPADE analysis results
                         'DNS_Classification',
                         'Processing_Status',
+                        'Analysis_Notes',
                         'Spall_OK',
                         'First_Maxima_m_s',
                         'Minima_m_s',
@@ -15879,8 +15413,6 @@ Output Files:
             self.derivative_smoothing_window_length.setValue(config_dict['derivative_smoothing_window_length'])
         if 'pullback_threshold_fraction' in config_dict:
             self.pullback_threshold_fraction.setValue(config_dict['pullback_threshold_fraction'])
-        if 'min_pullback_velocity_ms' in config_dict:
-            self.min_pullback_velocity_ms.setValue(config_dict['min_pullback_velocity_ms'])
         if 'uncertainty_threshold_ms' in config_dict:
             self.uncertainty_threshold.setValue(config_dict['uncertainty_threshold_ms'])
         if 'include_uncert_bands' in config_dict:

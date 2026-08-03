@@ -80,7 +80,6 @@
     "experiment_velocity_shots": true,
     "experiment_spall_analysis": true,
     "experiment_hel_detection": true,
-    "spall_detection_method": "5-segment",
     "hel_start_time_ns": 0,
     "hel_end_time_ns": 15,
     "hel_angle_threshold_deg": 86.0,
@@ -90,7 +89,7 @@
     "hel_slope_drop_ratio": 0.9,
     "hel_min_plateau_duration": 0.5,
     "use_hel_t0_alignment_for_plots": true,
-    "hel_t0_method": "signal_start",
+    "hel_t0_method": "alpss_signal_start",
     "mad_filter_enabled": true,
     "mad_filter_threshold": 2.0,
     "signal_length": "Full Signal (None)",
@@ -99,8 +98,6 @@
     "spall_start_time_ns": 0.0,
     "spall_end_time_ns": 60.0,
     "threshold_velocity_ms": 5.0,
-    "spall_rdp_epsilon": 5.0,
-    "min_pullback_velocity": 20.0,
     "min_recomp_ratio": 0.03,
     "min_recomp_velocity_ratio": 1.05,
     "min_recomp_time_ns": 1.5,
@@ -151,109 +148,127 @@
       "density": 8960.0,
       "bulk_wave_speed": 3950.0,
       "C0": 3950.0,
-      "C_L": 4700.0
+      "C_L": 4700.0,
+      "S": 1.49
     },
     "Copper": {
       "density": 8960.0,
       "bulk_wave_speed": 3950.0,
       "C0": 3950.0,
-      "C_L": 4700.0
+      "C_L": 4700.0,
+      "S": 1.49
     },
     "Zn": {
       "density": 7140.0,
       "bulk_wave_speed": 3700.0,
       "C0": 3700.0,
-      "C_L": 4200.0
+      "C_L": 4200.0,
+      "S": 1.58
     },
     "Zinc": {
       "density": 7140.0,
       "bulk_wave_speed": 3700.0,
       "C0": 3700.0,
-      "C_L": 4200.0
+      "C_L": 4200.0,
+      "S": 1.58
     },
     "Brass": {
       "density": 8520.0,
       "bulk_wave_speed": 3800.0,
       "C0": 3800.0,
-      "C_L": 4500.0
+      "C_L": 4500.0,
+      "S": 1.43
     },
     "Aluminum": {
       "density": 2700.0,
       "bulk_wave_speed": 5240.0,
       "C0": 5240.0,
-      "C_L": 6000.0
+      "C_L": 6000.0,
+      "S": 1.34
     },
     "Al": {
       "density": 2700.0,
       "bulk_wave_speed": 5240.0,
       "C0": 5240.0,
-      "C_L": 6000.0
+      "C_L": 6000.0,
+      "S": 1.34
     },
     "Ti": {
       "density": 4507.0,
       "bulk_wave_speed": 4726.0,
       "C0": 4726.0,
-      "C_L": 6070.0
+      "C_L": 6070.0,
+      "S": 1.049
     },
     "Titanium": {
       "density": 4507.0,
       "bulk_wave_speed": 4726.0,
       "C0": 4726.0,
-      "C_L": 6070.0
+      "C_L": 6070.0,
+      "S": 1.049
     },
     "Ti_Grade2": {
       "density": 4507.0,
       "bulk_wave_speed": 4726.0,
       "C0": 4726.0,
-      "C_L": 6070.0
+      "C_L": 6070.0,
+      "S": 1.049
     },
     "CP-Ti": {
       "density": 4507.0,
       "bulk_wave_speed": 4726.0,
       "C0": 4726.0,
-      "C_L": 6070.0
+      "C_L": 6070.0,
+      "S": 1.049
     },
     "Ti64": {
       "density": 4430.0,
       "bulk_wave_speed": 5130.0,
       "C0": 5130.0,
-      "C_L": 6130.0
+      "C_L": 6130.0,
+      "S": 1.028
     },
     "Ti-6Al-4V": {
       "density": 4430.0,
       "bulk_wave_speed": 5130.0,
       "C0": 5130.0,
-      "C_L": 6130.0
+      "C_L": 6130.0,
+      "S": 1.028
     },
     "Ti6Al4V": {
       "density": 4430.0,
       "bulk_wave_speed": 5130.0,
       "C0": 5130.0,
-      "C_L": 6130.0
+      "C_L": 6130.0,
+      "S": 1.028
     },
     "V": {
       "density": 6100.0,
       "bulk_wave_speed": 5200.0,
       "C0": 5200.0,
-      "C_L": 6000.0
+      "C_L": 6000.0,
+      "S": 1.21
     },
     "Vanadium": {
       "density": 6100.0,
       "bulk_wave_speed": 5200.0,
       "C0": 5200.0,
-      "C_L": 6000.0
+      "C_L": 6000.0,
+      "S": 1.21
     },
     "Mg": {
       "density": 1738.0,
       "bulk_wave_speed": 4490.0,
       "C0": 4490.0,
-      "C_L": 5770.0
+      "C_L": 5770.0,
+      "S": 1.24
     },
     "Magnesium": {
       "density": 1738.0,
       "bulk_wave_speed": 4490.0,
       "C0": 4490.0,
-      "C_L": 5770.0
+      "C_L": 5770.0,
+      "S": 1.24
     }
   },
   "igsn_material_map": {
