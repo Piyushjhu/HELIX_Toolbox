@@ -295,13 +295,6 @@ spade_config:
   # Signal duration to consider; "Full Signal (None)" = use the full trace.
   signal_length: "Full Signal (None)"
 
-  # ── Peak / prominence detection ───────────────────────────────────────────────
-  # Fraction of peak velocity used as the prominence threshold.
-  prominence_factor: 0.01
-
-  # Minimum separation between detected peaks (ns).
-  peak_distance_ns: 10.0
-
   # ── Spall analysis window (ns, relative to aligned t=0) ──────────────────────
   # Only data inside this window is searched for the spall signature.
   spall_start_time_ns: 0.0
@@ -311,26 +304,71 @@ spade_config:
   # Decrease if weak shocks are being missed; increase if noise triggers falsely.
   threshold_velocity_ms: 5.0
 
-  # ── Rebound / recompression gating ──────────────────────────────────────────
-  # These thresholds prevent false spall detections from post-shock ringing.
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SPALL DETECTION FILTERS  (all in one place — tune spall P3/P4 here)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Control how the pullback minimum (P3) and recompression peak (P4) are found,
+  # and whether a trace counts as a real spall. Applied to the spall window
+  # only — HEL detection is NOT affected (it runs on the lightly-smoothed ALPSS
+  # Savitzky-Golay trace). Listed in the order the algorithm uses them.
+
+  # ── 1. Smoothing (Gaussian, applied ONCE before detection) ───────────────────
+  # A Gaussian kernel of this sigma (ns of REAL time, so it is independent of
+  # oscilloscope sample rate) is convolved with the windowed trace exactly once;
+  # the spall algorithm does no other smoothing. Bigger sigma = smoother trace
+  # but shaved peaks / filled valleys, so spall strength reads LOW. FWHM ~= 2.355
+  # x sigma, so keep sigma well BELOW your narrowest real feature (plateau or
+  # valley width). Set 0 to run on the ALPSS trace as-is.
+  #   Example: 128 GS/s Ti, ~4-5 ns plateau -> sigma 1.0-1.5 ns (FWHM 2.4-3.5 ns).
+  #   Raise toward 3 ns only for very noisy, broad-feature traces.
+  spall_smoothing_sigma_ns: 1.5
+
+  # ── 2. Valley detection: prominence ──────────────────────────────────────────
+  # How deep a velocity dip must be — as a FRACTION of the plateau velocity — to
+  # be accepted as a valley candidate. "Prominence" = how far the dip stands out
+  # from the shallower of its two shoulders, NOT its absolute velocity. This is a
+  # DETECTION floor that rejects noise wiggles from being picked as P3.
+  #   Example: 0.01 on a 500 m/s plateau -> a dip must be >= 5 m/s deep.
+  #   Lower (0.005) to catch shallow/weak pullbacks; raise (0.02) on ragged
+  #   traces so a noise dimple is not mistaken for the pullback.
   #
+  # RELATED TO but NOT the same as min_recomp_ratio below (you asked): a valley's
+  # prominence ~= its rebound (P4 - P3), so both this bar and the rebound gate end
+  # up limiting the rebound — but from different reference scales. Prominence is
+  # measured against the PLATEAU velocity (a detection floor); min_recomp_ratio
+  # against the pullback DEPTH (the physics DNS gate). Use this as a low detection
+  # floor and min_recomp_ratio as the real gate — don't crank both.
+  prominence_factor: 0.01
 
-  # Minimum rebound / pullback ratio: rebound must recover at least this
-  # fraction of the pullback depth. 0.03 = 3%.
+  # ── 3. Valley detection: minimum spacing ─────────────────────────────────────
+  # Two accepted valleys must be at least this far apart in time (de-duplicates
+  # one broad minimum into a single detection). Converted to samples internally.
+  # Keep well below the pullback->recompression spacing (~5-15 ns) so distinct
+  # features are not merged.
+  #   Example: 3.0 ns is a safe default once Gaussian smoothing is on.
+  peak_distance_ns: 3.0
+
+  # ── 4. Recompression / DNS gating ────────────────────────────────────────────
+  # After P3 (valley) and P4 (recompression peak) are found, these decide whether
+  # the rebound is a real spall signature or post-shock ringing. If ANY fails the
+  # trace is classified DNS (Did Not Spall). Checked in this order.
+  #
+  # (a) rebound magnitude vs pullback DEPTH — the main physics gate. Rebound
+  #     (P4 - P3) must recover at least this fraction of the pullback
+  #     (plateau - P3).
+  #     Example: 0.015 = rebound >= 1.5% of the drop. Raise to reject weak /
+  #     ringing rebounds; lower to keep marginal spall signals.
   min_recomp_ratio: 0.025
-
-  # Minimum velocity ratio: rebound peak must exceed valley by this factor.
-  # 1.1 means the rebound must be at least 10% above the valley.
+  #
+  # (b) rebound vs VALLEY velocity — P4 must exceed P3 by at least this factor.
+  #     Example: 1.015 = P4 must be >= 1.5% above the valley velocity.
   min_recomp_velocity_ratio: 1.025
-
-  # Minimum sustained duration of the rebound (ns).
+  #
+  # (c) rebound duration — P4 must occur at least this long after P3. Rejects a
+  #     fast noise spike right after the valley (not a physical recompression).
+  #     Example: 2.5 ns.
   min_recomp_time_ns: 2.5
-
-  # Smoothing window (ns, real time — not sample count) used to suppress noise
-  # before searching for the pullback minimum (P3). Scales automatically with
-  # each file's sample rate. Raise if a shallow noise wiggle right after the
-  # peak is still being mistaken for the pullback minimum.
-  pullback_smoothing_ns: 2.0
+  # ═══════════════════════════════════════════════════════════════════════════
 
 
   # ── Individual trace plots ────────────────────────────────────────────────────

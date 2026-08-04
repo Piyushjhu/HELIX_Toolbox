@@ -928,12 +928,29 @@ class AnalysisThread(QThread):
                 'min_recomp_ratio': spade_kwargs.get('min_recomp_ratio', self.spade_params.get('min_recomp_ratio', 0.1)),
                 'min_recomp_velocity_ratio': spade_kwargs.get('min_recomp_velocity_ratio', self.spade_params.get('min_recomp_velocity_ratio', 1.05)),
                 'min_recomp_time_ns': spade_kwargs.get('min_recomp_time_ns', self.spade_params.get('min_recomp_time_ns', 2.5)),
-                'pullback_smoothing_ns': spade_kwargs.get('pullback_smoothing_ns', self.spade_params.get('pullback_smoothing_ns', 2.0)),
+                'spall_smoothing_sigma_ns': spade_kwargs.get('spall_smoothing_sigma_ns', self.spade_params.get('spall_smoothing_sigma_ns', 1.5)),
             }
 
             # Initialize variables
             is_dns = False
             dns_reason = None
+
+            # Step 4b: Gaussian smoothing for spall detection ONLY.
+            # HEL detection and the plotted raw trace keep the ALPSS
+            # Savitzky-Golay output. This second, more aggressive filter is
+            # applied exactly once here; analyze_spall_horizontal_plateau
+            # does no smoothing of its own. sigma is in ns of real time so
+            # behaviour is independent of oscilloscope sample rate.
+            # Set spall_smoothing_sigma_ns: 0 to disable.
+            from scipy.ndimage import gaussian_filter1d
+            sigma_ns = float(spall_config.get('spall_smoothing_sigma_ns', 1.5))
+            dt_ns_window = float(np.median(np.diff(time_window))) if len(time_window) > 1 else 0.0
+            if sigma_ns > 0 and dt_ns_window > 0:
+                sigma_samples = sigma_ns / dt_ns_window
+                vel_window_spall = gaussian_filter1d(vel_window.astype(float), sigma=sigma_samples, mode='nearest')
+                self.progress_signal.emit(f"  [SMOOTH] {base_name}: Gaussian sigma={sigma_ns:.1f} ns ({sigma_samples:.1f} samples) applied for spall detection")
+            else:
+                vel_window_spall = vel_window.astype(float)
 
             # Step 5: Extract Key Velocities (basic max/min diagnostics; refined
             # by the horizontal-plateau fit results below when the fit succeeds)
@@ -953,7 +970,7 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"  [HORIZ-PLAT] {base_name}: Using horizontal plateau 5-segment analysis")
             
             is_spall_plat, plat_reason, plat_results = self.analyze_spall_horizontal_plateau(
-                time_window, vel_window, uncert_window, density, acoustic_velocity, spall_config
+                time_window, vel_window_spall, uncert_window, density, acoustic_velocity, spall_config
             )
             
             if is_spall_plat:
@@ -1197,7 +1214,8 @@ class AnalysisThread(QThread):
                         base_name,
                         analysis_model='hybrid',  # Use 'hybrid' to indicate mixed approach
                         lines_info=spade_lines_info,
-                        intersections=spade_intersections
+                        intersections=spade_intersections,
+                        vel_smooth=vel_window_spall
                     )
                     # Verify plot was actually created
                     if os.path.exists(effective_plot_path):
@@ -1225,16 +1243,24 @@ class AnalysisThread(QThread):
 
     def _plot_generic_spall_analysis(self, plot_path, time_window, vel_window, uncert_window,
                                      spall_strength, spall_unc, base_name,
-                                     analysis_model='max_min', lines_info=None, intersections=None):
-        """Generate generic spall analysis plot for any analysis model"""
+                                     analysis_model='max_min', lines_info=None, intersections=None,
+                                     vel_smooth=None):
+        """Generate generic spall analysis plot for any analysis model.
+
+        vel_smooth, when given, is the Gaussian-smoothed trace the spall
+        detection actually ran on; it is overlaid on the raw trace.
+        """
         try:
             import matplotlib.pyplot as plt
             import numpy as np
             
             fig, ax = plt.subplots(figsize=(10, 6))
             
-            # Plot velocity trace
-            ax.plot(time_window, vel_window, 'b-', linewidth=1.5, alpha=0.7, label='Velocity')
+            # Plot velocity trace (ALPSS output) and, if available, the
+            # Gaussian-smoothed trace used for spall detection
+            ax.plot(time_window, vel_window, 'b-', linewidth=1.0, alpha=0.5, label='Velocity (ALPSS)')
+            if vel_smooth is not None and len(vel_smooth) == len(time_window):
+                ax.plot(time_window, vel_smooth, 'k-', linewidth=1.3, alpha=0.9, label='Gaussian smoothed (spall)')
             
             # Plot uncertainty bands if available
             if uncert_window is not None and len(uncert_window) == len(vel_window):
@@ -1821,7 +1847,10 @@ class AnalysisThread(QThread):
 
                                 spall_msg = f"  [SPALL] Detection Method: Horizontal Plateau 5-Segment Analysis"
                                 self.progress_signal.emit(spall_msg)
-                                spall_msg2 = f"  [SPALL] min_recomp_ratio={min_recomp_ratio:.2f}"
+                                spall_sigma_ns = self.spade_params.get('spall_smoothing_sigma_ns', 1.5)
+                                prom_factor = self.spade_params.get('prominence_factor', 0.01)
+                                peak_dist_ns = self.spade_params.get('peak_distance_ns', 3.0)
+                                spall_msg2 = f"  [SPALL] smoothing_sigma={spall_sigma_ns:.1f} ns, prominence_factor={prom_factor:.3f}, peak_distance={peak_dist_ns:.1f} ns, min_recomp_ratio={min_recomp_ratio:.3f}"
                                 self.progress_signal.emit(spall_msg2)
                                 spall_msg3 = f"  [SPALL] Analysis window=[{spall_start_time:.1f}, {spall_end_time:.1f}] ns, threshold={threshold_velocity:.1f} m/s"
                                 self.progress_signal.emit(spall_msg3)
@@ -7331,7 +7360,7 @@ class AnalysisThread(QThread):
         3. Calculate mean velocity of all those points
         4. Line 2 (Plateau): Horizontal line (0 slope) at this mean velocity
         5. Line 1 (Rise): Line from (0,0) to first point (earliest time) in 95% region
-        6. P3: First minimum after the maximum (with smoothing to avoid noise)
+        6. P3: First minimum after the maximum (velocity arrives Gaussian-smoothed)
         7. Line 3 (Pullback): Line joining P2 (last plateau point) to P3
         8. P1 = first plateau point, P2 = last plateau point
         
@@ -7347,7 +7376,22 @@ class AnalysisThread(QThread):
         idx_max = np.argmax(velocity)
         v_max = velocity[idx_max]
         t_max = time[idx_max]
-        
+
+        # Spall feature-detection knobs (config "Spall detection filters"):
+        #   prominence_factor — a candidate velocity dip must be at least this
+        #       fraction of the plateau velocity deep (relative to its shoulders)
+        #       to count as a valley. Rejects shallow noise wiggles.
+        #   peak_distance_ns  — two accepted valleys must be at least this far
+        #       apart in time; de-duplicates a single broad minimum. Converted
+        #       to samples here so behaviour is sample-rate independent.
+        # A small absolute floor (1 m/s) keeps the prominence bar sane on
+        # low-velocity shots where prominence_factor*plateau would be sub-noise.
+        prominence_factor = float(config.get('prominence_factor', 0.01))
+        peak_distance_ns = float(config.get('peak_distance_ns', 3.0))
+        _dt_ns = float(np.median(np.diff(time))) if len(time) > 1 else 1.0
+        _min_dist_samples = max(3, int(round(peak_distance_ns / _dt_ns))) if _dt_ns > 0 else 3
+        _prom_floor = 1.0  # m/s absolute floor
+
         # 2. Find all points >= 95% of peak
         threshold_ratio = config.get('plateau_threshold', 0.95)
         threshold_val = v_max * threshold_ratio
@@ -7438,46 +7482,30 @@ class AnalysisThread(QThread):
         # Find pullback minimum P3.
         #
         # Strategy: find the FIRST local minimum after the plateau using
-        # prominence-based peak detection on the inverted smoothed signal.
+        # prominence-based peak detection on the inverted signal.
         # The physical spall pullback is the first velocity dip after the
         # shock peak, not necessarily the global minimum. Secondary oscillations
         # (reverberations) can produce deeper but later minima that are not the
         # primary spall signal.
+        #
+        # The velocity passed into this function is already Gaussian-smoothed
+        # (spall_smoothing_sigma_ns, applied once by the caller), so no
+        # further smoothing happens here.
         #
         # No fallback: if no local valley clears the prominence threshold,
         # the trace is classified DNS immediately. Substituting the global
         # minimum (typically just the last sample of a still-decaying trace)
         # would report a P3 that isn't a real pullback point.
 
-        from scipy.ndimage import uniform_filter1d
         from scipy.signal import find_peaks as _find_peaks
 
-        # Moderate smoothing to suppress sample-level noise while preserving
-        # broad/flat minimum regions and shallow recompression bumps.
-        #
-        # The window is sized in real time (ns), not a fixed sample count:
-        # oscilloscope sample rate varies a lot across datasets (2 GS/s to
-        # 128+ GS/s), so a fixed sample-count window silently becomes a no-op
-        # at high sample rates (e.g. 20 samples at 128 GS/s is only 0.16 ns —
-        # not enough to smooth away a sub-ns noise wiggle, which can then get
-        # mistaken for the pullback minimum instead of the true, later one).
-        dt_ns = float(np.median(np.diff(time))) if len(time) > 1 else 1.0
-        pullback_smoothing_ns = float(config.get('pullback_smoothing_ns', 2.0))
-        sw = max(5, int(round(pullback_smoothing_ns / dt_ns))) if dt_ns > 0 else 20
-        sw = min(sw, len(post_plateau_data))
-        if len(post_plateau_data) >= sw:
-            post_plateau_smooth = uniform_filter1d(post_plateau_data.astype(float),
-                                                   size=sw, mode='nearest')
-        else:
-            post_plateau_smooth = post_plateau_data.astype(float)
-
         # --- First local minimum with sufficient prominence ---
-        # Threshold: 1% of plateau mean velocity (floor 2 m/s). Prominence is
+        # Threshold: 1% of plateau mean velocity (floor 1 m/s). Prominence is
         # measured against the plateau level rather than the raw peak so the
         # bar reflects the height actually being pulled back from.
-        inverted  = -post_plateau_smooth
-        min_prom  = max(v_plateau_mean * 0.01, 1.0)
-        min_dist  = max(3, len(post_plateau_smooth) // 50)
+        inverted  = -post_plateau_data.astype(float)
+        min_prom  = max(v_plateau_mean * prominence_factor, _prom_floor)
+        min_dist  = _min_dist_samples
         valleys, _ = _find_peaks(inverted, prominence=min_prom, distance=min_dist)
 
         if len(valleys) == 0:
@@ -7517,24 +7545,80 @@ class AnalysisThread(QThread):
                 'intersections': intersections
             }
 
-        # Take the FIRST valley — this is the true spall pullback minimum.
-        idx_p3 = idx_last_plateau + int(valleys[0])
-        v_p3   = float(velocity[idx_p3])
-        t_p3   = float(time[idx_p3])
+        # --- Improved P3/P4 selection ---
+        # A spall is a prominent pullback valley FOLLOWED BY a prominent
+        # recompression peak. Enumerate prominent peaks too, then take the first
+        # valley (in time) whose immediate recompression clears the gates. P4 is
+        # the FIRST prominent peak after that valley (local), never the global
+        # maximum after P3 -- that avoids latching onto a late / end-of-window
+        # minimum on a trace that merely releases without recompressing (the old
+        # "first valley + global-max P4" rule fabricated a spurious pullback from
+        # the end-of-window decay in exactly that situation).
+        peaks_pp, _ = _find_peaks(post_plateau_data.astype(float),
+                                  prominence=min_prom, distance=min_dist)
+
+        min_recomp_velocity_ratio = config.get('min_recomp_velocity_ratio', 1.05)
+        min_recomp_time_ns = config.get('min_recomp_time_ns', 2.5)
+        min_recomp_ratio = config.get('min_recomp_ratio', 0.1)
+
+        sel_p3 = sel_p4 = None      # accepted pair (passes all gates)
+        fb_p3 = fb_p4 = None        # last evaluated pair (kept for DNS visualization)
+        for _vi in valleys:
+            c_p3 = idx_last_plateau + int(_vi)
+            if abs(float(velocity[c_p3])) <= 10.0:
+                continue            # decayed to baseline -- not a real pullback
+            _later = peaks_pp[peaks_pp > _vi]
+            if len(_later) == 0:
+                continue            # no recompression peak after this valley
+            c_p4 = idx_last_plateau + int(_later[0])
+            _v3, _v4 = float(velocity[c_p3]), float(velocity[c_p4])
+            _pull = v_plateau_mean - _v3
+            _reb = _v4 - _v3
+            _dt = float(time[c_p4]) - float(time[c_p3])
+            fb_p3, fb_p4 = c_p3, c_p4
+            if (_v4 > _v3 and _v4 >= _v3 * min_recomp_velocity_ratio
+                    and _dt >= min_recomp_time_ns
+                    and not (_pull > 1e-6 and _reb < _pull * min_recomp_ratio)):
+                sel_p3, sel_p4 = c_p3, c_p4
+                break
+
+        if sel_p3 is None and fb_p3 is None:
+            # No valley is followed by a prominent recompression peak: the surface
+            # released without reforming an internal surface -> DNS.
+            print(f"  [HORIZ-PLAT] No valley with a prominent recompression peak - classifying as DNS")
+            sys.stdout.flush()
+            t_p1, v_p1 = t_first_plateau, v_plateau_mean
+            t_p2, v_p2 = t_last_plateau, v_plateau_mean
+            fits = {
+                'seg1_rise': {'m': m1, 'c': c1, 't_range': (time[0], t_p1), 'start_idx': 0, 'end_idx': idx_first_plateau},
+                'seg2_plateau': {'m': 0.0, 'c': v_plateau_mean, 't_range': (t_p1, t_p2), 'start_idx': idx_first_plateau, 'end_idx': idx_last_plateau},
+                'seg3_release': {'m': 0.0, 'c': v_plateau_mean, 't_range': (t_p2, time[-1]), 'start_idx': idx_last_plateau, 'end_idx': len(time) - 1},
+                'seg4_recomp': {'m': 0.0, 'c': v_plateau_mean, 't_range': (time[-1], time[-1]), 'start_idx': len(time) - 1, 'end_idx': len(time) - 1},
+                'seg5_tail': {'m': 0.0, 'c': v_plateau_mean, 't_range': (time[-1], time[-1]), 'start_idx': len(time) - 1, 'end_idx': len(time) - 1}
+            }
+            intersections = [(t_p1, v_p1), (t_p2, v_p2), (np.nan, np.nan), (np.nan, np.nan)]
+            return False, "DNS: No valley with a prominent recompression peak", {
+                'Processing Status': 'DNS',
+                'Plateau Mean Velocity (m/s)': v_plateau_mean,
+                'Peak Shock Stress (GPa)': peak_shock_stress,
+                'Peak Shock Stress Uncertainty (GPa)': 0.0,
+                'First Maxima (m/s)': v_plateau_mean,
+                'Minima (m/s)': np.nan,
+                'Second Maxima (m/s)': np.nan,
+                'fits': fits,
+                'intersections': intersections
+            }
+
+        # Accepted pair, or -- if none passed the gates -- the last evaluated pair
+        # (kept so DNS Check 2 below reports the gate failure with a fitted plot).
+        idx_p3, idx_p4 = (sel_p3, sel_p4) if sel_p3 is not None else (fb_p3, fb_p4)
+        v_p3 = float(velocity[idx_p3])
+        t_p3 = float(time[idx_p3])
+        v_p4 = float(velocity[idx_p4])
+        t_p4 = float(time[idx_p4])
         pullback_amp = v_max - v_p3
-        print(f"  [HORIZ-PLAT] P3 (first local minimum): t={t_p3:.2f} ns, v={v_p3:.2f} m/s "
-              f"(pullback={pullback_amp:.1f} m/s)")
-        sys.stdout.flush()
-
-        # Check recompression: does velocity rise by at least 2% of pullback
-        # amplitude somewhere after P3?
-        recomp_threshold = max(5.0, pullback_amp * 0.02)
-        rel_idx_p3 = idx_p3 - idx_last_plateau
-        post_min_data = post_plateau_data[rel_idx_p3 + 1:]
-        has_recomp = (len(post_min_data) > 0 and
-                      float(np.max(post_min_data)) - v_p3 >= recomp_threshold)
-
-        print(f"  [HORIZ-PLAT] Final P3: idx={idx_p3}, t={t_p3:.2f} ns, v={v_p3:.2f} m/s")
+        print(f"  [HORIZ-PLAT] P3 (pullback min): t={t_p3:.2f} ns, v={v_p3:.2f} m/s "
+              f"(pullback={pullback_amp:.1f} m/s); P4 (recompression): t={t_p4:.2f} ns, v={v_p4:.2f} m/s")
         sys.stdout.flush()
         
         # 7. Line 3: From P2 to P3
@@ -7577,19 +7661,12 @@ class AnalysisThread(QThread):
                 v_p4_dns = v_p3
                 t_p4_dns = t_p3
             
-            # Next minimum after P4
+            # Next minimum after P4 (input is already Gaussian-smoothed)
             post_p4_dns = velocity[idx_p4_dns+1:]
             if len(post_p4_dns) > 0:
-                smooth_window_dns = min(10, len(post_p4_dns) // 5)
-                if smooth_window_dns >= 3 and len(post_p4_dns) >= smooth_window_dns:
-                    from scipy.ndimage import uniform_filter1d
-                    post_p4_smooth_dns = uniform_filter1d(post_p4_dns, size=smooth_window_dns, mode='nearest')
-                else:
-                    post_p4_smooth_dns = post_p4_dns
-                
-                inverted_p4_dns = -post_p4_smooth_dns
-                min_prominence_dns = max(v_plateau_mean * 0.01, 2.0)
-                min_distance_dns = max(5, len(post_p4_smooth_dns) // 50)
+                inverted_p4_dns = -post_p4_dns
+                min_prominence_dns = max(v_plateau_mean * prominence_factor, _prom_floor)
+                min_distance_dns = _min_dist_samples
                 valleys_dns, _ = find_peaks(inverted_p4_dns, prominence=min_prominence_dns, distance=min_distance_dns)
                 
                 if len(valleys_dns) > 0:
@@ -7660,41 +7737,16 @@ class AnalysisThread(QThread):
                 'intersections': intersections
             }
         
-        # 8. Find Recompression Peak (P4) - Global maximum after P3
-        # P4 is the global maximum after P3 (the minimum)
-        recomp_search = velocity[idx_p3+1:]  # Search after P3
-        if len(recomp_search) > 0:
-            # Find global maximum (not just first peak, but the highest point)
-            idx_p4_local = np.argmax(recomp_search)
-            idx_p4 = idx_p3 + 1 + idx_p4_local
-            v_p4 = velocity[idx_p4]
-            t_p4 = time[idx_p4]
-            
-            print(f"  [HORIZ-PLAT] P4 (global maximum after P3): idx={idx_p4}, t={t_p4:.2f} ns, v={v_p4:.2f} m/s")
-            sys.stdout.flush()
-        else:
-            # No data after P3, use P3 as P4
-            idx_p4 = idx_p3
-            v_p4 = v_p3
-            t_p4 = t_p3
-            print(f"  [HORIZ-PLAT] WARNING: No data after P3, using P3 as P4")
-            sys.stdout.flush()
-        
+        # 8. Recompression peak P4 was selected together with P3 above
+        # (the first prominent recompression peak after the pullback valley).
+
         # 9. Find next minimum after P4 (for Line 5 endpoint)
+        # Input is already Gaussian-smoothed; same prominence method as P3.
         post_p4_data = velocity[idx_p4+1:]
         if len(post_p4_data) > 0:
-            # Find first local minimum after P4 using same method as P3
-            smooth_window = min(10, len(post_p4_data) // 5)
-            if smooth_window >= 3 and len(post_p4_data) >= smooth_window:
-                from scipy.ndimage import uniform_filter1d
-                post_p4_smooth = uniform_filter1d(post_p4_data, size=smooth_window, mode='nearest')
-            else:
-                post_p4_smooth = post_p4_data
-            
-            # Find local minima after P4
-            inverted_p4_signal = -post_p4_smooth
-            min_prominence_p4 = max(v_plateau_mean * 0.01, 2.0)
-            min_distance_p4 = max(5, len(post_p4_smooth) // 50)
+            inverted_p4_signal = -post_p4_data
+            min_prominence_p4 = max(v_plateau_mean * prominence_factor, _prom_floor)
+            min_distance_p4 = _min_dist_samples
             valleys_p4, _ = find_peaks(inverted_p4_signal, prominence=min_prominence_p4, distance=min_distance_p4)
             
             if len(valleys_p4) > 0:
