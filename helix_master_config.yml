@@ -30,7 +30,7 @@ cli_settings:
   # *** EDIT THIS *** — replace with the absolute path to your raw PDV data folder.
   # Example (macOS/Linux): /Users/you/experiments/shot_2026_04/raw_csv
   # Example (Windows):     C:/Users/you/experiments/shot_2026_04/raw_csv
-  input_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/PDV_files
+  input_dir: /path/to/your/raw_pdv_data
 
   # Explicit list of files to process.  Set to null to use input_dir + input_pattern.
   # Example:  input_files: [file1.csv, file2.csv]
@@ -43,14 +43,14 @@ cli_settings:
   #   <output_dir>/ALPSS_output/   → ALPSS results
   #   <output_dir>/SPADE_analysis/ → SPADE results and plots
   # *** EDIT THIS *** — replace with the absolute path where you want results saved.
-  output_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/Output_Aug26
+  output_dir: /path/to/your/output
 
   # Folder containing experiment parameter files (CSV/Excel).
   # Must have a column matching PDV filenames so metadata (material, laser
   # energy, waveplate angle, row/column …) is attached to each trace.
   # Set to null to skip parameter enrichment.
   # *** EDIT THIS *** — replace with your parameter folder, or set to: null
-  param_folder: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/parameters
+  param_folder: /path/to/your/parameters
 
   # Analysis mode:
   #   both       — run ALPSS then SPADE (full pipeline, default)
@@ -65,7 +65,7 @@ cli_settings:
 
   # Used only when spade_mode: manual
   spade_input_files: null
-  spade_input_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/Output_Aug26
+  spade_input_dir: /path/to/your/velocity_files
   spade_input_pattern: "*--vel-smooth-with-uncert.csv"
 
 # -----------------------------------------------------------------------------
