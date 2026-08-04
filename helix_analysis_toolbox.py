@@ -770,7 +770,177 @@ class AnalysisThread(QThread):
         mat_props.setdefault('S', None)
         return mat_props
 
-    def detect_dns_and_process_spall(self, file_path, base_name, density, acoustic_velocity, 
+    def _compute_derived_shock_columns(self, t_aligned_ns, vel_clean, time_window, vel_window,
+                                       threshold_velocity, acoustic_velocity, hugoniot_S):
+        """Rise-time and strain-rate diagnostics from the aligned velocity trace.
+
+        Ports the Binary_metal_analysis (HELIX v1) backward-walk methodology verbatim so
+        the numbers stay identical across toolbox versions:
+          - RiseTime_ArrivalToPeak_ns : sustained backward walk from peak to threshold.
+          - RiseTime_/PlasticStrainRate_ {80_20, 90_10, MaxSlope} : %-of-peak backward walks.
+          - Compressive_StrainRate_Avg/Ufs, Shock_Velocity_Us, Shock_Front_Width.
+        The plastic/compressive-rate denominator uses the Hugoniot shock velocity
+        Us = c_b + S*u_p when the material's Hugoniot slope S is available, else falls back
+        to the bulk wave speed c_b (matching v1). Percentages come from spade_params
+        (accepted as percent, e.g. 80, or fraction, e.g. 0.8). Returns a dict of
+        column-name -> value (NaN where a quantity can't be formed).
+        """
+        out = {
+            'Peak_Shock_Time_ns': np.nan,
+            'RiseTime_ArrivalToPeak_ns': np.nan,
+            'RiseTime_80_20_ns': np.nan,
+            'RiseTime_90_10_ns': np.nan,
+            'RiseTime_MaxSlope_ns': np.nan,
+            'PlasticStrainRate_80_20_s^-1': np.nan,
+            'PlasticStrainRate_90_10_s^-1': np.nan,
+            'PlasticStrainRate_MaxSlope_s^-1': np.nan,
+            'Compressive_StrainRate_Avg_s^-1': np.nan,
+            'Compressive_StrainRate_Ufs_s^-1': np.nan,
+            'Shock_Velocity_Us_m_s': np.nan,
+            'Shock_Front_Width_um': np.nan,
+        }
+        try:
+            if vel_window is None or len(vel_window) == 0 or not np.any(np.isfinite(vel_window)):
+                return out
+
+            def _as_fraction(val, default):
+                # percent (80) or fraction (0.8) both accepted; matches v1 _as_fraction
+                try:
+                    f = float(val)
+                except (TypeError, ValueError):
+                    return default
+                if not np.isfinite(f) or f <= 0:
+                    return default
+                return f / 100.0 if f > 1.0 else f
+
+            sp = self.spade_params if isinstance(getattr(self, 'spade_params', None), dict) else {}
+            hi80 = _as_fraction(sp.get('plastic_sr_high_pct'), 0.8)
+            lo80 = _as_fraction(sp.get('plastic_sr_low_pct'), 0.2)
+            hi90 = _as_fraction(sp.get('plastic_sr90_high_pct'), 0.9)
+            lo90 = _as_fraction(sp.get('plastic_sr90_low_pct'), 0.1)
+            ms_window = _as_fraction(sp.get('plastic_sr_maxslope_window_pct'), 0.2)
+            ms_floor = _as_fraction(sp.get('plastic_sr_maxslope_floor_pct'), 0.05)
+            ms_step = _as_fraction(sp.get('plastic_sr_maxslope_step_pct'), 0.05)
+
+            # Peak = global max within the spall window (v1: not the first find_peaks hit,
+            # to avoid latching onto a low-prominence pre-shock bump).
+            First_Maxima = float(np.nanmax(vel_window))
+            peak_t = float(time_window[int(np.nanargmax(vel_window))])
+            out['Peak_Shock_Time_ns'] = peak_t
+            idx_peak = int(np.argmin(np.abs(t_aligned_ns - peak_t)))
+
+            # RiseTime_ArrivalToPeak_ns: walk BACKWARD from peak until velocity drops to
+            # threshold and STAYS there for a sustained 3 ns run (skips the known small
+            # artifact dip between elastic precursor and plastic wave).
+            dt_ns = float(np.median(np.diff(t_aligned_ns))) if len(t_aligned_ns) > 1 else np.nan
+            if np.isfinite(dt_ns) and dt_ns > 0:
+                n_sustain = max(3, int(round(3.0 / dt_ns)))
+                t_low = np.nan
+                run = 0
+                for i in range(idx_peak, -1, -1):
+                    v = vel_clean[i]
+                    if np.isnan(v):
+                        run = 0
+                        continue
+                    if v <= threshold_velocity:
+                        run += 1
+                        if run >= n_sustain:
+                            t_low = t_aligned_ns[i + n_sustain - 1]
+                            break
+                    else:
+                        run = 0
+                if np.isfinite(t_low):
+                    out['RiseTime_ArrivalToPeak_ns'] = peak_t - t_low
+
+            # Shock velocity Us at this shot's peak particle velocity up = 0.5*v_peak_fs
+            # (Hugoniot Us = C0 + S*up; C0 = bulk sound speed). Bulk-speed fallback if S
+            # is undefined for the material -- same fallback v1 uses.
+            v_peak_val = float(vel_clean[idx_peak])
+            up_peak = 0.5 * v_peak_val
+            if hugoniot_S is not None and np.isfinite(hugoniot_S) and np.isfinite(acoustic_velocity):
+                Us_peak = acoustic_velocity + hugoniot_S * up_peak
+            else:
+                Us_peak = acoustic_velocity
+
+            def _walk(frm, level):
+                # first index at or below `level`, walking backward from `frm`
+                if frm is None:
+                    return None
+                for i in range(frm, -1, -1):
+                    v = vel_clean[i]
+                    if np.isnan(v):
+                        continue
+                    if v <= level:
+                        return i
+                return None
+
+            def _pct_pair(hi_frac, lo_frac):
+                # backward walk to upper%, then further back to lower%; slope -> strain rate
+                ih = _walk(idx_peak, hi_frac * v_peak_val)
+                il = _walk(ih, lo_frac * v_peak_val)
+                if ih is None or il is None:
+                    return np.nan, np.nan
+                dt = t_aligned_ns[ih] - t_aligned_ns[il]
+                dv = float(vel_clean[ih]) - float(vel_clean[il])
+                if dt > 0 and np.isfinite(Us_peak) and Us_peak > 0:
+                    return dt, (dv / dt) * 1e9 / (2.0 * Us_peak)
+                return (dt if dt > 0 else np.nan), np.nan
+
+            out['RiseTime_80_20_ns'], out['PlasticStrainRate_80_20_s^-1'] = _pct_pair(hi80, lo80)
+            out['RiseTime_90_10_ns'], out['PlasticStrainRate_90_10_s^-1'] = _pct_pair(hi90, lo90)
+
+            # Max-slope: slide a fixed-width %-of-peak window down the rising edge, keep the
+            # steepest position (largest dv/dt) rather than averaging one fixed span.
+            best_slope = np.nan
+            best_hi = None
+            best_lo = None
+            hi_frac = 1.0
+            while hi_frac - ms_window >= ms_floor - 1e-9:
+                lo_frac = hi_frac - ms_window
+                ih = _walk(idx_peak, hi_frac * v_peak_val)
+                il = _walk(ih, lo_frac * v_peak_val)
+                if ih is not None and il is not None and ih != il:
+                    dt_c = t_aligned_ns[ih] - t_aligned_ns[il]
+                    dv_c = float(vel_clean[ih]) - float(vel_clean[il])
+                    if dt_c > 0:
+                        slope = dv_c / dt_c
+                        if not np.isfinite(best_slope) or slope > best_slope:
+                            best_slope = slope
+                            best_hi = ih
+                            best_lo = il
+                hi_frac -= ms_step
+            if best_hi is not None and best_lo is not None and np.isfinite(Us_peak) and Us_peak > 0:
+                out['RiseTime_MaxSlope_ns'] = t_aligned_ns[best_hi] - t_aligned_ns[best_lo]
+                out['PlasticStrainRate_MaxSlope_s^-1'] = best_slope * 1e9 / (2.0 * Us_peak)
+
+            # Compressive strain rate: average (u_fs/t_peak scaled by 2*c_b) and the
+            # Hugoniot free-surface variant (up / ((C0 + S*up) * t_r)); Ufs needs S.
+            if np.isfinite(peak_t) and abs(peak_t) > 0.01 and np.isfinite(acoustic_velocity) and acoustic_velocity > 0:
+                out['Compressive_StrainRate_Avg_s^-1'] = (First_Maxima / peak_t) * 1e9 / (2.0 * acoustic_velocity)
+                if hugoniot_S is not None and np.isfinite(hugoniot_S):
+                    up = First_Maxima / 2.0
+                    denom = (acoustic_velocity + hugoniot_S * up) * (peak_t * 1e-9)
+                    if denom > 0:
+                        out['Compressive_StrainRate_Ufs_s^-1'] = up / denom
+
+            # Shock-front width diagnostic: w = Us * t_r (t_r = RiseTime_80_20_ns).
+            up_fs = First_Maxima / 2.0
+            if hugoniot_S is not None and np.isfinite(hugoniot_S) and np.isfinite(acoustic_velocity):
+                Us = acoustic_velocity + hugoniot_S * up_fs
+            else:
+                Us = acoustic_velocity
+            out['Shock_Velocity_Us_m_s'] = Us
+            tr_ns = out['RiseTime_80_20_ns']
+            if np.isfinite(Us) and Us > 0 and np.isfinite(tr_ns) and tr_ns > 0:
+                out['Shock_Front_Width_um'] = Us * (tr_ns * 1e-9) * 1e6
+        except Exception as _e:
+            try:
+                self.progress_signal.emit(f"  [WARN] derived-column computation failed: {_e}")
+            except Exception:
+                pass
+        return out
+
+    def detect_dns_and_process_spall(self, file_path, base_name, density, acoustic_velocity,
                                      threshold_velocity, spall_start_time, spall_end_time,
                                      analysis_model='max_min', plot_path=None, plot_dir=None, sample_material='Unknown', **spade_kwargs):
         """
@@ -801,7 +971,22 @@ class AnalysisThread(QThread):
             'Pullback_Velocity_Unc_m_s': np.nan,
             'Processing_Status': 'Failed',
             'DNS_Classification': 'Unknown',
-            'Analysis_Notes': ''
+            'Analysis_Notes': '',
+            # Derived shock-front diagnostics (populated below once the aligned trace and
+            # spall window exist); pre-seeded so every row carries the same columns even
+            # when a trace fails early.
+            'Peak_Shock_Time_ns': np.nan,
+            'RiseTime_ArrivalToPeak_ns': np.nan,
+            'RiseTime_80_20_ns': np.nan,
+            'RiseTime_90_10_ns': np.nan,
+            'RiseTime_MaxSlope_ns': np.nan,
+            'PlasticStrainRate_80_20_s^-1': np.nan,
+            'PlasticStrainRate_90_10_s^-1': np.nan,
+            'PlasticStrainRate_MaxSlope_s^-1': np.nan,
+            'Compressive_StrainRate_Avg_s^-1': np.nan,
+            'Compressive_StrainRate_Ufs_s^-1': np.nan,
+            'Shock_Velocity_Us_m_s': np.nan,
+            'Shock_Front_Width_um': np.nan,
         }
 
         # No material resolved (not in config material_properties, not in the
@@ -922,7 +1107,21 @@ class AnalysisThread(QThread):
             time_window = t_aligned_ns[window_mask]
             vel_window = vel_clean[window_mask]
             uncert_window = uncertainty[window_mask]
-            
+
+            # Derived shock-front diagnostics (rise times, plastic & compressive strain
+            # rates, shock-front width) from the aligned trace. Ported verbatim from
+            # Binary_metal_analysis (HELIX v1) so values match across toolbox versions;
+            # denominator uses this material's Hugoniot slope S when available, else the
+            # bulk wave speed. Failures here never abort spall processing.
+            try:
+                _mp = self.get_material_properties_from_config(sample_material)
+                _hug_S = _mp.get('S') if isinstance(_mp, dict) else None
+            except Exception:
+                _hug_S = None
+            results.update(self._compute_derived_shock_columns(
+                t_aligned_ns, vel_clean, time_window, vel_window,
+                threshold_velocity, acoustic_velocity, _hug_S))
+
             # Step 4: Build spall analysis configuration
             spall_config = {
                 'min_recomp_ratio': spade_kwargs.get('min_recomp_ratio', self.spade_params.get('min_recomp_ratio', 0.1)),
