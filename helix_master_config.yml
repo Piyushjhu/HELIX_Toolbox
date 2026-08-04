@@ -30,7 +30,7 @@ cli_settings:
   # *** EDIT THIS *** — replace with the absolute path to your raw PDV data folder.
   # Example (macOS/Linux): /Users/you/experiments/shot_2026_04/raw_csv
   # Example (Windows):     C:/Users/you/experiments/shot_2026_04/raw_csv
-  input_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/PDV_files/2026-08-03_13-35-09/pdv_trace
+  input_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/PDV_files
 
   # Explicit list of files to process.  Set to null to use input_dir + input_pattern.
   # Example:  input_files: [file1.csv, file2.csv]
@@ -56,16 +56,16 @@ cli_settings:
   #   both       — run ALPSS then SPADE (full pipeline, default)
   #   alpss_only — stop after ALPSS velocity extraction
   #   spade_only — run SPADE only (requires pre-existing velocity files)
-  analysis_mode: both
+  analysis_mode: spade_only
 
   # SPADE input mode:
   #   auto   — SPADE reads the velocity files produced by ALPSS in this run
   #   manual — SPADE reads files listed in spade_input_dir / spade_input_files
-  spade_mode: auto
+  spade_mode: manual
 
   # Used only when spade_mode: manual
   spade_input_files: null
-  spade_input_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/Output_new
+  spade_input_dir: /Users/piyushwanchoo/Documents/Post_Doc/HELIX_paper_data/HEL_shots/Output_Aug26
   spade_input_pattern: "*--vel-smooth-with-uncert.csv"
 
 # -----------------------------------------------------------------------------
@@ -149,7 +149,7 @@ alpss_config:
 
   # Window length in nanoseconds (takes precedence over smoothing_window if set).
   # The code converts this to samples using sample_rate.  Recommended: 5–10 ns.
-  smoothing_window_ns: 6.0
+  smoothing_window_ns: 10
 
   # Window length in samples (used only when smoothing_window_ns is null).
   smoothing_window: null
@@ -218,7 +218,7 @@ spade_config:
   experiment_spall_analysis: true    # Run spall strength analysis
   experiment_hel_detection: true     # Run HEL (Hugoniot Elastic Limit) detection
 
-  # NOTE: there is no material-defaults fallback here. Density/wave-speed always
+  # Density/wave-speed always
   # come from material_properties below (or the parameter file's explicit
   # Density_kg_m3/Bulk_Wave_Speed_m_s columns) on a per-trace basis. If a
   # trace's material can't be resolved from any of those, that trace is
@@ -255,7 +255,7 @@ spade_config:
   # valley width). Set 0 to run on the ALPSS trace as-is.
   #   Example: 128 GS/s Ti, ~4-5 ns plateau -> sigma 1.0-1.5 ns (FWHM 2.4-3.5 ns).
   #   Raise toward 3 ns only for very noisy, broad-feature traces.
-  spall_smoothing_sigma_ns: 1
+  spall_smoothing_sigma_ns: 1.5
 
   # ── 2. Valley detection: prominence ──────────────────────────────────────────
   # How deep a velocity dip must be — as a FRACTION of the plateau velocity — to
@@ -292,16 +292,16 @@ spade_config:
   #     (plateau - P3).
   #     Example: 0.015 = rebound >= 1.5% of the drop. Raise to reject weak /
   #     ringing rebounds; lower to keep marginal spall signals.
-  min_recomp_ratio: 0.015
+  min_recomp_ratio: 0.025
   #
   # (b) rebound vs VALLEY velocity — P4 must exceed P3 by at least this factor.
   #     Example: 1.015 = P4 must be >= 1.5% above the valley velocity.
-  min_recomp_velocity_ratio: 1.015
+  min_recomp_velocity_ratio: 1.025
   #
   # (c) rebound duration — P4 must occur at least this long after P3. Rejects a
   #     fast noise spike right after the valley (not a physical recompression).
   #     Example: 2.5 ns.
-  min_recomp_time_ns: 2.5
+  min_recomp_time_ns: 3
   # ═══════════════════════════════════════════════════════════════════════════
 
   # ── HEL detection ─────────────────────────────────────────────────────────────
@@ -336,7 +336,7 @@ spade_config:
   #                        signal_start when the results sidecar is unavailable. (default)
   #   signal_start       — velocity-domain foot of rise (robust baseline + backtrack)
   #   first_positive     — legacy: first point where velocity > 0 and increasing for ~2 ns
-  hel_t0_method: "alpss_signal_start"
+  hel_t0_method: "signal_start"
 
   # Whether to use the HEL-based t=0 for x-axis alignment in plots.
   use_hel_t0_alignment_for_plots: true
@@ -362,13 +362,13 @@ spade_config:
   x_min_main: 0.0
   x_max_main: 120.0
   y_min_main: 0.0
-  y_max_main: 800.0
+  y_max_main: 400.0
 
   # Axis limits for zoom panel:
   x_min_zoom: 0.0
-  x_max_zoom: 80.0
+  x_max_zoom: 100.0
   y_min_zoom: 0.0
-  y_max_zoom: 800.0
+  y_max_zoom: 300.0
 
   # Set true to compute axis limits automatically from data.
   auto_calculate_limits: false
@@ -381,7 +381,7 @@ spade_config:
 
   # Whether to shade velocity uncertainty bands on the combined plot.
   include_uncert_bands: true
-  uncert_alpha: 0.2           # Opacity of uncertainty shading (0–1)
+  uncert_alpha: 0.3           # Opacity of uncertainty shading (0–1)
 
   # ── Bookkeeping ───────────────────────────────────────────────────────────────
   # Skip traces whose material is not found in material_properties.
