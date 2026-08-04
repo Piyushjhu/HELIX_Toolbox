@@ -432,7 +432,7 @@ SUMMARY_COLUMN_RENAME = {
     # HEL (lowercase -> HEL_*)
     'hel_ok': 'HEL_OK',
     'hel_strength_gpa': 'HEL_GPa',
-    'hel_uncertainty_gpa': 'HEL_Unc_GPa',
+    'hel_uncertainty_gpa': 'HEL_Uncertainty_GPa',
     'hel_strain_rate_s^-1': 'HEL_StrainRate_s^-1',
     'hel_segment_time_ns': 'HEL_Segment_Time_ns',
     'hel_consecutive_points': 'HEL_Consecutive_Points',

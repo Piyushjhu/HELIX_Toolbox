@@ -97,7 +97,7 @@ def _infer_material(df, igsn_material_map=None):
 # on load -- keeps both old and new master files working with a single edit point.
 _STANDARDIZED_TO_LEGACY = {
     'HEL_GPa': 'hel_strength_gpa',
-    'HEL_Unc_GPa': 'hel_uncertainty_gpa',
+    'HEL_Uncertainty_GPa': 'hel_uncertainty_gpa',
     'HEL_StrainRate_s^-1': 'hel_strain_rate_s^-1',
     'HEL_OK': 'hel_ok',
     'HEL_Segment_Time_ns': 'hel_segment_time_ns',
