@@ -74,9 +74,7 @@ Both modes share identical analysis logic and produce the same outputs, from raw
 - **Run traceability**: every run saves a `<prefix>-Run_Config.json` next to the summary CSV recording all ALPSS/SPADE parameters and material properties used
 - **First-local-minimum spall pullback (P3) detection**: prominence-based detection of the true pullback dip; traces with no qualifying valley, or with `P3 <= 0 m/s`, are classified DNS
 - **RDP + Linear Hybrid HEL detection**: Robust elastic-plastic transition detection using Ramer–Douglas–Peucker simplification combined with linear regression on raw segments (see [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md))
-- **RDP topology + 5-segment spall analysis**: Geometric "checkmark" detection with 5-segment linear fitting for accurate spall strength and strain rate
-- **5-Segment-only mode**: Opt out of RDP topology checks via `"spall_detection_method": "5-segment"`
-- **Hybrid analysis model**: `analysis_model: "hybrid"` uses `max_min` for spall strength and 5-segment for strain rate
+- **Horizontal-plateau 5-segment spall analysis**: Direct plateau → pullback → recompression qualification, with 5-segment fits for diagnostic plots and derived quantities
 - **Paper-quality plotting suite**: `helix_paper_plots.py` (library, used at runtime by the GUI) plus standalone post-processing scripts in [`supplementary/paper_plots/`](supplementary/paper_plots/)
 - **Robust IQ start-time detection**: New `use_robust_iq_detection` pipeline with configurable smoothing and persistence windows
 - **Expanded material library**: Added Ti (CP-Ti / Grade 2), Ti-6Al-4V, Vanadium, and Magnesium alongside Cu, Zn, Brass, and Al
@@ -109,7 +107,7 @@ Both modes share identical analysis logic and produce the same outputs, from raw
 - **Uncertainty Propagation**: Complete error analysis throughout pipeline
 - **MAD Filter**: Statistical outlier removal for peak velocities (per material / laser-energy bracket)
 - **HEL Detection**: RDP + Linear Hybrid detection of the Hugoniot Elastic Limit (see [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md))
-- **Spall Detection**: RDP topology + 5-segment linear analysis with optional 5-segment-only mode (see [Spall Detection](#spall-detection))
+- **Spall Detection**: Horizontal-plateau 5-segment analysis with P3/P4 DNS qualification (see [Spall Detection](#spall-detection))
 - **Noise-Fraction Filter**: Optional ALPSS filter that replaces velocity samples whose instantaneous noise fraction exceeds a threshold with linear interpolation
 
 ### 📈 **Rich Output Generation**
@@ -332,7 +330,7 @@ To deactivate when you are done: run `deactivate` (venv) or `conda deactivate` (
    - Monitor real-time progress with debug messages showing active parameters
    - View generated plots and results
    - Access comprehensive output files
-   - Debug messages confirm which parameters are being used (e.g., `[HEL] Using time window=[X, Y] ns`, `[SPALL] Using analysis_model='hybrid_5_segment'`)
+   - Debug messages confirm which parameters are being used (e.g., `[HEL] Using time window=[X, Y] ns`, `[SPALL] Detection Method: Horizontal Plateau 5-Segment Analysis`)
 
 ---
 
@@ -515,13 +513,10 @@ The master config file (`helix_master_config.json`) contains three main sections
         "experiment_velocity_shots": true,
         "experiment_spall_analysis": true,
         "experiment_hel_detection": true,
-        "analysis_model": "hybrid",
-        "spall_detection_method": "5-segment",
         "spall_start_time_ns": 0.0,
         "spall_end_time_ns": 90.0,
         "threshold_velocity_ms": 5.0,
-        "spall_rdp_epsilon": 5.0,
-        "min_pullback_velocity": 10.0,
+        "spall_smoothing_sigma_ns": 1.5,
         "min_recomp_ratio": 0.03,
         "min_recomp_velocity_ratio": 1.1,
         "min_recomp_time_ns": 2.5,
@@ -587,16 +582,19 @@ GS/s. Set `smoothing_window_ns: null` to use `smoothing_window` directly.
 - `experiment_hel_detection`: Enable HEL detection
 
 **Spall analysis**
-- `analysis_model`: Spall analysis method — `"max_min"`, `"hybrid_5_segment"`, or `"hybrid"` (uses `max_min` for strength and `hybrid_5_segment` for strain rate — default)
-- `spall_detection_method`: `"5-segment"` to disable RDP topology checks and use horizontal-plateau 5-segment fitting only; otherwise RDP + 5-segment is used
 - `spall_start_time_ns`, `spall_end_time_ns`: Spall analysis window (ns, relative to aligned t=0)
 - `threshold_velocity_ms`: Velocity threshold for shock-arrival detection (m/s)
-- `align_velocity_threshold_ms`: Velocity threshold for trace alignment (m/s)
-- `spall_rdp_epsilon`: RDP simplification tolerance for spall topology (m/s)
-- `min_pullback_velocity`: Minimum pullback magnitude to accept (m/s)
-- `min_recomp_ratio`: Minimum rebound/pullback ratio for valid recompression (e.g. `0.03` = 3%)
-- `min_recomp_velocity_ratio`: Rebound must exceed valley velocity by this ratio (e.g. `1.1` = 10%)
-- `min_recomp_time_ns`: Minimum sustained duration of the rebound (ns)
+- `spall_smoothing_sigma_ns`: Gaussian smoothing sigma applied once inside the spall window (ns; set `0` to disable)
+- `min_recomp_ratio`: Required fraction of the pullback recovered by P4
+- `min_recomp_velocity_ratio`: Required P4/P3 velocity factor
+- `min_recomp_time_ns`: Minimum P3-to-P4 duration (ns)
+
+The active spall calculation is always horizontal-plateau 5-segment analysis.
+`analysis_model`, `spall_detection_method`, `spall_rdp_epsilon`, and
+`min_pullback_velocity` remain accepted for compatibility with older config
+files, but do not change this active path. Likewise, the active path currently
+uses its internal P3-search defaults (`prominence_factor=0.01` and
+`peak_distance_ns=3.0`) rather than values supplied through the config.
 
 **HEL detection**
 - `hel_start_time_ns`, `hel_end_time_ns`: HEL analysis window (ns, relative to aligned t=0)
@@ -615,7 +613,6 @@ GS/s. Set `smoothing_window_ns: null` to use `smoothing_window` directly.
 - `skip_unknown_material_traces`: Skip traces with unknown material
 
 **Note:** When using the GUI, the following parameters will override config file values:
-- `analysis_model` (SPADE analysis method selection)
 - `spall_start_time_ns` and `spall_end_time_ns` (spall analysis window)
 - `threshold_velocity_ms` (shock arrival threshold)
 - `hel_start_time_ns` and `hel_end_time_ns` (HEL analysis window)
@@ -908,7 +905,7 @@ All SPADE outputs are written to `<output_dir>/SPADE_analysis/`.
 | `peak_velocity_pattern_analysis.png` | Pattern analysis (laser energy and location effects) |
 | `laser_energy_vs_waveplate_angle.png` | Laser energy vs waveplate angle |
 | `row_column_vs_peak_shock_stress.png` | Row/column vs shock stress plots |
-| `spall_plots/` | Per-trace spall detection plots (5-segment fits and RDP overlays) |
+| `spall_plots/` | Per-trace spall detection plots (horizontal-plateau 5-segment fits) |
 | `HEL_plots/` | Per-trace HEL detection plots with RDP knee and regression segments |
 
 ### Paper Plot Outputs (from standalone scripts)
@@ -1012,33 +1009,49 @@ Per-trace HEL detection plots are saved to the `SPADE_analysis/HEL_plots/` subfo
 
 ## Spall Detection
 
-Spall strength and strain rate are extracted from the characteristic "checkmark" signature (**Plateau → Pullback → Rebound**) using an RDP topology detector combined with 5-segment linear analysis.
+Spall strength and strain rate are extracted from the characteristic
+**Plateau → Pullback → Recompression** signature using the horizontal-plateau
+5-segment procedure. The active HELIX spall path does not perform RDP topology
+selection; RDP is used by the HEL detector.
 
-### Detection Methods
+### Active Detection Procedure
 
-**RDP Topology + 5-Segment (default)**:
-1. Align trace to shock arrival (HEL-style `t=0` with velocity-threshold fallback).
-2. Clip to `[spall_start_time_ns, spall_end_time_ns]`.
-3. Simplify the trace with RDP (`spall_rdp_epsilon`) and search for a "checkmark" topology (plateau → drop → rebound).
-4. If found, fit a 5-segment linear model (rise, plateau, pullback, rebound, recompression) and extract peak/valley velocities with uncertainty propagation.
-
-**5-Segment Only** (set `"spall_detection_method": "5-segment"`):
-1. Skip RDP topology checks.
-2. Enforce a horizontal plateau constraint and fit 5 linear segments directly.
+1. Remove velocity samples whose relative uncertainty is at least one, align the
+   trace to the ALPSS/HEL arrival time when available (otherwise use the velocity
+   threshold), and clip to `[spall_start_time_ns, spall_end_time_ns]`.
+2. Apply Gaussian smoothing once in that window using
+   `spall_smoothing_sigma_ns`; this smoothing is separate from the ALPSS velocity
+   smoothing and is disabled by setting the sigma to `0`.
+3. Find the global maximum, then define the plateau as all smoothed samples at or
+   above 95% of that maximum. Their mean is the horizontal plateau velocity.
+4. Use the plateau end as P2, detect post-plateau local valleys (P3 candidates),
+   and pair each with the first prominent local peak after it (P4 candidate).
+5. Accept only a P3/P4 pair that passes the physical P3 and recompression gates
+   below. The P2-to-P3 drop provides spall strength; the P2-to-P3 line slope
+   provides strain rate.
 
 ### Pullback Minimum (P3) Detection
 
-The pullback minimum is located as the **first local minimum after the plateau**, found by prominence-based peak detection on the inverted, smoothed post-plateau signal. The physical spall pullback is the first velocity dip after the shock peak — secondary reverberations can produce deeper but later minima that are not the primary spall signal, so a simple global minimum is not used. A candidate valley must clear the configured `prominence_factor` of the plateau mean velocity (with a 1 m/s floor); if no valley qualifies, the trace is classified **DNS** (Did Not Spall) rather than substituting a spurious point.
+The pullback minimum is the first viable local minimum after the plateau, found
+with prominence-based peak detection on the inverted, smoothed post-plateau
+signal. The prominence threshold is `max(0.01 * plateau_velocity, 1 m/s)` and
+candidate valleys are separated by at least 3 ns (converted to samples from the
+trace time spacing). Valleys with `|P3| <= 10 m/s` are treated as decayed
+baseline candidates and are not used. If no viable valley is followed by a
+prominent P4 candidate, the trace is classified **DNS** rather than substituting
+a global minimum.
 
-P3 must also be **strictly positive**. A selected pullback minimum at `P3 <= 0 m/s` is classified DNS before recompression is evaluated. HELIX retains the fitted diagnostic plot for that trace, but does not report a spall strength.
+P3 must also be **strictly positive**. For the selected P3/P4 pair, final DNS
+validation checks `P3 <= 0 m/s` before reporting any recompression result.
+HELIX retains the fitted diagnostic plot for that trace, but does not report a
+spall strength.
 
-### Analysis Models (`analysis_model`)
+### Analysis Model Compatibility
 
-| Model | Spall strength source | Strain rate source |
-|-------|----------------------|--------------------|
-| `max_min` | Peak/valley detection | Linear fit between peak & valley |
-| `hybrid_5_segment` | 5-segment segmentation | 5-segment segmentation |
-| `hybrid` *(default)* | `max_min` peak/valley | `hybrid_5_segment` |
+`analysis_model` is retained for compatibility with older configuration files,
+but it is not a run-time selector in the active HELIX spall path. Strength is
+calculated from the horizontal plateau-to-P3 velocity drop; strain rate is
+calculated from the P2-to-P3 release slope.
 
 ### Rebound / Recompression Gating
 
@@ -1057,13 +1070,10 @@ In `spade_config`:
 ```json
 {
     "experiment_spall_analysis": true,
-    "spall_detection_method": "5-segment",
-    "analysis_model": "hybrid",
     "spall_start_time_ns": 0.0,
     "spall_end_time_ns": 90.0,
     "threshold_velocity_ms": 5.0,
-    "spall_rdp_epsilon": 5.0,
-    "min_pullback_velocity": 10.0,
+    "spall_smoothing_sigma_ns": 1.5,
     "min_recomp_ratio": 0.03,
     "min_recomp_velocity_ratio": 1.1,
     "min_recomp_time_ns": 2.5
@@ -1129,7 +1139,7 @@ Detailed step-by-step algorithm documentation lives alongside this README:
 | Document | Description |
 |----------|-------------|
 | [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md) | Full RDP + Linear Hybrid HEL detection pipeline: time-zero alignment, uncertainty filtering, RDP simplification, raw-segment linear regression, physics validation |
-| [Spall Detection](#spall-detection) (this README) | RDP topology + 5-segment linear analysis for spall, including the 5-segment-only mode |
+| [Spall Detection](#spall-detection) (this README) | Active horizontal-plateau 5-segment spall analysis and P3/P4 DNS qualification |
 | [HELIX_spall_detection_methodology.pdf](HELIX_spall_detection_methodology.pdf) | Spall detection and DNS qualification overview, including the mandatory positive-P3 criterion |
 | [supplementary/references/SPALL_STRENGTH_CALCULATION.tex](supplementary/references/SPALL_STRENGTH_CALCULATION.tex) | Derivation and uncertainty propagation for the acoustic spall-strength formula |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and feature changes |
