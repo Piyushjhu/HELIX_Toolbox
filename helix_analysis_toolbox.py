@@ -895,12 +895,16 @@ class AnalysisThread(QThread):
             First_Maxima = float(np.nanmax(vel_window))
             peak_t = float(time_window[int(np.nanargmax(vel_window))])
             out['Peak_Shock_Time_ns'] = peak_t
-            idx_peak = int(np.argmin(np.abs(t_aligned_ns - peak_t)))
+            # NaN-robust nearest-index: the aligned time array can carry a NaN in row 0
+            # (detect_dns re-reads header'd velocity CSVs with header=None, pulling the
+            # header text in as a NaN row), and plain argmin would latch onto that NaN
+            # index and break every backward walk below.
+            idx_peak = int(np.nanargmin(np.abs(t_aligned_ns - peak_t)))
 
             # RiseTime_ArrivalToPeak_ns: walk BACKWARD from peak until velocity drops to
             # threshold and STAYS there for a sustained 3 ns run (skips the known small
             # artifact dip between elastic precursor and plastic wave).
-            dt_ns = float(np.median(np.diff(t_aligned_ns))) if len(t_aligned_ns) > 1 else np.nan
+            dt_ns = float(np.nanmedian(np.abs(np.diff(t_aligned_ns)))) if len(t_aligned_ns) > 1 else np.nan
             if np.isfinite(dt_ns) and dt_ns > 0:
                 n_sustain = max(3, int(round(3.0 / dt_ns)))
                 t_low = np.nan
@@ -10114,8 +10118,21 @@ class AnalysisThread(QThread):
                 # 2) Drop exact-duplicate columns (identical values across all rows)
                 enhanced_spall_df = enhanced_spall_df.T.drop_duplicates().T
 
-                # 3) Optionally drop columns that are entirely NaN
-                enhanced_spall_df = enhanced_spall_df.dropna(axis=1, how='all')
+                # 3) Drop entirely-NaN columns, but always keep the derived shock-front
+                #    diagnostics so the master schema is stable across runs. A single-trace
+                #    run where a backward-walk quantity is NaN must not make the column
+                #    vanish -- the standalone post-analysis plots rely on it existing.
+                _keep_always = {
+                    'Peak_Shock_Time_ns', 'RiseTime_ArrivalToPeak_ns', 'RiseTime_80_20_ns',
+                    'RiseTime_90_10_ns', 'RiseTime_MaxSlope_ns', 'PlasticStrainRate_80_20_s^-1',
+                    'PlasticStrainRate_90_10_s^-1', 'PlasticStrainRate_MaxSlope_s^-1',
+                    'Compressive_StrainRate_Avg_s^-1', 'Compressive_StrainRate_Ufs_s^-1',
+                    'Shock_Velocity_Us_m_s', 'Shock_Front_Width_um',
+                }
+                _allnan = [c for c in enhanced_spall_df.columns
+                           if c not in _keep_always and enhanced_spall_df[c].isna().all()]
+                if _allnan:
+                    enhanced_spall_df = enhanced_spall_df.drop(columns=_allnan)
             except Exception:
                 pass
 
