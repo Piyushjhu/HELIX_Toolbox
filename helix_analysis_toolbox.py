@@ -10100,13 +10100,26 @@ class AnalysisThread(QThread):
                 if col not in enhanced_spall_df.columns:
                     enhanced_spall_df[col] = np.nan
 
-            # Remove redundant columns
+            # Remove redundant columns. The derived shock-front diagnostics are exempt
+            # from every drop below so the master schema stays stable across runs -- a
+            # single-trace run where a backward-walk quantity is NaN (or coincidentally
+            # equals another column) must not make the column vanish; the standalone
+            # post-analysis plots rely on these columns existing.
+            _keep_always = {
+                'Peak_Shock_Time_ns', 'RiseTime_ArrivalToPeak_ns', 'RiseTime_80_20_ns',
+                'RiseTime_90_10_ns', 'RiseTime_MaxSlope_ns', 'PlasticStrainRate_80_20_s^-1',
+                'PlasticStrainRate_90_10_s^-1', 'PlasticStrainRate_MaxSlope_s^-1',
+                'Compressive_StrainRate_Avg_s^-1', 'Compressive_StrainRate_Ufs_s^-1',
+                'Shock_Velocity_Us_m_s', 'Shock_Front_Width_um',
+            }
             try:
                 import re
                 # 1) Drop columns that normalize to the same token (keep first occurrence)
                 seen_norm = set()
                 cols_to_drop = []
                 for col in enhanced_spall_df.columns:
+                    if col in _keep_always:
+                        continue
                     norm = re.sub(r"[^a-zA-Z0-9]+", "_", str(col)).strip("_").lower()
                     if norm in seen_norm:
                         cols_to_drop.append(col)
@@ -10115,20 +10128,17 @@ class AnalysisThread(QThread):
                 if cols_to_drop:
                     enhanced_spall_df = enhanced_spall_df.drop(columns=cols_to_drop, errors='ignore')
 
-                # 2) Drop exact-duplicate columns (identical values across all rows)
-                enhanced_spall_df = enhanced_spall_df.T.drop_duplicates().T
+                # 2) Drop exact-duplicate columns (identical values across all rows).
+                #    Set the protected columns aside first: on a single-row frame
+                #    T.drop_duplicates() would collapse any columns sharing a value
+                #    (e.g. all-NaN), which would otherwise delete a valid diagnostic.
+                _protected = [c for c in _keep_always if c in enhanced_spall_df.columns]
+                _held = enhanced_spall_df[_protected].copy() if _protected else None
+                _rest = enhanced_spall_df.drop(columns=_protected) if _protected else enhanced_spall_df
+                _rest = _rest.T.drop_duplicates().T
+                enhanced_spall_df = pd.concat([_rest, _held], axis=1) if _held is not None else _rest
 
-                # 3) Drop entirely-NaN columns, but always keep the derived shock-front
-                #    diagnostics so the master schema is stable across runs. A single-trace
-                #    run where a backward-walk quantity is NaN must not make the column
-                #    vanish -- the standalone post-analysis plots rely on it existing.
-                _keep_always = {
-                    'Peak_Shock_Time_ns', 'RiseTime_ArrivalToPeak_ns', 'RiseTime_80_20_ns',
-                    'RiseTime_90_10_ns', 'RiseTime_MaxSlope_ns', 'PlasticStrainRate_80_20_s^-1',
-                    'PlasticStrainRate_90_10_s^-1', 'PlasticStrainRate_MaxSlope_s^-1',
-                    'Compressive_StrainRate_Avg_s^-1', 'Compressive_StrainRate_Ufs_s^-1',
-                    'Shock_Velocity_Us_m_s', 'Shock_Front_Width_um',
-                }
+                # 3) Drop entirely-NaN columns, except the protected diagnostics.
                 _allnan = [c for c in enhanced_spall_df.columns
                            if c not in _keep_always and enhanced_spall_df[c].isna().all()]
                 if _allnan:
