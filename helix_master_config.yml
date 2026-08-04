@@ -56,12 +56,12 @@ cli_settings:
   #   both       — run ALPSS then SPADE (full pipeline, default)
   #   alpss_only — stop after ALPSS velocity extraction
   #   spade_only — run SPADE only (requires pre-existing velocity files)
-  analysis_mode: spade_only
+  analysis_mode: both
 
   # SPADE input mode:
   #   auto   — SPADE reads the velocity files produced by ALPSS in this run
   #   manual — SPADE reads files listed in spade_input_dir / spade_input_files
-  spade_mode: manual
+  spade_mode: auto
 
   # Used only when spade_mode: manual
   spade_input_files: null
