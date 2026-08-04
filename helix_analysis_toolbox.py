@@ -271,7 +271,7 @@ def load_config_from_file(file_path):
                     "YAML support requires PyYAML. Install it with "
                     "`pip install pyyaml`, or use a .json config instead."
                 )
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 config_dict = _yaml.safe_load(f)
             if config_dict is None:
                 config_dict = {}
@@ -281,7 +281,7 @@ def load_config_from_file(file_path):
                     f"(got {type(config_dict).__name__})."
                 )
         else:
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
         return True, config_dict, f"Configuration loaded from {file_path}"
     except Exception as e:
@@ -12526,7 +12526,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         """Load settings from configuration file"""
         try:
             if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file, 'r', encoding="utf-8") as f:
                     settings = json.load(f)
                 
                 # Load file paths
