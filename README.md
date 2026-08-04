@@ -72,7 +72,7 @@ Both modes share identical analysis logic and produce the same outputs, from raw
 - **ALPSS noise-fraction filter**: `noise_filter_enabled` / `noise_filter_threshold` replace high-noise velocity samples with linear interpolation before plotting and saving
 - **Consolidated data summary**: results now save to `<prefix>-Data_Summary.csv` (IGSN-prefixed from the parent folder of the output directory), replacing `enhanced_spall_summary.csv`
 - **Run traceability**: every run saves a `<prefix>-Run_Config.json` next to the summary CSV recording all ALPSS/SPADE parameters and material properties used
-- **First-local-minimum spall pullback (P3) detection**: prominence-based detection of the true pullback dip; traces with no qualifying valley are classified DNS
+- **First-local-minimum spall pullback (P3) detection**: prominence-based detection of the true pullback dip; traces with no qualifying valley, or with `P3 <= 0 m/s`, are classified DNS
 - **RDP + Linear Hybrid HEL detection**: Robust elastic-plastic transition detection using Ramer–Douglas–Peucker simplification combined with linear regression on raw segments (see [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md))
 - **RDP topology + 5-segment spall analysis**: Geometric "checkmark" detection with 5-segment linear fitting for accurate spall strength and strain rate
 - **5-Segment-only mode**: Opt out of RDP topology checks via `"spall_detection_method": "5-segment"`
@@ -497,6 +497,7 @@ The master config file (`helix_master_config.json`) contains three main sections
         "save_all_plots": "no",
         "header_lines": 22,
         "time_to_take": 4e-06,
+        "sample_rate": 128000000000.0,
         "use_notch_filter": false,
         "use_robust_iq_detection": true,
         "iq_threshold_factor": 0.8,
@@ -556,6 +557,21 @@ The shipped `helix_master_config.json` contains a full list of materials includi
 `Vanadium`, and `Magnesium` aliases.
 
 **Noise-fraction filter** (`alpss_config`): when `noise_filter_enabled` is `true`, velocity samples whose instantaneous noise fraction exceeds `noise_filter_threshold` are replaced with linear interpolation from the surrounding valid samples, before plotting and CSV saving. This suppresses spurious velocity spikes in low-signal regions without altering clean portions of the trace.
+
+### ALPSS Sample Rate and Smoothing
+
+`sample_rate` is a **fallback**, not a fixed per-run sampling rate. For every raw
+trace, ALPSS measures the mean spacing of the trace's `Time` column and uses
+`fs = 1 / mean(diff(Time))`. The configured value is used only if that detection
+cannot be completed. The effective rate used for each trace is included in the
+automatically saved `<prefix>-Run_Config.json`.
+
+When `smoothing_window_ns` is positive, it takes precedence over the legacy
+sample-count setting `smoothing_window`. The code converts the physical window
+to samples for each trace as `int(smoothing_window_ns * fs * 1e-9)`, then makes
+the result odd (and at least three samples) for the smoothing algorithms. For
+example, a 6 ns window becomes 769 samples at 128 GS/s and 481 samples at 80
+GS/s. Set `smoothing_window_ns: null` to use `smoothing_window` directly.
 
 ### Using Configuration Files in GUI
 
@@ -1012,7 +1028,9 @@ Spall strength and strain rate are extracted from the characteristic "checkmark"
 
 ### Pullback Minimum (P3) Detection
 
-The pullback minimum is located as the **first local minimum after the plateau**, found by prominence-based peak detection on the inverted, smoothed post-plateau signal. The physical spall pullback is the first velocity dip after the shock peak — secondary reverberations can produce deeper but later minima that are not the primary spall signal, so a simple global minimum is not used. A candidate valley must clear a prominence threshold of 1% of the plateau mean velocity (floor 2 m/s); if no valley qualifies, the trace is classified **DNS** (Did Not Spall) rather than substituting a spurious point.
+The pullback minimum is located as the **first local minimum after the plateau**, found by prominence-based peak detection on the inverted, smoothed post-plateau signal. The physical spall pullback is the first velocity dip after the shock peak — secondary reverberations can produce deeper but later minima that are not the primary spall signal, so a simple global minimum is not used. A candidate valley must clear the configured `prominence_factor` of the plateau mean velocity (with a 1 m/s floor); if no valley qualifies, the trace is classified **DNS** (Did Not Spall) rather than substituting a spurious point.
+
+P3 must also be **strictly positive**. A selected pullback minimum at `P3 <= 0 m/s` is classified DNS before recompression is evaluated. HELIX retains the fitted diagnostic plot for that trace, but does not report a spall strength.
 
 ### Analysis Models (`analysis_model`)
 
@@ -1024,11 +1042,14 @@ The pullback minimum is located as the **first local minimum after the plateau**
 
 ### Rebound / Recompression Gating
 
-To prevent false spall detections from post-shock ringing, candidate rebounds must satisfy:
-- `min_recomp_ratio` (default `0.03`): rebound must reach ≥3% of the pullback depth.
-- `min_recomp_velocity_ratio` (default `1.1`): rebound must exceed the valley velocity by ≥10%.
-- `min_recomp_time_ns` (default `2.5`): rebound must sustain for ≥2.5 ns.
-- `min_pullback_velocity` (default `10.0 m/s`): minimum pullback depth.
+After a positive P3 is found, HELIX pairs it with the first prominent local P4
+peak after the valley. To prevent post-shock ringing from being reported as
+spall, the pair must satisfy every configured gate:
+
+- `P4 > P3` (a real re-acceleration);
+- `min_recomp_velocity_ratio`: P4 must exceed P3 by the configured factor;
+- `min_recomp_time_ns`: P4 must occur at least the configured duration after P3;
+- `min_recomp_ratio`: the P3-to-P4 rebound must recover the configured fraction of the plateau-to-P3 pullback.
 
 ### Configuration
 
@@ -1109,6 +1130,7 @@ Detailed step-by-step algorithm documentation lives alongside this README:
 |----------|-------------|
 | [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md) | Full RDP + Linear Hybrid HEL detection pipeline: time-zero alignment, uncertainty filtering, RDP simplification, raw-segment linear regression, physics validation |
 | [Spall Detection](#spall-detection) (this README) | RDP topology + 5-segment linear analysis for spall, including the 5-segment-only mode |
+| [HELIX_spall_detection_methodology.pdf](HELIX_spall_detection_methodology.pdf) | Spall detection and DNS qualification overview, including the mandatory positive-P3 criterion |
 | [supplementary/references/SPALL_STRENGTH_CALCULATION.tex](supplementary/references/SPALL_STRENGTH_CALCULATION.tex) | Derivation and uncertainty propagation for the acoustic spall-strength formula |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and feature changes |
 | [supplementary/README.md](supplementary/README.md) | Description of optional / non-runtime files |
