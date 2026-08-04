@@ -805,8 +805,9 @@ Examples:
     )
     parser.add_argument(
         "--input-pattern",
-        default="*.csv",
-        help="Glob pattern applied within --input-dir (default: %(default)s, overrides config file).",
+        default=None,
+        help="Glob pattern applied within --input-dir (overrides config file when given; "
+             "otherwise the config's input_pattern is used, falling back to '*.csv').",
     )
     parser.add_argument(
         "--param-folder",
