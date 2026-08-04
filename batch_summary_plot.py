@@ -91,6 +91,34 @@ def _infer_material(df, igsn_material_map=None):
     return df
 
 
+# The consolidated master (<IGSN>-Data_Summary.csv) is now written with standardized
+# column names (e.g. HEL_GPa, Peak_Shock_Stress_GPa). This module still refers to the
+# legacy spellings throughout, so alias the standardized names back to the legacy ones
+# on load -- keeps both old and new master files working with a single edit point.
+_STANDARDIZED_TO_LEGACY = {
+    'HEL_GPa': 'hel_strength_gpa',
+    'HEL_Unc_GPa': 'hel_uncertainty_gpa',
+    'HEL_StrainRate_s^-1': 'hel_strain_rate_s^-1',
+    'HEL_OK': 'hel_ok',
+    'HEL_Segment_Time_ns': 'hel_segment_time_ns',
+    'HEL_Consecutive_Points': 'hel_consecutive_points',
+    'HEL_FreeSurface_Velocity_m_s': 'free_surface_velocity_ms',
+    'Peak_Shock_Stress_GPa': 'Peak Shock Stress (GPa)',
+    'Peak_Shock_Stress_Unc_GPa': 'Peak Shock Stress Uncertainty (GPa)',
+    'Plateau_Mean_Velocity_m_s': 'Plateau Mean Velocity (m/s)',
+}
+
+
+def _alias_standardized_columns(df):
+    """Ensure legacy column spellings exist for any standardized master columns."""
+    if df is None or not hasattr(df, "columns"):
+        return df
+    for new, old in _STANDARDIZED_TO_LEGACY.items():
+        if new in df.columns and old not in df.columns:
+            df[old] = df[new]
+    return df
+
+
 def _load_spade_dir(spade_dir, label, igsn_material_map=None):
     """Return (spall_df, hel_df) from one SPADE_analysis folder, or (None, None).
 
@@ -106,6 +134,7 @@ def _load_spade_dir(spade_dir, label, igsn_material_map=None):
         frames = []
         for path in data_summary_files:
             df = pd.read_csv(path)
+            df = _alias_standardized_columns(df)
             df = _infer_material(df, igsn_material_map)
             df["_subfolder"] = label
             frames.append(df)

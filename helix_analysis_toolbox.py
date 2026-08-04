@@ -410,6 +410,74 @@ def filter_3sigma_outliers(data_df, x_col, y_col, progress_callback=None):
     return filtered_df, outliers_removed
 
 
+# ── Consolidated-summary column standardization ─────────────────────────────────
+# The persisted master summary (<IGSN>-Data_Summary.csv) uses a single, standardized
+# naming convention: underscore-separated names with a trailing unit token
+# (e.g. Peak_Shock_Stress_GPa, HEL_GPa). Internal SPADE result dicts and matplotlib
+# display labels keep their human-readable spaced forms on purpose -- only the
+# columns written to / read back from the master CSV are standardized, via the two
+# helpers below. `standardize_summary_columns` is applied just before writing the
+# master; `normalize_summary_columns` is applied just after reading any summary CSV
+# (master or legacy) so downstream code sees standardized names regardless of whether
+# the file on disk was written by an older build.
+SUMMARY_COLUMN_RENAME = {
+    # Spall / shock (spaced -> underscore+unit)
+    'Peak Shock Stress (GPa)': 'Peak_Shock_Stress_GPa',
+    'Peak Shock Stress Uncertainty (GPa)': 'Peak_Shock_Stress_Unc_GPa',
+    'Plateau Mean Velocity (m/s)': 'Plateau_Mean_Velocity_m_s',
+    'Plateau Mean Velocity Uncertainty (m/s)': 'Plateau_Mean_Velocity_Unc_m_s',
+    'Strain Rate Uncertainty (s^-1)': 'Strain_Rate_Unc_s^-1',
+    'First Maxima (m/s)': 'First_Maxima_m_s',
+    'Pullback Minima (m/s)': 'Minima_m_s',
+    # HEL (lowercase -> HEL_*)
+    'hel_ok': 'HEL_OK',
+    'hel_strength_gpa': 'HEL_GPa',
+    'hel_uncertainty_gpa': 'HEL_Unc_GPa',
+    'hel_strain_rate_s^-1': 'HEL_StrainRate_s^-1',
+    'hel_segment_time_ns': 'HEL_Segment_Time_ns',
+    'hel_consecutive_points': 'HEL_Consecutive_Points',
+    'free_surface_velocity_ms': 'HEL_FreeSurface_Velocity_m_s',
+}
+# Reverse view for reader code that still needs a legacy spelling (not used to write).
+SUMMARY_COLUMN_RENAME_INVERSE = {v: k for k, v in SUMMARY_COLUMN_RENAME.items()}
+
+
+def standardize_summary_columns(df):
+    """Rename master-summary columns to the standardized convention (see map above).
+
+    Only renames a legacy column when its standardized target is not already present,
+    so a df that is already standardized (or has both) is left unharmed.
+    """
+    if df is None or not hasattr(df, 'columns'):
+        return df
+    rename = {old: new for old, new in SUMMARY_COLUMN_RENAME.items()
+              if old in df.columns and new not in df.columns}
+    return df.rename(columns=rename) if rename else df
+
+
+def normalize_summary_columns(df):
+    """Prepare a just-loaded summary df so BOTH naming conventions resolve in memory.
+
+    After reading a master (or legacy) summary CSV, this ensures the standardized name
+    exists for every known column AND keeps a legacy-spelled alias alongside it. That
+    way new code can use standardized names while the many existing GUI plot methods
+    that still reference the spaced/lowercase spellings keep working, regardless of
+    which build wrote the file. The persisted file itself is written single-named via
+    standardize_summary_columns(); these duplicate aliases live only in memory.
+    """
+    if df is None or not hasattr(df, 'columns'):
+        return df
+    # 1) make sure the standardized spelling is present for each known legacy column
+    for old, new in SUMMARY_COLUMN_RENAME.items():
+        if old in df.columns and new not in df.columns:
+            df[new] = df[old]
+    # 2) make sure the legacy spelling is present for each known standardized column
+    for new, old in SUMMARY_COLUMN_RENAME_INVERSE.items():
+        if new in df.columns and old not in df.columns:
+            df[old] = df[new]
+    return df
+
+
 class AnalysisThread(QThread):
     """Thread for running ALPSS and SPADE analysis"""
     progress_signal = pyqtSignal(str)
@@ -10109,6 +10177,19 @@ class AnalysisThread(QThread):
                 'Strain Rate Uncertainty (s^-1)',  # Alternative naming
                 'Strain_Rate_Unc_s^-1',  # Alternative naming
                 'StrainRate_Unc_s^-1',   # Alternative naming
+                # 5b. Derived shock-front diagnostics (computed in detect_dns_and_process_spall)
+                'Peak_Shock_Time_ns',
+                'RiseTime_ArrivalToPeak_ns',
+                'RiseTime_80_20_ns',
+                'RiseTime_90_10_ns',
+                'RiseTime_MaxSlope_ns',
+                'PlasticStrainRate_80_20_s^-1',
+                'PlasticStrainRate_90_10_s^-1',
+                'PlasticStrainRate_MaxSlope_s^-1',
+                'Compressive_StrainRate_Avg_s^-1',
+                'Compressive_StrainRate_Ufs_s^-1',
+                'Shock_Velocity_Us_m_s',
+                'Shock_Front_Width_um',
                 # 6. HEL analysis results
                 'hel_ok',
                 'hel_strength_gpa',
@@ -10162,7 +10243,10 @@ class AnalysisThread(QThread):
             enhanced_spall_df = enhanced_spall_df[reordered_columns]
 
             enhanced_spall_path = os.path.join(spade_output_dir, self._get_summary_filename())
-            enhanced_spall_df.to_csv(enhanced_spall_path, index=False)
+            # Persist the master with standardized column names (single naming
+            # convention on disk); the in-memory enhanced_spall_df keeps its original
+            # names for the downstream GUI plotting calls below.
+            standardize_summary_columns(enhanced_spall_df.copy()).to_csv(enhanced_spall_path, index=False)
             self.progress_signal.emit(f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
             self.progress_signal.emit(f"Saved to: {enhanced_spall_path}")
             self._save_run_config(spade_output_dir)
@@ -10233,12 +10317,13 @@ class AnalysisThread(QThread):
                 except Exception as e:
                     self.progress_signal.emit(f"Warning: Could not merge shock stress into velocity_shots_summary: {e}")
 
-            # Remove the basic spall summary file as it's redundant
+            # Retain spall_summary.csv alongside the consolidated master for safety /
+            # back-compat (it is a strict subset of the master). Previously this file was
+            # deleted as redundant; it is now kept as a legacy export.
             try:
                 spall_summary_path = os.path.join(spade_output_dir, 'spall_summary.csv')
                 if os.path.exists(spall_summary_path):
-                    os.remove(spall_summary_path)
-                    self.progress_signal.emit(f"Removed redundant spall_summary.csv (superseded by {self._get_summary_filename()})")
+                    self.progress_signal.emit(f"Kept spall_summary.csv as a legacy export (master: {self._get_summary_filename()})")
             except Exception:
                 pass
             
@@ -10715,6 +10800,10 @@ class AnalysisThread(QThread):
                     summary_df['Peak Shock Stress Uncertainty (GPa)'] = summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
             elif os.path.exists(enhanced_summary_csv):
                 summary_df = pd.read_csv(enhanced_summary_csv)
+                # Master CSV is written with standardized names; expose both standardized
+                # and legacy spellings in memory so the mapping below (and any GUI plot
+                # consumer) resolves regardless of which build wrote the file.
+                summary_df = normalize_summary_columns(summary_df)
                 summary_df = self.refresh_material_column(summary_df)
                 # Map column names if needed
                 if 'Spall_Strength_GPa_Final' in summary_df.columns:
@@ -10942,6 +11031,19 @@ class AnalysisThread(QThread):
                         'Strain Rate Uncertainty (s^-1)',  # Alternative naming
                         'Strain_Rate_Unc_s^-1',  # Alternative naming
                         'StrainRate_Unc_s^-1',   # Alternative naming
+                        # 5b. Derived shock-front diagnostics (computed in detect_dns_and_process_spall)
+                        'Peak_Shock_Time_ns',
+                        'RiseTime_ArrivalToPeak_ns',
+                        'RiseTime_80_20_ns',
+                        'RiseTime_90_10_ns',
+                        'RiseTime_MaxSlope_ns',
+                        'PlasticStrainRate_80_20_s^-1',
+                        'PlasticStrainRate_90_10_s^-1',
+                        'PlasticStrainRate_MaxSlope_s^-1',
+                        'Compressive_StrainRate_Avg_s^-1',
+                        'Compressive_StrainRate_Ufs_s^-1',
+                        'Shock_Velocity_Us_m_s',
+                        'Shock_Front_Width_um',
                         # 6. HEL analysis results
                         'hel_ok',
                         'hel_strength_gpa',
@@ -10992,9 +11094,11 @@ class AnalysisThread(QThread):
                     # Reorder the DataFrame
                     enhanced_summary_df = enhanced_summary_df[reordered_columns]
 
-                    # Save enhanced summary (single consolidated file — no separate spall_summary.csv)
+                    # Save enhanced summary (single consolidated master file) with
+                    # standardized column names; keep the in-memory df unrenamed for the
+                    # GUI plotting/consumers that run after this.
                     enhanced_summary_path = os.path.join(spade_output_dir, self._get_summary_filename())
-                    enhanced_summary_df.to_csv(enhanced_summary_path, index=False)
+                    standardize_summary_columns(enhanced_summary_df.copy()).to_csv(enhanced_summary_path, index=False)
                     self._save_run_config(spade_output_dir)
 
                     # Check if ALPSS data was included
