@@ -1168,7 +1168,26 @@ def calculate_spall_parameters(
             results.update(results_5seg)
             lines_info = lines_info_5seg
             intersections = intersections_5seg
-            status = 'Success'
+            # A physical spall pullback minimum must remain strictly above
+            # zero velocity.  Preserve the fitted trace for diagnostics, but
+            # do not report a spall strength for zero/negative P3 values.
+            p3_velocity = np.nan
+            try:
+                if intersections and len(intersections) >= 3 and intersections[2] is not None:
+                    p3_velocity = float(intersections[2][1])
+            except (IndexError, TypeError, ValueError):
+                pass
+
+            if not np.isfinite(p3_velocity) or p3_velocity <= 0:
+                dns_reason = f"DNS: P3 velocity ({p3_velocity:.2f} m/s) must be > 0 m/s"
+                results['Processing Status'] = 'DNS'
+                results['Spall Strength (GPa)'] = 'DNS'
+                results['Spall_OK'] = False
+                results['DNS_Classification'] = dns_reason
+                status = 'DNS'
+                logger.info("%s: %s", base_name, dns_reason)
+            else:
+                status = 'Success'
         except Exception as e:
             logger.warning(f"Failed to calculate using 5-segment method: {e}")
             # Fallback: Use peak-based plateau velocity method
@@ -1204,7 +1223,7 @@ def calculate_spall_parameters(
     results['Processing Status'] = status
     results['Error Message'] = error_message
     
-    if status in ['Success', 'Success (Fallback)'] and plot_path:
+    if status in ['Success', 'Success (Fallback)', 'DNS'] and plot_path:
         # Pass through axis limits if provided in kwargs
         axis_limits = {
             'auto_calculate_limits': kwargs.get('auto_calculate_limits', True),

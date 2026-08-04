@@ -7672,10 +7672,14 @@ class AnalysisThread(QThread):
             print(f"  [HORIZ-PLAT] No data after P4, using P4 as endpoint")
             sys.stdout.flush()
         
-        # DNS Check 2: Recompression validation (stricter than v_p4 > v_p3)
-        # Require: (a) P4 > P3, (b) v_p4 >= v_p3 * min_recomp_velocity_ratio (default 1.05 = 5%),
-        #          (c) t_p4 - t_p3 >= min_recomp_time_ns (default 2.5 ns),
-        #          (d) rebound_mag >= pullback_mag * min_recomp_ratio (default 10% of drop)
+        # DNS Check 2: Physical P3 and recompression validation.
+        # P3 is the free-surface pullback minimum, so it must remain strictly
+        # positive.  A zero or negative P3 is not a valid spall measurement,
+        # even if a subsequent noise rebound would otherwise pass the P4 gates.
+        # Require: (a) P3 > 0, (b) P4 > P3,
+        #          (c) v_p4 >= v_p3 * min_recomp_velocity_ratio (default 1.05 = 5%),
+        #          (d) t_p4 - t_p3 >= min_recomp_time_ns (default 2.5 ns),
+        #          (e) rebound_mag >= pullback_mag * min_recomp_ratio (default 10% of drop)
         min_recomp_velocity_ratio = config.get('min_recomp_velocity_ratio', 1.05)
         min_recomp_time_ns = config.get('min_recomp_time_ns', 2.5)
         min_recomp_ratio = config.get('min_recomp_ratio', 0.1)
@@ -7685,7 +7689,9 @@ class AnalysisThread(QThread):
 
         # Build DNS reason for first failing check (priority order)
         dns_reason = None
-        if v_p4 <= v_p3:
+        if not np.isfinite(v_p3) or v_p3 <= 0:
+            dns_reason = f"DNS: P3 velocity ({v_p3:.2f} m/s) must be > 0 m/s"
+        elif v_p4 <= v_p3:
             dns_reason = f"DNS: P4 ({v_p4:.2f}) <= P3 ({v_p3:.2f}) - no re-acceleration"
         elif v_p4 < v_p3 * min_recomp_velocity_ratio:
             dns_reason = f"DNS: Recompression too weak - v_p4 ({v_p4:.2f}) < v_p3*{min_recomp_velocity_ratio} ({v_p3 * min_recomp_velocity_ratio:.2f} m/s). Need clear spall rebound."
@@ -16348,4 +16354,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -117,12 +117,12 @@ P4 is the global maximum of the velocity after P3:
 \subsection{Overview}
 A trace is classified as ``Did Not Spall'' (DNS) if it does not exhibit a clear spallation signature. Two checks are applied.
 
-\subsection{DNS Check 1: P3 Too Close to Zero}
-If the pullback minimum is negligibly small:
+\subsection{DNS Check 1: P3 Must Be Positive}
+The pullback minimum must remain strictly positive:
 \begin{equation}
-|v_{P3}| \leq 10 \text{ m/s} \quad \Rightarrow \quad \text{DNS}
+v_{P3} \leq 0 \text{ m/s} \quad \Rightarrow \quad \text{DNS}
 \end{equation}
-This indicates no meaningful pullback.
+Zero or negative free-surface velocity at P3 is not a valid spall measurement.
 
 \subsection{DNS Check 2: Recompression Validation}
 Four conditions must be satisfied for a valid spall:
