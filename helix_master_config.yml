@@ -247,6 +247,12 @@ spade_config:
   # Savitzky-Golay trace). Listed in the order the algorithm uses them.
 
   # ── 1. Smoothing (Gaussian, applied ONCE before detection) ───────────────────
+  # SCOPE: this Gaussian is applied to the SPALL trace ONLY. HEL detection and
+  # the plotted trace use the ALPSS Savitzky-Golay output as-is (no extra filter).
+  # NOTE: the input trace is ALREADY Savitzky-Golay smoothed by ALPSS, so this is
+  # a deliberate SECOND filter on the spall path — kept because spall feature
+  # detection needs a broader kernel than Sav-Gol leaves. (Future versions will
+  # move all filtering out of ALPSS and do it once here in SPADE.)
   # A Gaussian kernel of this sigma (ns of REAL time, so it is independent of
   # oscilloscope sample rate) is convolved with the windowed trace exactly once;
   # the spall algorithm does no other smoothing. Bigger sigma = smoother trace
