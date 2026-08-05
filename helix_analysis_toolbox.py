@@ -410,6 +410,74 @@ def filter_3sigma_outliers(data_df, x_col, y_col, progress_callback=None):
     return filtered_df, outliers_removed
 
 
+# ── Consolidated-summary column standardization ─────────────────────────────────
+# The persisted master summary (<IGSN>-Data_Summary.csv) uses a single, standardized
+# naming convention: underscore-separated names with a trailing unit token
+# (e.g. Peak_Shock_Stress_GPa, HEL_GPa). Internal SPADE result dicts and matplotlib
+# display labels keep their human-readable spaced forms on purpose -- only the
+# columns written to / read back from the master CSV are standardized, via the two
+# helpers below. `standardize_summary_columns` is applied just before writing the
+# master; `normalize_summary_columns` is applied just after reading any summary CSV
+# (master or legacy) so downstream code sees standardized names regardless of whether
+# the file on disk was written by an older build.
+SUMMARY_COLUMN_RENAME = {
+    # Spall / shock (spaced -> underscore+unit)
+    'Peak Shock Stress (GPa)': 'Peak_Shock_Stress_GPa',
+    'Peak Shock Stress Uncertainty (GPa)': 'Peak_Shock_Stress_Unc_GPa',
+    'Plateau Mean Velocity (m/s)': 'Plateau_Mean_Velocity_m_s',
+    'Plateau Mean Velocity Uncertainty (m/s)': 'Plateau_Mean_Velocity_Unc_m_s',
+    'Strain Rate Uncertainty (s^-1)': 'Strain_Rate_Unc_s^-1',
+    'First Maxima (m/s)': 'First_Maxima_m_s',
+    'Pullback Minima (m/s)': 'Minima_m_s',
+    # HEL (lowercase -> HEL_*)
+    'hel_ok': 'HEL_OK',
+    'hel_strength_gpa': 'HEL_GPa',
+    'hel_uncertainty_gpa': 'HEL_Uncertainty_GPa',
+    'hel_strain_rate_s^-1': 'HEL_StrainRate_s^-1',
+    'hel_segment_time_ns': 'HEL_Segment_Time_ns',
+    'hel_consecutive_points': 'HEL_Consecutive_Points',
+    'free_surface_velocity_ms': 'HEL_FreeSurface_Velocity_m_s',
+}
+# Reverse view for reader code that still needs a legacy spelling (not used to write).
+SUMMARY_COLUMN_RENAME_INVERSE = {v: k for k, v in SUMMARY_COLUMN_RENAME.items()}
+
+
+def standardize_summary_columns(df):
+    """Rename master-summary columns to the standardized convention (see map above).
+
+    Only renames a legacy column when its standardized target is not already present,
+    so a df that is already standardized (or has both) is left unharmed.
+    """
+    if df is None or not hasattr(df, 'columns'):
+        return df
+    rename = {old: new for old, new in SUMMARY_COLUMN_RENAME.items()
+              if old in df.columns and new not in df.columns}
+    return df.rename(columns=rename) if rename else df
+
+
+def normalize_summary_columns(df):
+    """Prepare a just-loaded summary df so BOTH naming conventions resolve in memory.
+
+    After reading a master (or legacy) summary CSV, this ensures the standardized name
+    exists for every known column AND keeps a legacy-spelled alias alongside it. That
+    way new code can use standardized names while the many existing GUI plot methods
+    that still reference the spaced/lowercase spellings keep working, regardless of
+    which build wrote the file. The persisted file itself is written single-named via
+    standardize_summary_columns(); these duplicate aliases live only in memory.
+    """
+    if df is None or not hasattr(df, 'columns'):
+        return df
+    # 1) make sure the standardized spelling is present for each known legacy column
+    for old, new in SUMMARY_COLUMN_RENAME.items():
+        if old in df.columns and new not in df.columns:
+            df[new] = df[old]
+    # 2) make sure the legacy spelling is present for each known standardized column
+    for new, old in SUMMARY_COLUMN_RENAME_INVERSE.items():
+        if new in df.columns and old not in df.columns:
+            df[old] = df[new]
+    return df
+
+
 class AnalysisThread(QThread):
     """Thread for running ALPSS and SPADE analysis"""
     progress_signal = pyqtSignal(str)
@@ -770,7 +838,181 @@ class AnalysisThread(QThread):
         mat_props.setdefault('S', None)
         return mat_props
 
-    def detect_dns_and_process_spall(self, file_path, base_name, density, acoustic_velocity, 
+    def _compute_derived_shock_columns(self, t_aligned_ns, vel_clean, time_window, vel_window,
+                                       threshold_velocity, acoustic_velocity, hugoniot_S):
+        """Rise-time and strain-rate diagnostics from the aligned velocity trace.
+
+        Ports the Binary_metal_analysis (HELIX v1) backward-walk methodology verbatim so
+        the numbers stay identical across toolbox versions:
+          - RiseTime_ArrivalToPeak_ns : sustained backward walk from peak to threshold.
+          - RiseTime_/PlasticStrainRate_ {80_20, 90_10, MaxSlope} : %-of-peak backward walks.
+          - Compressive_StrainRate_Avg/Ufs, Shock_Velocity_Us, Shock_Front_Width.
+        The plastic/compressive-rate denominator uses the Hugoniot shock velocity
+        Us = c_b + S*u_p when the material's Hugoniot slope S is available, else falls back
+        to the bulk wave speed c_b (matching v1). Percentages come from spade_params
+        (accepted as percent, e.g. 80, or fraction, e.g. 0.8). Returns a dict of
+        column-name -> value (NaN where a quantity can't be formed).
+        """
+        out = {
+            'Peak_Shock_Time_ns': np.nan,
+            'RiseTime_ArrivalToPeak_ns': np.nan,
+            'RiseTime_80_20_ns': np.nan,
+            'RiseTime_90_10_ns': np.nan,
+            'RiseTime_MaxSlope_ns': np.nan,
+            'PlasticStrainRate_80_20_s^-1': np.nan,
+            'PlasticStrainRate_90_10_s^-1': np.nan,
+            'PlasticStrainRate_MaxSlope_s^-1': np.nan,
+            'Compressive_StrainRate_Avg_s^-1': np.nan,
+            'Compressive_StrainRate_Ufs_s^-1': np.nan,
+            'Shock_Velocity_Us_m_s': np.nan,
+            'Shock_Front_Width_um': np.nan,
+        }
+        try:
+            if vel_window is None or len(vel_window) == 0 or not np.any(np.isfinite(vel_window)):
+                return out
+
+            def _as_fraction(val, default):
+                # percent (80) or fraction (0.8) both accepted; matches v1 _as_fraction
+                try:
+                    f = float(val)
+                except (TypeError, ValueError):
+                    return default
+                if not np.isfinite(f) or f <= 0:
+                    return default
+                return f / 100.0 if f > 1.0 else f
+
+            sp = self.spade_params if isinstance(getattr(self, 'spade_params', None), dict) else {}
+            hi80 = _as_fraction(sp.get('plastic_sr_high_pct'), 0.8)
+            lo80 = _as_fraction(sp.get('plastic_sr_low_pct'), 0.2)
+            hi90 = _as_fraction(sp.get('plastic_sr90_high_pct'), 0.9)
+            lo90 = _as_fraction(sp.get('plastic_sr90_low_pct'), 0.1)
+            ms_window = _as_fraction(sp.get('plastic_sr_maxslope_window_pct'), 0.2)
+            ms_floor = _as_fraction(sp.get('plastic_sr_maxslope_floor_pct'), 0.05)
+            ms_step = _as_fraction(sp.get('plastic_sr_maxslope_step_pct'), 0.05)
+
+            # Peak = global max within the spall window (v1: not the first find_peaks hit,
+            # to avoid latching onto a low-prominence pre-shock bump).
+            First_Maxima = float(np.nanmax(vel_window))
+            peak_t = float(time_window[int(np.nanargmax(vel_window))])
+            out['Peak_Shock_Time_ns'] = peak_t
+            # NaN-robust nearest-index: the aligned time array can carry a NaN in row 0
+            # (detect_dns re-reads header'd velocity CSVs with header=None, pulling the
+            # header text in as a NaN row), and plain argmin would latch onto that NaN
+            # index and break every backward walk below.
+            idx_peak = int(np.nanargmin(np.abs(t_aligned_ns - peak_t)))
+
+            # RiseTime_ArrivalToPeak_ns: walk BACKWARD from peak until velocity drops to
+            # threshold and STAYS there for a sustained 3 ns run (skips the known small
+            # artifact dip between elastic precursor and plastic wave).
+            dt_ns = float(np.nanmedian(np.abs(np.diff(t_aligned_ns)))) if len(t_aligned_ns) > 1 else np.nan
+            if np.isfinite(dt_ns) and dt_ns > 0:
+                n_sustain = max(3, int(round(3.0 / dt_ns)))
+                t_low = np.nan
+                run = 0
+                for i in range(idx_peak, -1, -1):
+                    v = vel_clean[i]
+                    if np.isnan(v):
+                        run = 0
+                        continue
+                    if v <= threshold_velocity:
+                        run += 1
+                        if run >= n_sustain:
+                            t_low = t_aligned_ns[i + n_sustain - 1]
+                            break
+                    else:
+                        run = 0
+                if np.isfinite(t_low):
+                    out['RiseTime_ArrivalToPeak_ns'] = peak_t - t_low
+
+            # Shock velocity Us at this shot's peak particle velocity up = 0.5*v_peak_fs
+            # (Hugoniot Us = C0 + S*up; C0 = bulk sound speed). Bulk-speed fallback if S
+            # is undefined for the material -- same fallback v1 uses.
+            v_peak_val = float(vel_clean[idx_peak])
+            up_peak = 0.5 * v_peak_val
+            if hugoniot_S is not None and np.isfinite(hugoniot_S) and np.isfinite(acoustic_velocity):
+                Us_peak = acoustic_velocity + hugoniot_S * up_peak
+            else:
+                Us_peak = acoustic_velocity
+
+            def _walk(frm, level):
+                # first index at or below `level`, walking backward from `frm`
+                if frm is None:
+                    return None
+                for i in range(frm, -1, -1):
+                    v = vel_clean[i]
+                    if np.isnan(v):
+                        continue
+                    if v <= level:
+                        return i
+                return None
+
+            def _pct_pair(hi_frac, lo_frac):
+                # backward walk to upper%, then further back to lower%; slope -> strain rate
+                ih = _walk(idx_peak, hi_frac * v_peak_val)
+                il = _walk(ih, lo_frac * v_peak_val)
+                if ih is None or il is None:
+                    return np.nan, np.nan
+                dt = t_aligned_ns[ih] - t_aligned_ns[il]
+                dv = float(vel_clean[ih]) - float(vel_clean[il])
+                if dt > 0 and np.isfinite(Us_peak) and Us_peak > 0:
+                    return dt, (dv / dt) * 1e9 / (2.0 * Us_peak)
+                return (dt if dt > 0 else np.nan), np.nan
+
+            out['RiseTime_80_20_ns'], out['PlasticStrainRate_80_20_s^-1'] = _pct_pair(hi80, lo80)
+            out['RiseTime_90_10_ns'], out['PlasticStrainRate_90_10_s^-1'] = _pct_pair(hi90, lo90)
+
+            # Max-slope: slide a fixed-width %-of-peak window down the rising edge, keep the
+            # steepest position (largest dv/dt) rather than averaging one fixed span.
+            best_slope = np.nan
+            best_hi = None
+            best_lo = None
+            hi_frac = 1.0
+            while hi_frac - ms_window >= ms_floor - 1e-9:
+                lo_frac = hi_frac - ms_window
+                ih = _walk(idx_peak, hi_frac * v_peak_val)
+                il = _walk(ih, lo_frac * v_peak_val)
+                if ih is not None and il is not None and ih != il:
+                    dt_c = t_aligned_ns[ih] - t_aligned_ns[il]
+                    dv_c = float(vel_clean[ih]) - float(vel_clean[il])
+                    if dt_c > 0:
+                        slope = dv_c / dt_c
+                        if not np.isfinite(best_slope) or slope > best_slope:
+                            best_slope = slope
+                            best_hi = ih
+                            best_lo = il
+                hi_frac -= ms_step
+            if best_hi is not None and best_lo is not None and np.isfinite(Us_peak) and Us_peak > 0:
+                out['RiseTime_MaxSlope_ns'] = t_aligned_ns[best_hi] - t_aligned_ns[best_lo]
+                out['PlasticStrainRate_MaxSlope_s^-1'] = best_slope * 1e9 / (2.0 * Us_peak)
+
+            # Compressive strain rate: average (u_fs/t_peak scaled by 2*c_b) and the
+            # Hugoniot free-surface variant (up / ((C0 + S*up) * t_r)); Ufs needs S.
+            if np.isfinite(peak_t) and abs(peak_t) > 0.01 and np.isfinite(acoustic_velocity) and acoustic_velocity > 0:
+                out['Compressive_StrainRate_Avg_s^-1'] = (First_Maxima / peak_t) * 1e9 / (2.0 * acoustic_velocity)
+                if hugoniot_S is not None and np.isfinite(hugoniot_S):
+                    up = First_Maxima / 2.0
+                    denom = (acoustic_velocity + hugoniot_S * up) * (peak_t * 1e-9)
+                    if denom > 0:
+                        out['Compressive_StrainRate_Ufs_s^-1'] = up / denom
+
+            # Shock-front width diagnostic: w = Us * t_r (t_r = RiseTime_80_20_ns).
+            up_fs = First_Maxima / 2.0
+            if hugoniot_S is not None and np.isfinite(hugoniot_S) and np.isfinite(acoustic_velocity):
+                Us = acoustic_velocity + hugoniot_S * up_fs
+            else:
+                Us = acoustic_velocity
+            out['Shock_Velocity_Us_m_s'] = Us
+            tr_ns = out['RiseTime_80_20_ns']
+            if np.isfinite(Us) and Us > 0 and np.isfinite(tr_ns) and tr_ns > 0:
+                out['Shock_Front_Width_um'] = Us * (tr_ns * 1e-9) * 1e6
+        except Exception as _e:
+            try:
+                self.progress_signal.emit(f"  [WARN] derived-column computation failed: {_e}")
+            except Exception:
+                pass
+        return out
+
+    def detect_dns_and_process_spall(self, file_path, base_name, density, acoustic_velocity,
                                      threshold_velocity, spall_start_time, spall_end_time,
                                      analysis_model='max_min', plot_path=None, plot_dir=None, sample_material='Unknown', **spade_kwargs):
         """
@@ -801,7 +1043,22 @@ class AnalysisThread(QThread):
             'Pullback_Velocity_Unc_m_s': np.nan,
             'Processing_Status': 'Failed',
             'DNS_Classification': 'Unknown',
-            'Analysis_Notes': ''
+            'Analysis_Notes': '',
+            # Derived shock-front diagnostics (populated below once the aligned trace and
+            # spall window exist); pre-seeded so every row carries the same columns even
+            # when a trace fails early.
+            'Peak_Shock_Time_ns': np.nan,
+            'RiseTime_ArrivalToPeak_ns': np.nan,
+            'RiseTime_80_20_ns': np.nan,
+            'RiseTime_90_10_ns': np.nan,
+            'RiseTime_MaxSlope_ns': np.nan,
+            'PlasticStrainRate_80_20_s^-1': np.nan,
+            'PlasticStrainRate_90_10_s^-1': np.nan,
+            'PlasticStrainRate_MaxSlope_s^-1': np.nan,
+            'Compressive_StrainRate_Avg_s^-1': np.nan,
+            'Compressive_StrainRate_Ufs_s^-1': np.nan,
+            'Shock_Velocity_Us_m_s': np.nan,
+            'Shock_Front_Width_um': np.nan,
         }
 
         # No material resolved (not in config material_properties, not in the
@@ -922,7 +1179,21 @@ class AnalysisThread(QThread):
             time_window = t_aligned_ns[window_mask]
             vel_window = vel_clean[window_mask]
             uncert_window = uncertainty[window_mask]
-            
+
+            # Derived shock-front diagnostics (rise times, plastic & compressive strain
+            # rates, shock-front width) from the aligned trace. Ported verbatim from
+            # Binary_metal_analysis (HELIX v1) so values match across toolbox versions;
+            # denominator uses this material's Hugoniot slope S when available, else the
+            # bulk wave speed. Failures here never abort spall processing.
+            try:
+                _mp = self.get_material_properties_from_config(sample_material)
+                _hug_S = _mp.get('S') if isinstance(_mp, dict) else None
+            except Exception:
+                _hug_S = None
+            results.update(self._compute_derived_shock_columns(
+                t_aligned_ns, vel_clean, time_window, vel_window,
+                threshold_velocity, acoustic_velocity, _hug_S))
+
             # Step 4: Build spall analysis configuration
             spall_config = {
                 'min_recomp_ratio': spade_kwargs.get('min_recomp_ratio', self.spade_params.get('min_recomp_ratio', 0.1)),
@@ -9829,13 +10100,26 @@ class AnalysisThread(QThread):
                 if col not in enhanced_spall_df.columns:
                     enhanced_spall_df[col] = np.nan
 
-            # Remove redundant columns
+            # Remove redundant columns. The derived shock-front diagnostics are exempt
+            # from every drop below so the master schema stays stable across runs -- a
+            # single-trace run where a backward-walk quantity is NaN (or coincidentally
+            # equals another column) must not make the column vanish; the standalone
+            # post-analysis plots rely on these columns existing.
+            _keep_always = {
+                'Peak_Shock_Time_ns', 'RiseTime_ArrivalToPeak_ns', 'RiseTime_80_20_ns',
+                'RiseTime_90_10_ns', 'RiseTime_MaxSlope_ns', 'PlasticStrainRate_80_20_s^-1',
+                'PlasticStrainRate_90_10_s^-1', 'PlasticStrainRate_MaxSlope_s^-1',
+                'Compressive_StrainRate_Avg_s^-1', 'Compressive_StrainRate_Ufs_s^-1',
+                'Shock_Velocity_Us_m_s', 'Shock_Front_Width_um',
+            }
             try:
                 import re
                 # 1) Drop columns that normalize to the same token (keep first occurrence)
                 seen_norm = set()
                 cols_to_drop = []
                 for col in enhanced_spall_df.columns:
+                    if col in _keep_always:
+                        continue
                     norm = re.sub(r"[^a-zA-Z0-9]+", "_", str(col)).strip("_").lower()
                     if norm in seen_norm:
                         cols_to_drop.append(col)
@@ -9844,11 +10128,21 @@ class AnalysisThread(QThread):
                 if cols_to_drop:
                     enhanced_spall_df = enhanced_spall_df.drop(columns=cols_to_drop, errors='ignore')
 
-                # 2) Drop exact-duplicate columns (identical values across all rows)
-                enhanced_spall_df = enhanced_spall_df.T.drop_duplicates().T
+                # 2) Drop exact-duplicate columns (identical values across all rows).
+                #    Set the protected columns aside first: on a single-row frame
+                #    T.drop_duplicates() would collapse any columns sharing a value
+                #    (e.g. all-NaN), which would otherwise delete a valid diagnostic.
+                _protected = [c for c in _keep_always if c in enhanced_spall_df.columns]
+                _held = enhanced_spall_df[_protected].copy() if _protected else None
+                _rest = enhanced_spall_df.drop(columns=_protected) if _protected else enhanced_spall_df
+                _rest = _rest.T.drop_duplicates().T
+                enhanced_spall_df = pd.concat([_rest, _held], axis=1) if _held is not None else _rest
 
-                # 3) Optionally drop columns that are entirely NaN
-                enhanced_spall_df = enhanced_spall_df.dropna(axis=1, how='all')
+                # 3) Drop entirely-NaN columns, except the protected diagnostics.
+                _allnan = [c for c in enhanced_spall_df.columns
+                           if c not in _keep_always and enhanced_spall_df[c].isna().all()]
+                if _allnan:
+                    enhanced_spall_df = enhanced_spall_df.drop(columns=_allnan)
             except Exception:
                 pass
 
@@ -9910,6 +10204,19 @@ class AnalysisThread(QThread):
                 'Strain Rate Uncertainty (s^-1)',  # Alternative naming
                 'Strain_Rate_Unc_s^-1',  # Alternative naming
                 'StrainRate_Unc_s^-1',   # Alternative naming
+                # 5b. Derived shock-front diagnostics (computed in detect_dns_and_process_spall)
+                'Peak_Shock_Time_ns',
+                'RiseTime_ArrivalToPeak_ns',
+                'RiseTime_80_20_ns',
+                'RiseTime_90_10_ns',
+                'RiseTime_MaxSlope_ns',
+                'PlasticStrainRate_80_20_s^-1',
+                'PlasticStrainRate_90_10_s^-1',
+                'PlasticStrainRate_MaxSlope_s^-1',
+                'Compressive_StrainRate_Avg_s^-1',
+                'Compressive_StrainRate_Ufs_s^-1',
+                'Shock_Velocity_Us_m_s',
+                'Shock_Front_Width_um',
                 # 6. HEL analysis results
                 'hel_ok',
                 'hel_strength_gpa',
@@ -9963,7 +10270,10 @@ class AnalysisThread(QThread):
             enhanced_spall_df = enhanced_spall_df[reordered_columns]
 
             enhanced_spall_path = os.path.join(spade_output_dir, self._get_summary_filename())
-            enhanced_spall_df.to_csv(enhanced_spall_path, index=False)
+            # Persist the master with standardized column names (single naming
+            # convention on disk); the in-memory enhanced_spall_df keeps its original
+            # names for the downstream GUI plotting calls below.
+            standardize_summary_columns(enhanced_spall_df.copy()).to_csv(enhanced_spall_path, index=False)
             self.progress_signal.emit(f"Generated enhanced spall summary with {len(enhanced_spall_data)} entries")
             self.progress_signal.emit(f"Saved to: {enhanced_spall_path}")
             self._save_run_config(spade_output_dir)
@@ -10034,12 +10344,13 @@ class AnalysisThread(QThread):
                 except Exception as e:
                     self.progress_signal.emit(f"Warning: Could not merge shock stress into velocity_shots_summary: {e}")
 
-            # Remove the basic spall summary file as it's redundant
+            # Retain spall_summary.csv alongside the consolidated master for safety /
+            # back-compat (it is a strict subset of the master). Previously this file was
+            # deleted as redundant; it is now kept as a legacy export.
             try:
                 spall_summary_path = os.path.join(spade_output_dir, 'spall_summary.csv')
                 if os.path.exists(spall_summary_path):
-                    os.remove(spall_summary_path)
-                    self.progress_signal.emit(f"Removed redundant spall_summary.csv (superseded by {self._get_summary_filename()})")
+                    self.progress_signal.emit(f"Kept spall_summary.csv as a legacy export (master: {self._get_summary_filename()})")
             except Exception:
                 pass
             
@@ -10516,6 +10827,10 @@ class AnalysisThread(QThread):
                     summary_df['Peak Shock Stress Uncertainty (GPa)'] = summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
             elif os.path.exists(enhanced_summary_csv):
                 summary_df = pd.read_csv(enhanced_summary_csv)
+                # Master CSV is written with standardized names; expose both standardized
+                # and legacy spellings in memory so the mapping below (and any GUI plot
+                # consumer) resolves regardless of which build wrote the file.
+                summary_df = normalize_summary_columns(summary_df)
                 summary_df = self.refresh_material_column(summary_df)
                 # Map column names if needed
                 if 'Spall_Strength_GPa_Final' in summary_df.columns:
@@ -10743,6 +11058,19 @@ class AnalysisThread(QThread):
                         'Strain Rate Uncertainty (s^-1)',  # Alternative naming
                         'Strain_Rate_Unc_s^-1',  # Alternative naming
                         'StrainRate_Unc_s^-1',   # Alternative naming
+                        # 5b. Derived shock-front diagnostics (computed in detect_dns_and_process_spall)
+                        'Peak_Shock_Time_ns',
+                        'RiseTime_ArrivalToPeak_ns',
+                        'RiseTime_80_20_ns',
+                        'RiseTime_90_10_ns',
+                        'RiseTime_MaxSlope_ns',
+                        'PlasticStrainRate_80_20_s^-1',
+                        'PlasticStrainRate_90_10_s^-1',
+                        'PlasticStrainRate_MaxSlope_s^-1',
+                        'Compressive_StrainRate_Avg_s^-1',
+                        'Compressive_StrainRate_Ufs_s^-1',
+                        'Shock_Velocity_Us_m_s',
+                        'Shock_Front_Width_um',
                         # 6. HEL analysis results
                         'hel_ok',
                         'hel_strength_gpa',
@@ -10793,9 +11121,11 @@ class AnalysisThread(QThread):
                     # Reorder the DataFrame
                     enhanced_summary_df = enhanced_summary_df[reordered_columns]
 
-                    # Save enhanced summary (single consolidated file — no separate spall_summary.csv)
+                    # Save enhanced summary (single consolidated master file) with
+                    # standardized column names; keep the in-memory df unrenamed for the
+                    # GUI plotting/consumers that run after this.
                     enhanced_summary_path = os.path.join(spade_output_dir, self._get_summary_filename())
-                    enhanced_summary_df.to_csv(enhanced_summary_path, index=False)
+                    standardize_summary_columns(enhanced_summary_df.copy()).to_csv(enhanced_summary_path, index=False)
                     self._save_run_config(spade_output_dir)
 
                     # Check if ALPSS data was included

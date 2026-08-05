@@ -9,6 +9,37 @@
 
 ---
 
+## What's New in v3
+
+Version 3 consolidates outputs, adds per-shot dynamic diagnostics, and ships a
+standalone plot generator and a regression guard.
+
+- **Single consolidated master summary.** Each run writes one canonical
+  `<IGSN>-Data_Summary.csv` (spall + HEL + parameters + derived quantities) with a
+  single standardized column-naming convention (`Peak_Shock_Stress_GPa`, `HEL_GPa`,
+  `RiseTime_80_20_ns`, …). The legacy `spall_summary.csv` / `velocity_shots_summary.csv`
+  are still written for back-compat.
+- **Derived shock-front diagnostics, computed in the engine** and added to every
+  summary row: `Peak_Shock_Time_ns`, `RiseTime_ArrivalToPeak_ns`,
+  `RiseTime_{80_20,90_10,MaxSlope}_ns`, `PlasticStrainRate_{80_20,90_10,MaxSlope}_s^-1`,
+  `Compressive_StrainRate_{Avg,Ufs}_s^-1`, `Shock_Velocity_Us_m_s`, `Shock_Front_Width_um`.
+  Denominators use the material Hugoniot slope `S` where available, falling back to the
+  bulk wave speed.
+- **Standalone post-analysis plot generator** — `helix_post_analysis_plots.py` reads the
+  consolidated master (auto-discovered by `*Data_Summary.csv`) and produces the full
+  publication plot suite (Grady log–log, rise-time, HEL, spall, spatial 3-D/2-D, tensile)
+  as PNG + PDF, with no dependency on the older Binary-metal module:
+  `python helix_post_analysis_plots.py --config helix_master_config.yml`
+- **Regression control** — `regression/run_control.py` re-analyzes a fixed control shot
+  (SPADE-only, deterministic), compares ~25 metrics against a stored baseline, and appends
+  a timestamped, commit-stamped entry to `regression/history.jsonl`. Exit 0 = PASS, 1 = FAIL,
+  so it can gate a pre-commit hook or CI. See `regression/README.md`.
+- **CLI fix:** `--input-pattern` no longer silently overrides the config's `input_pattern`
+  (its argparse default was clobbering the config value), so per-file/glob selection from
+  the config now works as documented.
+
+---
+
 ## Run Online — No Installation Required
 
 Try HELIX Toolbox directly in your browser using any of the platforms below.
