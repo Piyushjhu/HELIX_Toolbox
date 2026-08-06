@@ -1,0 +1,915 @@
+% helix_wave_timing_derivation.tex
+% Self-contained derivation for the HELIX plate-impact timing model.
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{hyperref}
+\usepackage{xparse}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={One-dimensional plate-impact wave timing derivation}
+}
+
+\newcommand{\rhoz}[1][]{\rho_{0#1}}
+\newcommand{\Us}[1][]{U_{\mathrm{s}#1}}
+\newcommand{\up}[1][]{u_{\mathrm{p}#1}}
+\newcommand{\sig}{\sigma}
+\NewDocumentCommand{\CL}{o}{C^{\mathrm L}\IfValueT{#1}{_{#1}}}
+\NewDocumentCommand{\CLv}{om}{C^{\mathrm L,(#2)}\IfValueT{#1}{_{#1}}}
+\newcommand{\tFR}{t_{\mathrm{FR}}^{(0)}}
+\newcommand{\Pt}{P_t}
+
+\title{One-Dimensional Plate-Impact Kinematics and Wave-Timing Derivation}
+\author{For the HELIX/SPADE diagnostic timing overlay}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note derives the equations needed to infer plate-impact kinematics from a
+measured free-surface velocity and to identify what timing information can,
+and cannot, be obtained from a constant-speed construction.  It distinguishes
+(i) results that follow directly from the Rankine--Hugoniot jump conditions
+from (ii) release and reflection predictions that require a release model.
+The flyer-release free-flight arrival and the target free-surface reverberation
+are shown to have mutually exclusive isolated-path conditions.  Consequently,
+neither a universal no-spall plateau duration nor a universal recompression
+series follows from only $C_0$, $S$, two thicknesses, and one nominal sound
+speed.  A finite-amplitude characteristic calculation is stated as the
+quantitative reference, followed by explicitly labelled first-hand timing
+markers for incomplete target data.  The jump-condition and release concepts
+used here follow the standard
+shock-compression treatment, while the stated limitations follow directly from
+release-adiabat and release-wave measurements \cite{Rice1958,Kerley2008,Hawreliak2024}.
+\end{abstract}
+
+\tableofcontents
+
+\section{Scope, geometry, and notation}
+
+Consider planar normal impact of a flyer (subscript $f$) on a target
+(subscript $t$).  The target is initially at rest, the flyer initially moves
+in the positive $x$ direction at speed $V$, and the flyer--target interface is
+at $x=0$ at first contact.  The target free surface is at $x=h_{t0}$ and the
+flyer rear free surface is at $x=-h_{f0}$.  The symbols $h_{f0}$ and $h_{t0}$
+are the \emph{initial} (unshocked) thicknesses.
+
+Compression and longitudinal normal stress are taken positive.  The
+derivation assumes one-dimensional, planar waves, perfect contact, zero
+initial stress, and no spall in the base solution.  A real elastic--plastic
+solid can additionally have an elastic precursor, strength effects, and a
+nonlinear release; those are discussed as limitations below
+\cite{Rice1958,Hawreliak2024}.
+
+For material $i\in\{f,t\}$, let
+\begin{equation}
+  \rhoz[i],\qquad C_{0i},\qquad S_i
+\end{equation}
+denote its initial density, linear-Hugoniot intercept, and linear-Hugoniot
+slope.  The assumed principal Hugoniot is
+\begin{equation}
+  \Us[i](\up[i])=C_{0i}+S_i\up[i].
+  \label{eq:linear-hugoniot}
+\end{equation}
+This $\Us$--$\up$ form is an empirical representation of the principal
+Hugoniot, used here only over the range in which its material parameters have
+been validated \cite{Kerley2006}.
+Here $\Us[i]$ is the shock speed \emph{relative to the material ahead of the
+shock}, and $\up[i]$ is the particle-velocity jump across that shock.  Thus,
+for the target shock, the laboratory shock speed is $\Us[t]$; for the shock
+moving back through the moving flyer, its laboratory speed is $V-\Us[f]$.
+
+The jump-condition stress in this scalar model is
+\begin{equation}
+  \sig_H(\up)=\rhoz\Us(\up)\up
+  =\rhoz\bigl(C_0+S\up\bigr)\up.
+  \label{eq:hugoniot-stress}
+\end{equation}
+For a solid this is more precisely the longitudinal Hugoniot stress in a
+one-dimensional strength-free approximation; calling it a hydrostatic
+``pressure'' is conventional shorthand, not an additional constitutive law
+\cite{Rice1958}.
+
+\section{Interface state and inverse impact-velocity reconstruction}
+
+\subsection{Impedance matching}
+
+After the initial shocks have formed, both sides of the impact interface have
+the same particle velocity $u$ and the same normal stress.  The target has
+been accelerated from $0$ to $u$, whereas the flyer has been decelerated from
+$V$ to $u$.  Therefore the two shock particle-velocity jumps are
+\begin{equation}
+  \up[t]=u,\qquad \up[f]=x=V-u.
+  \label{eq:jumps}
+\end{equation}
+Stress continuity gives the exact impedance-match equation within the linear
+Hugoniot model,
+\begin{align}
+  \rhoz[t]\bigl(C_{0t}+S_tu\bigr)u
+  &=\rhoz[f]\bigl(C_{0f}+S_fx\bigr)x,
+  \label{eq:impedance-match}\\
+  V&=u+x.
+\end{align}
+This equation is the appropriate relation whether the flyer and target are
+the same material or different materials \cite{Rice1958,Kerley2008}.
+
+\subsection{What a free-surface velocity measures}
+
+Let $U_{fs}$ be the free-surface particle velocity following release of the
+target shock state.  In general, $U_{fs}$ is \emph{not} exactly $2u$.  For an
+isentropic release from the shocked state to zero longitudinal stress,
+\begin{equation}
+  U_{fs}(u)=u+\Delta u_{\rm rel}(u),\qquad
+  \Delta u_{\rm rel}(u)=
+  \int_{0}^{\sig_H(u)}\frac{d\sig}{\rho(\sig)\,c(\sig)}.
+  \label{eq:free-surface-exact}
+\end{equation}
+The local (spatial/Eulerian) longitudinal sound speed on the release is $c$,
+and the integral requires a release adiabat (and, for a strength model, the
+relevant longitudinal incremental modulus).  A Hugoniot alone does not supply
+this information \cite{LyzengaAhrens1978,Kerley2008}.
+
+The common first-order approximation is
+\begin{equation}
+  \Delta u_{\rm rel}\simeq u,
+  \qquad\text{hence}\qquad u\simeq\frac{U_{fs}}{2}.
+  \label{eq:free-surface-double}
+\end{equation}
+It is appropriate only when the measured peak is an unperturbed free-surface
+state and the release is sufficiently close to the loading relation.  It is
+not an exact finite-shock identity.  For some common metal states the exact
+release gives $U_{fs}>2u$, in which case the doubling approximation
+underestimates both $u$ and the inferred $V$; this sign is not universal and
+must not be assumed without a material-specific release model
+\cite{Kerley2008}.
+
+\subsection{Closed-form inverse under the doubling approximation}
+
+Given a measured $U_{fs}$, set $u=U_{fs}/2$ under
+Eq.~\eqref{eq:free-surface-double} and calculate
+\begin{equation}
+  \sig_t=\rhoz[t]\bigl(C_{0t}+S_tu\bigr)u.
+  \label{eq:target-stress}
+\end{equation}
+The flyer jump $x$ follows from
+\begin{equation}
+  \rhoz[f]S_f x^2+\rhoz[f]C_{0f}x-\sig_t=0.
+\end{equation}
+The physical root is
+\begin{equation}
+  x=
+  \frac{-\rhoz[f]C_{0f}+
+  \sqrt{(\rhoz[f]C_{0f})^2+4\rhoz[f]S_f\sig_t}}
+  {2\rhoz[f]S_f},
+  \qquad V=u+x.
+  \label{eq:inverse-velocity}
+\end{equation}
+For $\rhoz[f]>0$, $C_{0f}>0$, and $S_f>0$, the left-hand side of the
+quadratic is strictly increasing for $x\geq0$, since
+\begin{equation}
+  \frac{d}{dx}\left[\rhoz[f](C_{0f}+S_fx)x\right]
+  =\rhoz[f](C_{0f}+2S_fx)>0.
+\end{equation}
+Thus a compressive target stress has exactly one non-negative flyer-jump root;
+the other root is negative and does not represent a compressive shock in the
+flyer.  Equations \eqref{eq:target-stress}--\eqref{eq:inverse-velocity} are
+algebraically exact once Eq.~\eqref{eq:free-surface-double} and the two linear
+Hugoniots have been adopted.
+
+\section{Compression, sound speed, and the coordinate used for timing}
+\label{sec:speed-coordinates}
+
+The Rankine--Hugoniot mass jump condition gives the density immediately behind
+a shock:
+\begin{equation}
+  \rho_H=\rhoz\frac{\Us}{\Us-\up}.
+  \label{eq:shocked-density}
+\end{equation}
+Physical compression requires $\Us-\up>0$.  This condition must be checked
+whenever arbitrary Hugoniot parameters are accepted as input.  For the linear
+form,
+\begin{equation}
+  \Us-\up=C_0+(S-1)\up.
+  \label{eq:compression-check-linear}
+\end{equation}
+If $S<1$, this expression becomes non-positive at
+$\up=C_0/(1-S)$; hence $S\geq1$ is necessary for this particular linear form
+to maintain $\Us>\up$ for every $\up\geq0$ (assuming $C_0>0$).  This does not
+establish that a material follows a linear Hugoniot, and a fitted linear form
+must remain restricted to its validated range \cite{Kerley2006}.
+
+It is essential not to mix Eulerian and Lagrangian wave speeds.  Let $c$ be
+the local/comoving sound speed measured relative to the shocked material (the
+spatial/Eulerian sound speed), or a selected constant approximation to a
+release-characteristic speed.  A characteristic in that state has laboratory
+speed $u\pm c$.  Written in the unshocked material coordinate $X$, its
+magnitude is instead
+\begin{equation}
+  \CL=\frac{\rho_H}{\rhoz}c
+      =\frac{\Us}{\Us-\up}c.
+  \label{eq:lagrangian-speed}
+\end{equation}
+Consequently, a traversal of an initial thickness $h_0$ takes
+\begin{equation}
+  t=\frac{h_0}{\CL}
+   =\frac{h_0(\Us-\up)}{\Us\,c},
+  \label{eq:transit-time}
+\end{equation}
+not generally $h_0/c$.
+
+For a true finite-amplitude release, $c$ changes along the release fan and the
+transit time must be calculated by the method of characteristics (MOC).  In a
+first-order diagnostic overlay, choose one representative $c$ or $\CL$ and
+state explicitly which is stored in the material-property table
+\cite{CourantFriedrichs1948,Hawreliak2024}.
+
+\section{Finite-amplitude characteristic calculation: the quantitative reference}
+\label{sec:quantitative-reference}
+
+The physically complete prediction is not a single round-trip formula.  Let
+$H_i$ denote the shocked state of material $i$, and let
+$\sig_{\mathrm{rel},i}(u;H_i)$ be its release adiabat from that state.  The
+Lagrangian characteristic speed on that release is
+\begin{equation}
+  C_{\mathrm{rel},i}^{\mathrm L}(u;H_i)
+  =\frac{\rho_i(u)}{\rhoz[i]}c_{\mathrm{inc},i}(u)
+  =\frac{1}{\rhoz[i]}
+    \left|\frac{d\sig_{\mathrm{rel},i}}{du}\right|_S .
+  \label{eq:release-characteristic-speed}
+\end{equation}
+Here $c_{\mathrm{inc},i}$ is the appropriate local incremental speed: the
+hydrodynamic sound speed for a fluid model, or the longitudinal tangent speed
+when strength is retained.  The absolute value is required because the sign of
+$d\sig/du$ depends on the characteristic family.  The material-coordinate
+characteristics satisfy
+\begin{equation}
+  \frac{dX}{dT}=\pm C_{\mathrm{rel},i}^{\mathrm L}(u;H_i).
+  \label{eq:release-characteristics}
+\end{equation}
+Consequently, the changing characteristic speed across a release fan, and the
+state produced when it meets another wave, must be propagated by the method of
+characteristics (MOC) or an equivalent finite-amplitude wave solver
+\cite{CourantFriedrichs1948,Davison2008}.
+
+In that calculation the target free surface imposes $\sig=0$.  At a closed
+flyer--target interface, stress and particle velocity are continuous; for an
+unbonded interface, the contact condition is unilateral and cannot sustain
+tension.  The initial target free-surface release, the flyer rear-surface
+release, their interaction, and any interface reflection are therefore solved
+together.  If $\mathcal R_{\mathrm{rc}}$ is the family of target
+characteristics that reaches the target free surface as a returned compression,
+the first such arrival is the solver output
+\begin{equation}
+  t_{\mathrm{rc}}=\min_{\chi\in\mathcal R_{\mathrm{rc}}}
+  \left[T_\chi(X=h_{t0})-T_s\right].
+  \label{eq:exact-recompression-arrival}
+\end{equation}
+Likewise, the first departure from the initial free-surface state is the
+earliest arrival among \emph{all} wave families at that boundary.  These
+definitions replace a universal ``plateau duration'' or an $n\Pt$ series;
+they reduce to the constant-speed isolated-path markers only under the
+restrictions stated later.
+
+\subsection{Data required for the quantitative estimate}
+
+The MOC calculation requires more than principal-Hugoniot coefficients.  At a
+minimum it needs:
+\begin{itemize}
+  \item the initial densities, thicknesses, impact speed, and initial states;
+  \item an EOS or complete Hugoniot description for \emph{both} flyer and
+        target, sufficient to determine the initial interface state;
+  \item release adiabats or equivalent state-dependent incremental moduli for
+        both materials, so that Eq.~\eqref{eq:release-characteristic-speed}
+        is known along each release path;
+  \item an elastic--plastic/strength model whenever an elastic precursor or
+        longitudinal release head is material to the measurement;
+  \item free-surface and interface boundary conditions, including a unilateral
+        contact/separation rule for an unbonded flyer; and
+  \item a distinct damage/spall model if a later pullback or recompaction is
+        to be interpreted as a spall signal.
+\end{itemize}
+A linear $\Us$--$\up$ relation supplies only the principal-Hugoniot loading
+locus; it does not supply the release adiabat in
+Eq.~\eqref{eq:release-characteristic-speed}
+\cite{LyzengaAhrens1978,Kerley2008}.  Thus the output of this section is the
+reference calculation against which a timing overlay should be judged.
+
+\section{Flyer-release free-flight arrival and shock--release catch-up}
+
+Let global time $T=0$ be first flyer--target contact.  The target shock reaches
+the target free surface at
+\begin{equation}
+  T_s=\frac{h_{t0}}{\Us[t]}.
+  \label{eq:shock-arrival-fs}
+\end{equation}
+The flyer shock reaches the flyer rear surface after $h_{f0}/\Us[f]$.  The
+rear-surface release then traverses the shocked flyer and reaches the impact
+interface at
+\begin{equation}
+  T_i=\frac{h_{f0}}{\Us[f]}+\frac{h_{f0}}{\CL[f]}.
+  \label{eq:flyer-release-interface}
+\end{equation}
+After entering the already shocked target, that release characteristic reaches
+the target free surface at
+\begin{equation}
+  T_r=T_i+\frac{h_{t0}}{\CL[t]}.
+  \label{eq:release-arrival-fs}
+\end{equation}
+If this flyer-generated release characteristic is allowed to travel without
+interacting with the release launched at the target free surface, its arrival
+time relative to target shock arrival is
+\begin{align}
+  \tFR
+  &=T_r-T_s \notag\\
+  &=\frac{h_{f0}}{\Us[f]}+\frac{h_{f0}}{\CL[f]}
+    +h_{t0}\left(\frac{1}{\CL[t]}-\frac{1}{\Us[t]}\right).
+  \label{eq:flyer-release-free-flight}
+\end{align}
+The superscript $(0)$ emphasizes that this is a \emph{free-flight} ray result,
+not in general an observed plateau duration.  The first two terms are the
+flyer round-trip contribution; the final term compares the target transit of
+that release to the earlier target transit of the shock.  It may be negative or
+positive, and is negative only when $\CL[t]>\Us[t]$.  Choosing two candidate
+target speeds $\CLv[t]{1}$ and $\CLv[t]{2}$ changes this contribution by
+\begin{equation}
+  h_{t0}\left(\frac{1}{\CLv[t]{2}}-
+                \frac{1}{\CLv[t]{1}}\right).
+  \label{eq:target-speed-timing-spread}
+\end{equation}
+Thus even its sign cannot be inferred reliably by substituting an arbitrary
+ambient bulk or longitudinal tabulation for the shocked-state release-head
+speed.  In particular, comparing the shocked-state bulk and longitudinal
+choices gives
+\begin{equation}
+  \Delta t_t^{(L-B)}=
+  h_{t0}\frac{\rhoz[t]}{\rho_{H,t}}
+  \left(\frac{1}{c_L}-\frac{1}{c_B}\right),
+  \label{eq:longitudinal-bulk-timing-spread}
+\end{equation}
+where each speed is evaluated at the selected shocked state.  This sensitivity
+is distinct from the finite-width release-fan uncertainty.  This is an isolated-ray,
+constant-speed construction.  It should not be taken as validation of the
+release-wave-overtake method: shocked-copper measurements show that the
+front-surface-impact and release-wave-overtake methods can diverge when the
+release response is complex \cite{Hawreliak2024}.
+
+If Eq.~\eqref{eq:flyer-release-free-flight} is non-positive, a release characteristic
+overtakes the primary shock before the target free surface.  The presumed
+constant shocked state never produces a sustained free-surface plateau, so a
+plateau/recompression overlay based on that state is not physically valid.
+The catch-up point, when $\CL[t]>\Us[t]$, is
+\begin{equation}
+  X_c=\frac{\Us[t]\CL[t]T_i}{\CL[t]-\Us[t]}.
+  \label{eq:catchup}
+\end{equation}
+The release catches the shock inside the target if $X_c<h_{t0}$, which is
+equivalent to $\tFR<0$.
+
+\section{Ordering of the two release paths: no universal plateau marker}
+\label{sec:release-ordering}
+
+The initial target shock reaching the free surface immediately launches a
+left-going release.  Its isolated target round-trip time is
+\begin{equation}
+  \Pt=\frac{2h_{t0}}{\CL[t]},
+  \label{eq:target-round-trip}
+\end{equation}
+and it would reach the impact interface at the global time
+\begin{equation}
+  T_{\mathrm{FS}\to I}=T_s+\frac{h_{t0}}{\CL[t]}.
+  \label{eq:fs-release-interface-time}
+\end{equation}
+Combining Eqs.~\eqref{eq:flyer-release-free-flight},
+\eqref{eq:target-round-trip}, and \eqref{eq:fs-release-interface-time} gives
+the identity
+\begin{equation}
+  \tFR-\Pt=T_i-T_{\mathrm{FS}\to I}.
+  \label{eq:ordering-identity}
+\end{equation}
+This identity exposes the structural limitation of a simple timing overlay.
+Finite-amplitude interactions must be propagated with a characteristic or
+equivalent wave-interaction calculation \cite{CourantFriedrichs1948,Davison2008}.
+
+\paragraph{Case A: $\tFR<\Pt$.}
+By Eq.~\eqref{eq:ordering-identity}, $T_i<T_{\mathrm{FS}\to I}$: the flyer
+rear-surface release has entered the target before the initial free-surface
+release reaches the interface.  The counter-propagating release fans meet in
+the target.  In the strictly linear, constant-speed construction, those waves
+superpose and $\tFR$ remains the free-flight arrival time.  At finite amplitude
+their interaction needs a characteristic calculation; independently, the
+flyer release has changed the interface state before the initial free-surface
+release arrives there, so the unperturbed-state reflection coefficient cannot
+generate an $n\Pt$ series.
+
+\paragraph{Case B: $\tFR>\Pt$.}
+The initial free-surface release reaches an interface that is still in the
+original shocked state.  Its isolated reflection can return to the free surface
+at $\Pt$, before the flyer release arrives.  Thus even in this special branch,
+the free surface cannot be called a flat plateau through $\tFR$.
+
+\paragraph{Equality.}
+At $\tFR=\Pt$, the relevant wave interactions coincide.  It is a
+multi-characteristic interaction.  Within the strictly linear, constant-speed
+construction, the first free-surface departure time is exactly
+\begin{equation}
+  t_{\mathrm{first}}^{(0)}=\min\bigl(\tFR,\Pt\bigr).
+  \label{eq:first-free-surface-departure}
+\end{equation}
+For finite-amplitude releases this equation is a diagnostic estimate, not a
+substitute for a characteristic solution.
+
+\section{Acoustic reflection signs in the isolated-path limit}
+
+\subsection{Impedance appropriate to a small release/recompression}
+
+The reflection of a small perturbation about a shocked state is governed by
+the incremental acoustic impedance, not the Rayleigh (shock) impedance
+$\rhoz\Us$.  With the notation of Section~\ref{sec:speed-coordinates},
+\begin{equation}
+  Z=\rho_Hc=\rhoz\CL.
+  \label{eq:acoustic-impedance}
+\end{equation}
+Both forms in Eq.~\eqref{eq:acoustic-impedance} are identical only when
+$c$ and $\CL$ are related by Eq.~\eqref{eq:lagrangian-speed}.
+
+Suppose a small stress perturbation travels from the shocked target into the
+shocked flyer.  Continuity of stress and particle velocity at the interface
+gives the stress-amplitude reflection coefficient
+\begin{equation}
+  R_\sig=\frac{Z_f-Z_t}{Z_f+Z_t},
+  \qquad
+  \delta\sig_{\rm reflected}=R_\sig\,\delta\sig_{\rm incident}.
+  \label{eq:reflection-coefficient}
+\end{equation}
+This is the standard one-dimensional, small-amplitude stress reflection
+coefficient for incidence from the target side \cite{Davison2008}.
+The first release created at a free surface has a stress change of order
+$\sig_H$, not necessarily a small perturbation.  Applying
+Eq.~\eqref{eq:reflection-coefficient} to that wave therefore supplies only a
+linearized sign/topology guide; its finite-amplitude reflected state requires
+the release EOS and characteristic construction.
+If $Z_f<Z_t$, then $R_\sig<0$: a target-side incident release
+($\delta\sig<0$) reflects as a compression, whereas a target-side incident
+compression reflects as a release.
+
+\subsection{Initial-free-surface release: the isolated recompression path}
+
+At $t=0$ (where $t$ is now referenced to target shock arrival at the free
+surface), the initial target compression reaches the free boundary.  It
+reflects there as a release, which travels back to the impact interface.  For
+$Z_f<Z_t$, Eq.~\eqref{eq:reflection-coefficient} turns that left-going release
+into a right-going compression.  It returns to the target free surface after
+one target round trip:
+\begin{equation}
+  t_{\rm rc,n}=n\Pt,\quad n=1,2,\ldots
+  \label{eq:initial-fs-reverberation}
+\end{equation}
+In the constant-speed, small-perturbation and isolated-interface limit, these
+are low-impedance-flyer \emph{recompression} markers referenced to the initial
+shock arrival.  They are not a default series for a general flyer/target
+experiment; Case~A of Section~\ref{sec:release-ordering} invalidates this
+construction.
+
+\subsection{Flyer-release return: a distinct isolated unloading path}
+
+In free flight, the flyer rear-surface release reaches the target free surface
+at $t=\tFR$.  At that free boundary it reflects as a compression that
+travels back toward the impact interface.  If $Z_f<Z_t$, that compression
+reflects from the interface as a release.  Its next target-free-surface
+arrival is therefore
+\begin{equation}
+  t=\tFR+\Pt,
+  \label{eq:flyer-release-return}
+\end{equation}
+and, in this linear sign analysis, it is an \emph{unloading} arrival rather
+than a recompression.  Thus $\tFR+n\Pt$ must not be plotted as a
+low-impedance recompression merely because it occurs after a pullback.
+
+\paragraph{Contact condition.} An unbonded flyer--target interface is
+unilateral: it may carry compression but not tension, $\sig_{xx}\geq0$ at
+contact.  The isolated first reflection can leave a compressive interface
+stress, but this must be checked after every finite-amplitude interaction.  A
+``perfect contact'' boundary condition must not silently permit tensile
+traction.
+
+\section{Implementation-ready constant-speed model}
+
+For a transparent first-order implementation, store or estimate the
+shocked-state \emph{release-head} speed $c_{\mathrm{head},i}$ in the local
+comoving frame.  The onset of unloading is governed by that leading
+characteristic.  In an elastic--plastic solid it is generally a longitudinal
+release-head speed; later portions of the release fan can propagate at a
+different speed.  For an isotropic solid,
+\begin{equation}
+  c_L^2=c_B^2+\frac{4}{3}c_S^2,
+  \label{eq:longitudinal-bulk-shear}
+\end{equation}
+so a bulk-wave value and a longitudinal-wave value should not be used
+interchangeably.  In a fluid, $c_L=c_B$.  The relevant speeds must be those of
+the \emph{shocked state}, not ambient tabulations.  Measured copper release
+experiments explicitly use the leading release arrival to determine the
+shocked-state Lagrangian longitudinal speed.  Hawreliak \emph{et al.} also
+report a quasielastic release in copper at 190~GPa; accordingly,
+$c_{\mathrm{head},i}$ should be treated as an experimentally or
+EOS-defined leading-arrival speed, rather than assumed to be a single clean
+equilibrium longitudinal-wave speed \cite{Hawreliak2024}.
+
+With a selected $c_{\mathrm{head},i}$, calculate
+\begin{align}
+  \rho_{H,i} &= \rhoz[i]\frac{\Us[i]}{\Us[i]-\up[i]},
+      \label{eq:implementation-density}\\
+  \CL[{\mathrm{head},i}] &=
+      \frac{\rho_{H,i}}{\rhoz[i]}c_{\mathrm{head},i},
+      \label{eq:implementation-release-speed}\\
+  Z_i &= \rho_{H,i}c_{\mathrm{head},i}
+      =\rhoz[i]\CL[{\mathrm{head},i}].
+  \label{eq:consistent-implementation}
+\end{align}
+Use $\CL[{\mathrm{head},i}]$, not $c_{\mathrm{head},i}$, in an
+initial-thickness transit estimate.  Use the incremental impedance appropriate
+to the actual local release state in Eq.~\eqref{eq:reflection-coefficient}.
+
+Equivalently, a program may store $\CL[i]$ directly.  In that case it must use
+$Z_i=\rhoz[i]\CL[i]$, rather than $\rho_{H,i}\CL[i]$.  Either convention is
+mathematically consistent; mixing a Lagrangian transit formula with an
+Eulerian impedance formula is not.
+
+The following compact sequence is suitable for an overlay:
+\begin{enumerate}
+  \item Convert all thicknesses to metres and all speeds to SI units.
+  \item Infer $u$ from the exact release relation
+        Eq.~\eqref{eq:free-surface-exact}, or use $u=U_{fs}/2$ only as a
+        declared approximation.
+  \item Calculate $x$, $V$, $\Us[f]$, and $\Us[t]$ from
+        Eqs.~\eqref{eq:inverse-velocity} and \eqref{eq:linear-hugoniot}.
+  \item Obtain a release model $c_i(\sig)$ for quantitative work.  For a
+        release-onset estimate, select $c_{\mathrm{head},i}$ and form
+        $\CL[{\mathrm{head},i}]$ and $Z_i$ using
+        Eqs.~\eqref{eq:implementation-density}--\eqref{eq:consistent-implementation}.
+  \item Calculate the free-flight flyer-release time $\tFR$ from
+        Eq.~\eqref{eq:flyer-release-free-flight} and the target round trip
+        $\Pt$ from Eq.~\eqref{eq:target-round-trip}.
+  \item If $\tFR\leq0$, report shock--release catch-up; do not draw a
+        sustained plateau.  If $0<\tFR<\Pt$, report release-fan interaction
+        and do not draw a simple recompression series.  If $\tFR>\Pt$, report
+        that the isolated initial-free-surface return precedes the flyer
+        release; $\Pt$ is then an isolated-path diagnostic, not a validated
+        fit to the full trace.
+\end{enumerate}
+
+All times produced in seconds can be converted to nanoseconds by multiplying
+by $10^9$.
+
+\section{First-hand reverberation markers with incomplete target data}
+\label{sec:first-hand-markers}
+
+This section defines a deliberately lower-fidelity overlay for experiment
+planning and first inspection of a trace.  It must be reported as a
+first-hand marker, not as a finite-amplitude prediction.  The indispensable
+pre-shot datum is the impact speed $V$.  A peak measured on the subsequently
+overlaid trace must not be used to set this prediction.  Flyer identity and
+two thicknesses alone do not select a shocked state.
+
+\subsection{Ballpark target $C_0,S$: a state-aware proxy}
+
+Suppose the flyer parameters $(\rhoz[f],C_{0f},S_f)$ are known, while the
+target parameters $(\rhoz[t],C_{0t},S_t)$ are only ballpark values for the
+identified target material.  With a known $V$, solve the provisional impedance
+match
+\begin{align}
+  \rhoz[t](C_{0t}+S_t\widehat u)\widehat u
+  &=\rhoz[f]\bigl[C_{0f}+S_f(V-\widehat u)\bigr]
+    (V-\widehat u),
+  \label{eq:first-hand-impedance-match}\\
+  \widehat x&=V-\widehat u \notag
+\end{align}
+For positive densities, intercepts, and slopes, the left side of
+Eq.~\eqref{eq:first-hand-impedance-match} is strictly increasing in
+$\widehat u$ on $[0,V]$, whereas its right side is strictly decreasing
+because $\widehat x=V-\widehat u$.  The left side is zero at
+$\widehat u=0$ and the right side is zero at $\widehat u=V$; hence there is
+exactly one physical root $0<\widehat u<V$.  This supplies the
+provisional shock speeds
+\begin{equation}
+  \widehat{\Us[t]}=C_{0t}+S_t\widehat u,
+  \qquad
+  \widehat{\Us[f]}=C_{0f}+S_f\widehat x.
+  \label{eq:first-hand-shock-speeds}
+\end{equation}
+The tangent of the assumed target Hugoniot in the stress--particle-velocity
+plane gives the Lagrangian \emph{Hugoniot-tangent proxy}
+\begin{equation}
+  \widehat C_{\mathrm{H},t}^{\mathrm L}=C_{0t}+2S_t\widehat u,
+  \qquad
+  \widehat C_{\mathrm{H},f}^{\mathrm L}=C_{0f}+2S_f\widehat x.
+  \label{eq:hugoniot-tangent-proxy}
+\end{equation}
+It is neither a shock speed nor, in general, the exact release-head speed.
+It follows from $\rhoz^{-1}d\sig_H/d\up$, whereas the true release speed is
+given by Eq.~\eqref{eq:release-characteristic-speed}.  Its only role here is
+to make a state-aware timing proxy from the available $C_0,S$ values; the
+quality of that approximation cannot be inferred from a Hugoniot alone
+\cite{LyzengaAhrens1978,Kerley2008}.
+
+When the linear Hugoniot is used in the strength-free sense, this proxy is
+most naturally interpreted as a bulk-family surrogate.  For a
+strength-bearing solid, a longitudinal release head is generally faster than
+the corresponding bulk wave [Eq.~\eqref{eq:longitudinal-bulk-shear}].
+Under that additional interpretation, using
+$\widehat C_{\mathrm H,t}^{\mathrm L}$ is expected to make
+$\widehat P_t$ late relative to a longitudinal-head marker.  This is an
+expected one-sided bias, not a rigorous bound: the difference between the
+Hugoniot tangent and the actual release adiabat has no universal sign without
+a release EOS.  The stated direction is specifically relative to a
+\emph{shocked-state} longitudinal head.  It is not preserved if that
+comparison is instead made with an ambient longitudinal-speed surrogate:
+the tangent proxy can then lie on either side of the surrogate as compression
+changes.  A pre-shot longitudinal-speed scenario should therefore be plotted
+alongside the tangent-proxy marker whenever suitable shocked-state strength
+data are available.
+
+The corresponding first-hand target round-trip and flyer-release markers are
+\begin{align}
+  \widehat P_t&=\frac{2h_{t0}}{\widehat C_{\mathrm{H},t}^{\mathrm L}}, \\
+  \widehat t_{\mathrm{FR}}^{(0)}
+  &=\frac{h_{f0}}{\widehat{\Us[f]}}
+    +\frac{h_{f0}}{\widehat C_{\mathrm{H},f}^{\mathrm L}}
+    +h_{t0}\left(
+      \frac{1}{\widehat C_{\mathrm{H},t}^{\mathrm L}}
+      -\frac{1}{\widehat{\Us[t]}}\right), \\
+  \widehat t_{\mathrm{first}}^{(0)}
+  &=\min\bigl(\widehat P_t,\widehat t_{\mathrm{FR}}^{(0)}\bigr).
+  \label{eq:first-hand-markers}
+\end{align}
+Plot $\widehat P_t$ as the candidate onset of an isolated target
+free-surface reverberation only when
+$\widehat t_{\mathrm{FR}}^{(0)}>\widehat P_t$.  If
+$0<\widehat t_{\mathrm{FR}}^{(0)}<\widehat P_t$, flag interacting releases
+instead; if $\widehat t_{\mathrm{FR}}^{(0)}\leq0$, flag shock--release
+catch-up.  The quantity to compare with the first feature after the initial
+free-surface shock state is $\widehat t_{\mathrm{first}}^{(0)}$, not an
+unqualified plateau duration.
+
+\subsection{No target $C_0,S$: what can and cannot be estimated}
+
+The flyer Hugoniot cannot provide the missing target release speed.  If target
+$C_0,S$ are unavailable, a material name, flyer data, and thicknesses do not
+produce a defensible point estimate of $P_t$.  At least one independent target
+pre-shot target speed estimate or range must be supplied from a material
+library, prior experiment, or literature source; no waveform quantity from
+the experiment being overlaid is used in this construction.  If only a
+plausible pre-shot Lagrangian timing-speed range
+$C_{\mathrm{low}}^{\mathrm L}\leq C_{\mathrm{est},t}^{\mathrm L}
+\leq C_{\mathrm{high}}^{\mathrm L}$ is available, report a timing band,
+not a fitted point:
+\begin{equation}
+  \frac{2h_{t0}}{C_{\mathrm{high}}^{\mathrm L}}
+  \leq P_t\leq
+  \frac{2h_{t0}}{C_{\mathrm{low}}^{\mathrm L}}.
+  \label{eq:first-hand-timing-band}
+\end{equation}
+An ambient bulk or longitudinal value may be used to construct a scenario
+range, but it must be labelled as an ambient-speed surrogate rather than a
+shocked-state release speed.  A pre-shot absolute shock-arrival estimate also
+requires a nominated target shock-speed range,
+\begin{equation}
+  U_{\mathrm{s},t}^{\mathrm{low}}\leq U_{\mathrm{s},t}
+  \leq U_{\mathrm{s},t}^{\mathrm{high}},
+  \qquad
+  \frac{h_{t0}}{U_{\mathrm{s},t}^{\mathrm{high}}}
+  \leq T_s\leq
+  \frac{h_{t0}}{U_{\mathrm{s},t}^{\mathrm{low}}}.
+  \label{eq:first-hand-shock-arrival-band}
+\end{equation}
+Without either ballpark target $C_0,S$ or independent pre-shot target speed
+ranges, only a qualitative thickness scaling can be reported---not a
+quantitative expected trace or reverberation time.
+
+\section{Pre-shot construction of the first-hand expected trace}
+\label{sec:pre-shot-overlay}
+
+This procedure uses no measured quantity from the experiment subsequently
+overlaid.  Its purpose is to place an expected initial shock state and timing
+markers on a plot before the shot; it does not predict the detailed release
+shape, pullback amplitude, or fracture state.
+
+\subsection{Inputs and timing markers}
+
+Before the experiment, assemble the flyer density and Hugoniot parameters,
+impact speed $V$, flyer and target initial thicknesses, and a target-material
+entry.  The target entry should contain either ballpark
+$(\rhoz[t],C_{0t},S_t)$ or explicitly sourced pre-shot ranges for target shock
+and Lagrangian timing speeds.  The two alternatives are not interchangeable:
+the first permits a provisional impedance match, whereas the second produces
+only timing bands.
+
+With ballpark target $C_0,S$, use
+Eqs.~\eqref{eq:first-hand-impedance-match}--\eqref{eq:first-hand-markers}:
+\begin{enumerate}
+  \item solve for $\widehat u$ and $\widehat x$ at the impact interface;
+  \item calculate $\widehat{\Us[t]}$ and place the initial target
+        free-surface shock arrival at
+        \begin{equation}
+          \widehat T_s=\frac{h_{t0}}{\widehat{\Us[t]}} ;
+          \label{eq:pre-shot-shock-arrival}
+        \end{equation}
+  \item plot the nominal initial free-surface level
+        $U_{fs}^{\ast}\simeq2\widehat u$, explicitly labelled as the
+        doubling approximation rather than a release-EOS prediction;
+  \item place the earliest post-shock timing marker at
+        $\widehat T_s+\widehat t_{\mathrm{first}}^{(0)}$;
+        draw the isolated target reverberation marker at
+        $\widehat T_s+\widehat P_t$ only if
+        $\widehat t_{\mathrm{FR}}^{(0)}>\widehat P_t$; and
+  \item if $\widehat t_{\mathrm{FR}}^{(0)}\leq\widehat P_t$, annotate the
+        plot as an interacting-release or shock--release-catch-up case,
+        rather than drawing an $n\widehat P_t$ recompression series.
+\end{enumerate}
+The displayed plateau is therefore a timing guide only.  Its height is
+controlled by the release integral in Eq.~\eqref{eq:free-surface-exact}, and
+its later shape requires the finite-amplitude calculation of
+Section~\ref{sec:quantitative-reference}.
+
+If target $C_0,S$ are unavailable, do not infer them from the flyer or update
+the calculation from the newly acquired trace.  Instead plot the pre-shot
+arrival and reverberation bands from
+Eqs.~\eqref{eq:first-hand-timing-band} and
+\eqref{eq:first-hand-shock-arrival-band}.  If no target shock-speed range is
+available, the time origin of the predicted free-surface shock cannot be
+placed; if no target Lagrangian-speed range is available, the reverberation
+marker cannot be placed.  In either case the appropriate output is a stated
+data requirement, not an invented point prediction.
+
+\subsection{Candidate tensile and spall timing window}
+\label{sec:spall-window}
+
+Spall is not created merely because a target round-trip time has elapsed.  A
+tensile region first requires the interaction of opposed unloading waves, and
+damage occurs only if that tensile history exceeds the material's dynamic
+spall criterion for a sufficient time.  The interaction of the leading and
+trailing release characteristics can nevertheless provide pre-shot
+\emph{candidate} times for the tensile window.
+
+Let $T_{I,k}$ be the time at which characteristic $k$ of the flyer-generated
+release enters the target at the interface $X=0$, and let $T_{F,j}$ be the
+launch time of characteristic $j$ of the target free-surface release at
+$X=h_{t0}$.  Let $C_{I,k}^{\mathrm L}$ and $C_{F,j}^{\mathrm L}$ be their
+respective Lagrangian speeds through the target.  In a constant-speed
+characteristic construction their trajectories are
+\begin{equation}
+  X_{I,k}=C_{I,k}^{\mathrm L}(T-T_{I,k}),\qquad
+  X_{F,j}=h_{t0}-C_{F,j}^{\mathrm L}(T-T_{F,j}).
+  \label{eq:opposed-release-rays}
+\end{equation}
+Their intersection is
+\begin{align}
+  T_{\cap,kj}
+  &=\frac{h_{t0}+C_{I,k}^{\mathrm L}T_{I,k}
+      +C_{F,j}^{\mathrm L}T_{F,j}}
+      {C_{I,k}^{\mathrm L}+C_{F,j}^{\mathrm L}}, \\
+  X_{\cap,kj}
+  &=\frac{C_{I,k}^{\mathrm L}
+      [h_{t0}+C_{F,j}^{\mathrm L}(T_{F,j}-T_{I,k})]}
+      {C_{I,k}^{\mathrm L}+C_{F,j}^{\mathrm L}}.
+  \label{eq:opposed-release-intersection}
+\end{align}
+Use an intersection only when $0<X_{\cap,kj}<h_{t0}$ and the relevant
+interface path remains closed.  For positive characteristic speeds, that
+interior condition already implies that both characteristics have been
+launched.  In an ideal sharp-shock/free-surface construction,
+$T_{F,\ell}=T_{F,\tau}=T_s$, but a centered release fan already contains
+distinct leading ($\ell$) and trailing ($\tau$) characteristics with
+different speeds.  A finite shock rise adds a spread in their launch times;
+a state-dependent release determines their speed spread.
+
+Let $\mathcal I$ contain the physically admissible leading--trailing
+intersections from Eq.~\eqref{eq:opposed-release-intersection}.  The
+release-overlap window is
+\begin{equation}
+  T_{\mathrm{overlap,first}}^{\ast}
+  =\min_{(k,j)\in\mathcal I}T_{\cap,kj},
+  \qquad
+  T_{\mathrm{overlap,last}}^{\ast}
+  =\max_{(k,j)\in\mathcal I}T_{\cap,kj}.
+  \label{eq:spall-window-markers}
+\end{equation}
+For the usual monotonic fan ordering, these extrema are the head--head and
+trailing--trailing intersections, respectively.  The explicit minimization
+and maximization avoid assuming that ordering for an arbitrary release model.
+The second marker is the end of a coarse release-fan-overlap window, not a
+universal latest spall time.  With an instantaneous fracture criterion, spall
+could begin no earlier than $T_{\mathrm{overlap,first}}^{\ast}$ if the tensile
+threshold is crossed.  Real fracture can be delayed by incubation, void
+nucleation, and growth; hence a defensible last spall-formation time requires
+a strength/damage model and cannot be obtained from leading and trailing wave
+speeds alone \cite{Hawkins2020}.
+
+For an expected free-surface trace, a pullback created at an estimated
+intersection plane must still propagate from that plane to the target free
+surface.  A first arrival marker is therefore bounded by
+\begin{equation}
+  T_{\mathrm{pb,first}}^{\ast}\gtrsim
+  T_{\mathrm{overlap,first}}^{\ast}
+  +\frac{h_{t0}-X_{\mathrm{overlap,first}}}
+         {C_{\mathrm{pb}}^{\mathrm L}},
+  \label{eq:pullback-first-arrival}
+\end{equation}
+where $X_{\mathrm{overlap,first}}$ is the intersection position associated
+with $T_{\mathrm{overlap,first}}^{\ast}$ and
+$C_{\mathrm{pb}}^{\mathrm L}$ is the appropriate post-intersection signal
+speed.  This is distinct from the
+intact-target marker $\Pt$.
+
+The single Hugoniot-tangent proxy in
+Eq.~\eqref{eq:hugoniot-tangent-proxy} provides only one characteristic speed;
+it cannot determine the leading--trailing fan width in
+Eq.~\eqref{eq:spall-window-markers}.  A pre-shot spall-window scenario
+therefore needs independently chosen leading/trailing release-speed ranges
+and release-launch durations from prior material information.  Without those
+inputs, report only the nominal release-intersection marker and do not label
+it a spall-time prediction.
+
+\section{Limits of the first-hand overlay}
+
+The first-hand construction intentionally omits the information required by
+the quantitative reference calculation of Section~\ref{sec:quantitative-reference}.
+It should not be used to identify damage or to tune a material speed until a
+marker coincides with a chosen feature.  In particular, a quantitative
+finite-amplitude plate-impact trace still requires:
+\begin{itemize}
+  \item a release adiabat or EOS (for example, a calibrated Mie--Gr\"uneisen
+        model) for each material, rather than only $C_0$ and $S$;
+  \item shocked-state longitudinal sound speeds along that release path;
+  \item a strength/elastic--plastic model if precursor or strength effects are
+        material to the trace;
+  \item characteristic interactions at the flyer--target interface and both
+        free surfaces, together with a unilateral contact condition if the
+        flyer is unbonded; and
+  \item a separate spall model if a pullback/recompression is attributed to a
+        spall plane.  A spall-plane recompression is not the same phenomenon as
+        the no-spall target reverberation of Eq.~\eqref{eq:initial-fs-reverberation}
+        \cite{Hawkins2020}.  For example, if a spall plane is at initial
+        material-coordinate depth $\delta$ below the target free surface, its simplest local
+        round-trip marker is $2\delta/\CL[t]$, rather than the intact-target
+        marker $\Pt=2h_{t0}/\CL[t]$; the actual timing still depends on the
+        wave paths and evolving material state.
+\end{itemize}
+
+Accordingly, a model based only on $\rhoz$, $C_0$, $S$, an ambient longitudinal
+speed, and two thicknesses should be presented as a first-order diagnostic
+timing guide, not as an exact prediction of a spall trace
+\cite{Kerley2008,Hawreliak2024,Hawkins2020}.
+
+\begin{thebibliography}{9}
+\bibitem{Kerley2008}
+G. I. Kerley, \emph{Calculation of Release Adiabats and Shock Impedance
+Matching}, Kerley Technical Services Report KTS08-1 (2008).
+\url{https://arxiv.org/pdf/1306.6913}
+
+\bibitem{Kerley2006}
+G. I. Kerley, ``The Linear $U_S$--$u_P$ Relation in Shock-Wave Physics,''
+Kerley Technical Services Report KTS06-1 (March 2006; arXiv:1306.6916, 2013).
+\url{https://doi.org/10.48550/arXiv.1306.6916}
+
+\bibitem{Rice1958}
+M. H. Rice, R. G. McQueen, and J. M. Walsh, ``Compression of solids by strong
+shock waves,'' in \emph{Solid State Physics}, Vol.~6, edited by F. Seitz and
+D. Turnbull (Academic Press, New York, 1958), pp.~1--63.
+\url{https://doi.org/10.1016/S0081-1947(08)60724-9}
+
+\bibitem{LyzengaAhrens1978}
+G. A. Lyzenga and T. J. Ahrens, ``The relation between the shock-induced
+free-surface velocity and the postshock specific volume of solids,''
+\emph{Journal of Applied Physics} \textbf{49}, 201--204 (1978).
+\url{https://doi.org/10.1063/1.324323}
+
+\bibitem{Hawreliak2024}
+J. A. Hawreliak, J. M. Winey, Y. Toyoda, K. Zimmerman, and Y. M. Gupta,
+``Sound speed determination in copper shock compressed to 190 GPa,'' \emph{Journal of
+Applied Physics} \textbf{136}, 165902 (2024).
+\url{https://doi.org/10.1063/5.0220264}
+
+\bibitem{CourantFriedrichs1948}
+R. Courant and K. O. Friedrichs, \emph{Supersonic Flow and Shock Waves}
+(Interscience, New York, 1948).
+
+\bibitem{Davison2008}
+L. Davison, \emph{Fundamentals of Shock Wave Propagation in Solids}
+(Springer, Berlin and Heidelberg, 2008).
+\url{https://doi.org/10.1007/978-3-540-74569-3}
+
+\bibitem{Hawkins2020}
+M. C. Hawkins, S. A. Thomas, S. J. Fensin, D. R. Jones, and R. S. Hixson,
+``Spall and subsequent recompaction of copper under shock loading,''
+\emph{Journal of Applied Physics} \textbf{128}, 045902 (2020).
+\url{https://doi.org/10.1063/5.0011645}
+\end{thebibliography}
+
+\end{document}

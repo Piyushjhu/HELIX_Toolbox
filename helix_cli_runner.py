@@ -58,6 +58,7 @@ _DEFAULT_CONFIG_BASENAMES = (
 )
 
 
+
 def _find_default_master_config(search_dir: str = REPO_ROOT) -> Optional[str]:
     """Return the first existing default master config path, or None."""
     for name in _DEFAULT_CONFIG_BASENAMES:
@@ -430,6 +431,7 @@ def _run_analysis(
     analysis_mode: str,
     material_properties: Dict,
     igsn_material_map: Dict = None,
+    igsn_thickness_map: Dict = None,
 ) -> bool:
     """Create and run one AnalysisThread; return True on success."""
     thread = AnalysisThread(
@@ -443,6 +445,7 @@ def _run_analysis(
         analysis_mode=analysis_mode,
         material_properties=material_properties,
         igsn_material_map=igsn_material_map,
+        igsn_thickness_map=igsn_thickness_map,
     )
 
     result = {"success": False}
@@ -868,6 +871,7 @@ def main():
         spade_params = master_config.get("spade_config", {})
         material_properties = master_config.get("material_properties", {})  # Extract material properties
         igsn_material_map = master_config.get("igsn_material_map", {})  # IGSN → material fallback mapping
+        igsn_thickness_map = master_config.get("igsn_thickness_map", {})  # IGSN → target/sample thickness (um)
         post_processing_config = master_config.get("post_processing_config", {})  # Extract post-processing config
         spade_params = _transform_spade_params_for_analysis(spade_params)
         
@@ -919,6 +923,7 @@ def main():
         spade_params = _load_json_config(os.path.abspath(args.spade_config))
         material_properties = {}  # Separate configs don't have material_properties section
         igsn_material_map = {}  # Separate configs don't have igsn_material_map section
+        igsn_thickness_map = {}  # Separate configs don't have igsn_thickness_map section
         post_processing_config = {}  # Separate configs don't have post_processing_config section
         spade_params = _transform_spade_params_for_analysis(spade_params)
         
@@ -1016,6 +1021,7 @@ def main():
                 analysis_mode=analysis_mode,
                 material_properties=material_properties,
                 igsn_material_map=igsn_material_map,
+                igsn_thickness_map=igsn_thickness_map,
             )
             batch_results[subfolder_name] = success
 
@@ -1230,6 +1236,7 @@ def main():
             analysis_mode="post_process_only",
             material_properties=material_properties,
             igsn_material_map=igsn_material_map,
+            igsn_thickness_map=igsn_thickness_map,
         )
         thread.progress_signal.connect(print)
         success = thread.run_post_processing(post_processing_config)
@@ -1260,6 +1267,7 @@ def main():
         analysis_mode=analysis_mode,
         material_properties=material_properties,
         igsn_material_map=igsn_material_map,
+        igsn_thickness_map=igsn_thickness_map,
     )
 
     result = {"success": False}
