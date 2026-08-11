@@ -1,0 +1,34 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "helix-toolbox"
+version = "2.0.0a1"
+description = "HELIX Toolbox — PDV velocity analysis, spall detection, and HEL characterization"
+authors = ["Piyush Wanchoo <pwanchoo@jhu.edu>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "helix", from = "src"}]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<3.11"
+alpss = {path = "../ALPSS", develop = true}
+numpy = ">=1.21"
+scipy = ">=1.7"
+pandas = ">=1.3"
+matplotlib = ">=3.3"
+scikit-learn = ">=1.0"
+openpyxl = ">=3.1"
+girder-client = ">=3.1"
+panel = ">=1.3"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0"
+
+[tool.poetry.scripts]
+helix = "helix.cli.runner:main"
+helix-web = "helix.web.serve:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
