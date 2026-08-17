@@ -105,10 +105,22 @@ alpss_config:
   time_to_take: 6.0e-06
 
   # Time window before the detected IQ start to include in the output (s).
+  # NOTE: this must be large enough to include FLAT baseline ahead of the elastic
+  # precursor, or HEL t=0 (foot-of-rise) detection has nothing to anchor to.
+  # 2.0e-08 (20 ns) was too tight — the whole pre-window was already the precursor rise.
   t_before: 2.0e-08
 
   # Time window after the detected IQ start to include in the output (s).
-  t_after: 2.0e-07
+  t_after: 0.5e-06
+
+  # ── Velocity baseline calibration ──────────────────────────────────────────
+  # Subtract the robust pre-trigger baseline before smoothing/saving.  Exclude
+  # the final 10 ns before t=0 to protect the estimate from onset-timing error
+  # or a weak precursor rise.
+  zero_pretrigger_velocity: true
+  pretrigger_baseline_method: "median"   # median (robust) | mean
+  pretrigger_baseline_guard_ns: 10.0
+  pretrigger_baseline_min_samples: 20
 
   # ── IQ (signal-onset) detection ─────────────────────────────────────────────
   # IQ detection threshold relative to the peak signal amplitude.
@@ -232,7 +244,7 @@ spade_config:
 
   # Velocity threshold (m/s) used to identify shock arrival (t=0 alignment).
   # Decrease if weak shocks are being missed; increase if noise triggers falsely.
-  threshold_velocity_ms: 5.0
+  threshold_velocity_ms: 10.0
 
   # Velocity threshold (m/s) used when aligning multiple traces to a common t=0
   # for the combined velocity-traces plot.
@@ -261,7 +273,7 @@ spade_config:
   # valley width). Set 0 to run on the ALPSS trace as-is.
   #   Example: 128 GS/s Ti, ~4-5 ns plateau -> sigma 1.0-1.5 ns (FWHM 2.4-3.5 ns).
   #   Raise toward 3 ns only for very noisy, broad-feature traces.
-  spall_smoothing_sigma_ns: 1.5
+  spall_smoothing_sigma_ns: 1.0
 
   # ── 2. Valley detection: prominence ──────────────────────────────────────────
   # How deep a velocity dip must be — as a FRACTION of the plateau velocity — to
@@ -308,12 +320,24 @@ spade_config:
   #     fast noise spike right after the valley (not a physical recompression).
   #     Example: 2.5 ns.
   min_recomp_time_ns: 3
+  #
+  # Global fallback target/sample thickness (micrometres) for the predicted
+  # no-spall wave-timing overlay, used only when a trace's thickness is not
+  # resolved from the parameter file or igsn_thickness_map. null = no fallback
+  # (recompression prediction omitted for unmapped traces).
+  default_target_thickness_um: null
+  #
+  # Assumed leading/trailing release-fan spread for the predicted candidate spall
+  # band (derivation Sec. 10.2). The band end uses a trailing characteristic at
+  # (1 - fraction) * cL_target; larger => wider band. 0.15 = 15% is a reasonable
+  # default. This is an assumed input, not a derived spall-time prediction.
+  spall_fan_width_fraction: 0.15
   # ═══════════════════════════════════════════════════════════════════════════
 
   # ── HEL detection ─────────────────────────────────────────────────────────────
   # Time window (ns, relative to t=0) searched for the elastic precursor plateau.
   hel_start_time_ns: 0
-  hel_end_time_ns: 15
+  hel_end_time_ns: 20
 
   # Minimum plateau velocity to accept as a valid HEL (m/s).
   # Increase if spurious low-velocity detections occur.
@@ -333,7 +357,7 @@ spade_config:
   hel_min_plateau_duration: 0.5
 
   # Legacy gradient-angle threshold (degrees) — fallback only.
-  hel_angle_threshold_deg: 86.0
+  hel_angle_threshold_deg: 70.0
 
   # Method used to locate t=0 for HEL detection:
   #   alpss_signal_start — use the physical shock-arrival time ALPSS detected for the
@@ -590,3 +614,40 @@ igsn_material_map:
   JHAMAL00016: Ti
   JHAMAL00018: Ti64
   JHAMAB00021: Brass
+  # JHAMAC00003 is a binary (param file reads "CuTi"); analysed with Cu
+  # properties for now — TODO: add proper CuTi material handling / Hugoniot.
+  JHAMAC00003: Cu
+  JHBMAB00003: Cu
+  JHBMAA00005: Al
+
+
+
+# -----------------------------------------------------------------------------
+# 6b. IGSN → TARGET (SAMPLE) THICKNESS MAPPING  [micrometres]
+#    Sample/target thickness for each IGSN, used by the predicted no-spall
+#    wave-timing overlay (helix_wave_timing) on individual spall plots.
+#
+#    Target thickness sets the SECOND-RECOMPRESSION spacing (target round-trip
+#    2*h_target / C_L_target); without it the plateau/peak/release are still
+#    drawn but the recompression instants are omitted. (The flyer thickness,
+#    which sets the plateau duration, comes from the parameter file's
+#    'Flyer_Thickness (um)' column and does not need to be listed here.)
+#
+#    Same matching rules as igsn_material_map: keys may be full IGSNs or
+#    parent-IGSN prefixes, longest key wins, case-insensitive. Values are the
+#    target thickness in micrometres.
+#
+#    Resolution priority for target thickness per trace:
+#      1. parameter-file column 'Sample_Thickness (um)' (if/when present)
+#      2. this igsn_thickness_map
+#      3. spade_config: default_target_thickness_um (global fallback)
+# -----------------------------------------------------------------------------
+igsn_thickness_map:
+
+  # JHAMAB00021 (Brass) samples are 1000 um thick (confirmed):
+  JHAMAB00021: 1000
+  JHAMAB00022: 500
+  JHAMAL00016: 400
+  JHAMAC00003: 200
+  JHBMAB00003: 200
+  JHBMAA00005: 200

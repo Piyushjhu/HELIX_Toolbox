@@ -45,6 +45,15 @@ t_before: 2.0e-08
 # Post-onset window included in the output (s).
 t_after: 2.0e-07
 
+# ── Velocity baseline calibration ────────────────────────────────────────────
+# Subtract the pre-trigger baseline from every velocity trace before smoothing
+# and saving.  The final 10 ns before the detected onset are excluded (guard),
+# because an onset-timing error or weak precursor can contaminate that region.
+zero_pretrigger_velocity: true
+pretrigger_baseline_method: "median"   # median (robust) | mean
+pretrigger_baseline_guard_ns: 10.0
+pretrigger_baseline_min_samples: 20
+
 # ── IQ signal-onset detection ─────────────────────────────────────────────────
 # Fraction of peak amplitude used as the onset threshold.
 # 0.8 = 80% of peak.  Lower → earlier detection; higher → fewer false starts.

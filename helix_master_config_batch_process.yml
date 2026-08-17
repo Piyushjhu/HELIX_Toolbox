@@ -122,6 +122,15 @@ alpss_config:
   # Time window after the detected IQ start to include in the output (s).
   t_after: 2.0e-07
 
+  # ── Velocity baseline calibration ──────────────────────────────────────────
+  # Subtract the robust pre-trigger baseline before smoothing/saving.  Exclude
+  # the final 10 ns before t=0 to protect the estimate from onset-timing error
+  # or a weak precursor rise.
+  zero_pretrigger_velocity: true
+  pretrigger_baseline_method: "median"   # median (robust) | mean
+  pretrigger_baseline_guard_ns: 10.0
+  pretrigger_baseline_min_samples: 20
+
   # ── IQ (signal-onset) detection ─────────────────────────────────────────────
   # IQ detection threshold relative to the peak signal amplitude.
   # Lower values → earlier start detected; raise if false triggers occur.

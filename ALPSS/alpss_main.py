@@ -1624,6 +1624,11 @@ def saving(
                     "Spect Velocity Res",
                     "Signal Start Time",
                     "Smoothing Characteristic Time",
+                    "Pre-trigger Velocity Offset Subtracted (m/s)",
+                    "Pre-trigger Baseline Sample Count",
+                    "Pre-trigger Baseline Window Start (s)",
+                    "Pre-trigger Baseline Window End (s)",
+                    "Pre-trigger Baseline Correction Applied",
                 ],
                 "Value": [
                     start_time.strftime("%b %d %Y"),
@@ -1647,6 +1652,11 @@ def saving(
                     0.5 * (inputs["lam"] * sdf_out["f_res"]),
                     sdf_out["t_start_corrected"],
                     iua_out["tau"],
+                    vc_out.get("pretrigger_baseline_offset_m_s", np.nan),
+                    vc_out.get("pretrigger_baseline_sample_count", 0),
+                    vc_out.get("pretrigger_baseline_window_start_s", np.nan),
+                    vc_out.get("pretrigger_baseline_window_end_s", np.nan),
+                    vc_out.get("pretrigger_baseline_applied", False),
                 ],
             }
             print(f"[{datetime.now()}] Saving results_df...")
@@ -2493,12 +2503,74 @@ def velocity_calculation(
         phas, smoothing_window_points, time_start_idx, time_end_idx, fs
     )
 
-    # Convert the derivative into velocity
+    # Convert the derivative into velocity.  ``cen`` removes the nominal carrier
+    # frequency, but residual carrier error / drift leaves a constant velocity
+    # offset.  Calibrate that offset from the flat part of the pre-trigger
+    # region below, before smoothing and before any data are saved.
     velocity_pad = (lam / 2) * (dpdt_pad - cen)
     velocity_f = (lam / 2) * (dpdt - cen)
 
-    # Crop the time array
+    # Crop the time array.
     time_f = time[time_start_idx:time_end_idx]
+
+    # Explicitly zero the velocity baseline from pre-trigger data.  The final
+    # part of the pre-trigger window can already contain a weak precursor or an
+    # onset-timing error, so exclude it with a guard interval.  The same scalar
+    # is removed from the padded array, keeping the raw, smoothed, and saved
+    # traces on one calibrated velocity reference.
+    baseline_enabled = inputs.get("zero_pretrigger_velocity", True)
+    if isinstance(baseline_enabled, str):
+        baseline_enabled = baseline_enabled.strip().lower() in {"1", "true", "yes", "on"}
+
+    baseline_offset = 0.0
+    baseline_sample_count = 0
+    baseline_window_start = np.nan
+    baseline_window_end = np.nan
+    baseline_applied = False
+
+    if baseline_enabled:
+        try:
+            guard_ns = max(0.0, float(inputs.get("pretrigger_baseline_guard_ns", 10.0)))
+            min_samples = max(1, int(inputs.get("pretrigger_baseline_min_samples", 20)))
+            baseline_method = str(inputs.get("pretrigger_baseline_method", "median")).strip().lower()
+            if baseline_method not in {"median", "mean"}:
+                print(f"Warning: Unknown pretrigger_baseline_method={baseline_method!r}; using median")
+                baseline_method = "median"
+
+            baseline_window_start = float(t_doi_start)
+            baseline_window_end = float(spall_doi_finder_outputs["t_start_corrected"]) - guard_ns * 1e-9
+            baseline_mask = ((time_f >= baseline_window_start) &
+                             (time_f < baseline_window_end) &
+                             np.isfinite(velocity_f))
+            baseline_values = velocity_f[baseline_mask]
+            baseline_sample_count = int(baseline_values.size)
+
+            if baseline_sample_count >= min_samples:
+                if baseline_method == "mean":
+                    baseline_offset = float(np.mean(baseline_values))
+                else:
+                    baseline_offset = float(np.median(baseline_values))
+
+                if np.isfinite(baseline_offset):
+                    velocity_f = velocity_f - baseline_offset
+                    velocity_pad = velocity_pad - baseline_offset
+                    baseline_applied = True
+                    print(
+                        f"Pre-trigger velocity zeroing: subtracted {baseline_offset:.3f} m/s "
+                        f"({baseline_method}, n={baseline_sample_count}, "
+                        f"window {baseline_window_start * 1e9:.2f} to "
+                        f"{baseline_window_end * 1e9:.2f} ns; guard={guard_ns:.1f} ns)"
+                    )
+                else:
+                    baseline_offset = 0.0
+                    print("Warning: Pre-trigger velocity baseline was non-finite; no correction applied")
+            else:
+                print(
+                    f"Warning: Pre-trigger velocity zeroing skipped; only {baseline_sample_count} "
+                    f"finite samples available (need {min_samples})"
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            print(f"Warning: Pre-trigger velocity zeroing skipped ({exc})")
 
     # Ensure smoothing window doesn't exceed half the signal length (check after we have velocity_pad)
     if smoothing_window_points >= len(velocity_pad) / 2:
@@ -2523,6 +2595,11 @@ def velocity_calculation(
         "time_f": time_f,
         "velocity_f": velocity_f,
         "velocity_f_smooth": velocity_f_smooth,
+        "pretrigger_baseline_offset_m_s": baseline_offset,
+        "pretrigger_baseline_sample_count": baseline_sample_count,
+        "pretrigger_baseline_window_start_s": baseline_window_start,
+        "pretrigger_baseline_window_end_s": baseline_window_end,
+        "pretrigger_baseline_applied": baseline_applied,
         "phasD2_f": dpdt,
         "voltage_filt": voltage_filt,
         "time_start_idx": time_start_idx,

@@ -892,8 +892,15 @@ class AnalysisThread(QThread):
             except (TypeError, ValueError):
                 return None
 
-        if not matched_param:
+        def _skip(reason):
+            # Log why the predicted wave-timing overlay is unavailable for this
+            # trace, so a missing overlay is never silent.
+            self.progress_signal.emit(
+                f"  [WAVE-TIMING] {base_name or 'trace'}: overlay skipped -- {reason}")
             return None
+
+        if not matched_param:
+            return _skip("no parameter-file match (flyer material/thickness unavailable)")
 
         # Flyer material (required for impedance match / impact-velocity back-calc).
         flyer_material = None
@@ -903,7 +910,7 @@ class AnalysisThread(QThread):
                 flyer_material = str(raw).strip()
                 break
         if not flyer_material:
-            return None
+            return _skip("flyer material missing/placeholder in the parameter file")
 
         # Flyer thickness in um (required for plateau duration).
         flyer_thickness_um = None
@@ -912,7 +919,7 @@ class AnalysisThread(QThread):
             if flyer_thickness_um is not None:
                 break
         if not flyer_thickness_um or flyer_thickness_um <= 0:
-            return None
+            return _skip("flyer thickness missing/invalid in the parameter file")
 
         # Resolve Hugoniot props (density, C0, C_L, S) for flyer + target.
         def _props(mat):
@@ -927,7 +934,9 @@ class AnalysisThread(QThread):
         flyer_props = _props(flyer_material)
         target_props = _props(sample_material)
         if flyer_props is None or target_props is None:
-            return None
+            _missing = flyer_material if flyer_props is None else sample_material
+            return _skip(f"material properties (density/C0/C_L/S) unresolved for '{_missing}' "
+                         f"in material_properties")
 
         # Target/sample thickness in um. Priority:
         #   1. explicit param-file column (future 'Sample_Thickness (um)')
@@ -1296,6 +1305,27 @@ class AnalysisThread(QThread):
             vel_window = vel_clean[window_mask]
             uncert_window = uncertainty[window_mask]
 
+            # Keep the spall-fitting window unchanged, but retain ALPSS's
+            # configured pre-trigger baseline for the individual spall plot.
+            # t_before is stored in seconds; plot times are aligned nanoseconds.
+            try:
+                plot_t_before_ns = max(0.0, float(self.alpss_params.get('t_before', 0.0)) * 1e9)
+            except (TypeError, ValueError):
+                plot_t_before_ns = 0.0
+            plot_mask = ((~np.isnan(vel_clean)) &
+                         (t_aligned_ns >= -plot_t_before_ns) &
+                         (t_aligned_ns <= spall_end_time))
+            if np.any(plot_mask):
+                time_plot = t_aligned_ns[plot_mask]
+                vel_plot = vel_clean[plot_mask]
+                uncert_plot = uncertainty[plot_mask]
+            else:
+                # Never prevent spall analysis from running if a malformed
+                # display range contains no samples.
+                time_plot = time_window
+                vel_plot = vel_window
+                uncert_plot = uncert_window
+
             # Derived shock-front diagnostics (rise times, plastic & compressive strain
             # rates, shock-front width) from the aligned trace. Ported verbatim from
             # Binary_metal_analysis (HELIX v1) so values match across toolbox versions;
@@ -1602,19 +1632,29 @@ class AnalysisThread(QThread):
                         h_target_um=wave_timing_ctx.get('target_thickness_um'),
                         fan_width_fraction=_fan_frac,
                     )
-                    # Anchor so the idealized peak-hold starts at shock arrival (t=0),
-                    # matching the time-shifted trace; rise_ns is cosmetic. Extend
-                    # the released baseline across the full trace so the overlay
-                    # doesn't stop just after the release.
+                    # The ideal Rankine--Hugoniot shock is a discontinuity.  Tie
+                    # its free-surface arrival, and every subsequent timing
+                    # marker, directly to the experimental trace's aligned t=0.
+                    # Do not register the model to P1 or the measured trace apex:
+                    # those are post-shot feature locations, not model inputs.
+                    _t_start = float(np.nanmin(time_plot)) if len(time_plot) else 0.0
+                    if not np.isfinite(_t_start):
+                        _t_start = 0.0
                     _t_end = float(np.nanmax(time_window)) if len(time_window) else None
-                    _tp, _vp = build_idealized_profile(_tim, t_anchor_ns=-1.0, rise_ns=1.0,
-                                                       t_end_ns=_t_end)
+                    _tp, _vp = build_idealized_profile(
+                        _tim,
+                        t_anchor_ns=0.0,
+                        t_start_ns=_t_start,
+                        t_end_ns=_t_end,
+                    )
                     predicted_overlay = {'t': _tp, 'v': _vp, 'timing': _tim}
                     results['Predicted_Impact_Velocity_m_s'] = _tim.V
                     results['Predicted_First_Departure_ns'] = _tim.plateau_duration_ns
                     results['Predicted_Flyer_RoundTrip_ns'] = _tim.t_flyer_ns
                     results['Predicted_t_FR_ns'] = _tim.t_FR_ns
                     results['Predicted_Target_RoundTrip_ns'] = _tim.target_round_trip_ns
+                    results['Predicted_Interface_Recompression_ns'] = _tim.interface_recompression_ns
+                    results['Predicted_Elastic_Precursor_Lead_ns'] = _tim.elastic_precursor_lead_ns
                     results['Predicted_Regime'] = _tim.regime
                     results['Predicted_Spall_Band_Start_ns'] = _tim.spall_band_start_ns
                     results['Predicted_Spall_Band_End_ns'] = _tim.spall_band_end_ns
@@ -1650,7 +1690,10 @@ class AnalysisThread(QThread):
                         lines_info=spade_lines_info,
                         intersections=spade_intersections,
                         vel_smooth=vel_window_spall,
-                        predicted_overlay=predicted_overlay
+                        predicted_overlay=predicted_overlay,
+                        display_time=time_plot,
+                        display_velocity=vel_plot,
+                        display_uncertainty=uncert_plot,
                     )
                     # Verify plot was actually created
                     if os.path.exists(effective_plot_path):
@@ -1679,11 +1722,15 @@ class AnalysisThread(QThread):
     def _plot_generic_spall_analysis(self, plot_path, time_window, vel_window, uncert_window,
                                      spall_strength, spall_unc, base_name,
                                      analysis_model='max_min', lines_info=None, intersections=None,
-                                     vel_smooth=None, predicted_overlay=None):
+                                     vel_smooth=None, predicted_overlay=None,
+                                     display_time=None, display_velocity=None,
+                                     display_uncertainty=None):
         """Generate generic spall analysis plot for any analysis model.
 
         vel_smooth, when given, is the Gaussian-smoothed trace the spall
-        detection actually ran on; it is overlaid on the raw trace.
+        detection actually ran on; it is overlaid only over the fitting window.
+        The optional display arrays may include the configured ALPSS pre-trigger
+        baseline and affect plotting only, never spall detection or fitting.
         """
         try:
             import matplotlib.pyplot as plt
@@ -1691,15 +1738,28 @@ class AnalysisThread(QThread):
             
             fig, ax = plt.subplots(figsize=(10, 6))
             
-            # Plot velocity trace (ALPSS output) and, if available, the
-            # Gaussian-smoothed trace used for spall detection
-            ax.plot(time_window, vel_window, 'b-', linewidth=1.0, alpha=0.5, label='Velocity (ALPSS)')
+            # Plot the display trace, including the configured pre-trigger
+            # baseline when supplied. The analysis/fitting window remains
+            # time_window/vel_window below.
+            if display_time is None or display_velocity is None:
+                display_time = time_window
+                display_velocity = vel_window
+                display_uncertainty = uncert_window
+            display_time = np.asarray(display_time)
+            display_velocity = np.asarray(display_velocity)
+            display_uncertainty = (None if display_uncertainty is None
+                                   else np.asarray(display_uncertainty))
+            ax.plot(display_time, display_velocity, 'b-', linewidth=1.0, alpha=0.5,
+                    label='Velocity (ALPSS)')
             if vel_smooth is not None and len(vel_smooth) == len(time_window):
                 ax.plot(time_window, vel_smooth, 'k-', linewidth=1.3, alpha=0.9, label='Gaussian smoothed (spall)')
             
-            # Plot uncertainty bands if available
-            if uncert_window is not None and len(uncert_window) == len(vel_window):
-                ax.fill_between(time_window, vel_window - uncert_window, vel_window + uncert_window,
+            # Plot uncertainty bands over the same displayed extent.
+            if (display_uncertainty is not None and
+                    len(display_uncertainty) == len(display_velocity) and
+                    len(display_time) == len(display_velocity)):
+                ax.fill_between(display_time, display_velocity - display_uncertainty,
+                               display_velocity + display_uncertainty,
                                alpha=0.2, color='blue', label='Uncertainty')
             
             # Overlay hybrid 5-segment fit if available (from strain rate calculation)
@@ -1750,9 +1810,11 @@ class AnalysisThread(QThread):
             ax.set_xlabel('Time (ns)', fontsize=12)
             ax.set_ylabel('Velocity (m/s)', fontsize=12)
             ax.set_title(title, fontsize=14, fontweight='bold')
-            ax.legend(loc='upper right', fontsize=7, framealpha=0.85, ncol=2,
-                      handlelength=1.4, columnspacing=1.0, labelspacing=0.3,
-                      borderpad=0.4, markerscale=0.8)
+            # Place the legend BELOW the axes so it never overlaps the trace.
+            # bbox_inches='tight' on savefig captures the out-of-axes legend.
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.13), fontsize=7,
+                      framealpha=0.85, ncol=2, handlelength=1.4, columnspacing=1.4,
+                      labelspacing=0.3, borderpad=0.4, markerscale=0.8)
             ax.grid(True, alpha=0.3)
 
             # Add an explicit DNS stamp for clarity when DNS is detected.
@@ -1787,11 +1849,15 @@ class AnalysisThread(QThread):
         candidate spall band (helix_wave_timing, derivation Sec. 9-10).
 
         The expected trace uses the Hugoniot-tangent proxy speeds; the plateau
-        ends at the first free-surface departure t_first=min(t_FR,P_t). P_t is a
-        recompression marker (case_B) or a diagnostic (case_A). The shaded band
-        is the candidate spall/tensile window (Sec. 10.2). Impact velocity is
-        back-calculated from the measured peak here (NOT first-hand). Anchored to
-        shock arrival at t=0; times in ns, velocities in m/s.
+        ends at the first free-surface departure t_first=min(t_FR,P_t). The P_t
+        recompression marker is drawn ONLY in case_B (valid n*P_t series); in
+        case_A it is suppressed. The shaded band is the release-fan overlap
+        window (leading vs trailing crossing), NOT the spall-failure location.
+        The plateau HEIGHT equals the measured peak (impact velocity is
+        back-calculated from it), so only the TIMING is predictive. The ideal
+        shock step and every marker are registered to the experimental trace's
+        aligned t=0; P1 and the measured trace apex are not used as time
+        anchors. Times in ns, velocities in m/s.
         """
         import numpy as np
         t = np.asarray(overlay['t'])
@@ -1801,23 +1867,36 @@ class AnalysisThread(QThread):
 
         # Candidate spall / tensile band (drawn first so markers sit on top).
         if tim.spall_band_start_ns is not None and tim.spall_band_end_ns is not None:
-            bs = max(tim.spall_band_start_ns, x0)
-            be = min(tim.spall_band_end_ns, x1)
+            band_lo = tim.spall_band_start_ns
+            band_hi = tim.spall_band_end_ns
+            bs = max(band_lo, x0)
+            be = min(band_hi, x1)
             if be > bs:
+                # Not the spall/tensile-failure location (that is the pullback
+                # minimum P3); this is the release-fan overlap window (leading vs
+                # trailing crossing) arriving at the FS. Named accordingly so the
+                # peak is not misread as the spall signal (review, Sec. 10.2).
                 ax.axvspan(bs, be, color='orange', alpha=0.18, zorder=1,
-                           label=(f'Expected spall band  '
-                                  f'[{tim.spall_band_start_ns:.0f}, {tim.spall_band_end_ns:.0f}] ns'))
+                           label=(f'Release-fan overlap  '
+                                  f'[{band_lo:.0f}, {band_hi:.0f}] ns'))
 
-        # Shock arrival: the trace is time-shifted so this is t=0.
-        if x0 <= 0 <= x1:
+        # The model's ideal shock arrival is tied to the experimental trace's
+        # aligned t=0. All predicted timing markers below are measured from it.
+        if x0 <= 0.0 <= x1:
             ax.axvline(0.0, color='dimgray', linestyle='--', linewidth=1.2, alpha=0.7, zorder=3)
-            ax.annotate('shock arrival', xy=(0.0, tim.u_fs_peak * 0.5), fontsize=8,
+            ax.annotate('shock arrival (model t=0)', xy=(0.0, tim.u_fs_peak * 0.5), fontsize=8,
                         color='dimgray', rotation=90, va='center', ha='right')
 
-        # Expected trace (dashed): rise -> plateau (to t_first) -> release -> baseline.
+        # Expected trace (dashed): ideal shock step -> plateau (to t_first) ->
+        # release -> baseline. The plateau HEIGHT is the measured
+        # peak (u_p=u_fs/2 back-calc feeds V), so height agreement with the data
+        # is circular and carries no information -- only the TIMING is predictive.
+        # Label says so (review Sec. 9); use a gun-measured V for an independent
+        # height.
         m = (t >= x0) & (t <= x1)
-        label = (f"Expected trace (back-calc V≈{tim.V:.0f} m/s, "
-                 f"t_first≈{tim.plateau_duration_ns:.0f} ns, {tim.regime})")
+        label = (f"Expected timing (height=measured peak; "
+                 f"t_first≈{tim.plateau_duration_ns:.0f} ns, {tim.regime}; "
+                 f"V≈{tim.V:.0f} m/s back-calc)")
         if np.any(m):
             ax.plot(t[m], v[m], color='green', linestyle='--', linewidth=1.6,
                     alpha=0.9, label=label, zorder=5)
@@ -1829,22 +1908,47 @@ class AnalysisThread(QThread):
             ax.annotate('t_first', xy=(tau, tim.u_fs_peak), fontsize=8, color='green',
                         rotation=90, va='top', ha='right')
 
-        # Target free-surface reverberation P_t (case_B: recompression; case_A: diagnostic).
+        # Target recompression P_t. ONLY drawn in case_B, where an isolated
+        # recompression series n*P_t is physically valid. In case_A (interacting
+        # releases) the n*P_t construction is invalid, so no marker is drawn --
+        # a diagnostic line there sits between real trace features and invites
+        # misattribution (review, derivation Sec. 7.2).
         p_t = tim.target_round_trip_ns
-        if p_t is not None and x0 <= p_t <= x1:
-            is_recomp = bool(tim.recompression_times_ns)
-            col = 'darkviolet'
-            kind = 'recompression' if is_recomp else 'reverberation (diag.)'
-            ax.axvline(p_t, color=col, linestyle='-.', linewidth=2.0, alpha=0.9, zorder=6,
-                       label=f'Target {kind}  P_t≈{p_t:.0f} ns')
-            ax.annotate(f'P_t≈{p_t:.0f} ns', xy=(p_t, tim.u_fs_peak * 0.92),
-                        xytext=(3, 0), textcoords='offset points', fontsize=8,
-                        color=col, fontweight='bold', rotation=90, va='top', ha='left')
+        if p_t is not None and tim.recompression_times_ns:
+            p_t_abs = p_t
+            if x0 <= p_t_abs <= x1:
+                col = 'darkviolet'
+                ax.axvline(p_t_abs, color=col, linestyle='-.', linewidth=2.0, alpha=0.9, zorder=6,
+                           label=f'Target recompression  P_t≈{p_t:.0f} ns')
+                ax.annotate(f'P_t≈{p_t:.0f} ns', xy=(p_t_abs, tim.u_fs_peak * 0.92),
+                            xytext=(3, 0), textcoords='offset points', fontsize=8,
+                            color=col, fontweight='bold', rotation=90, va='top', ha='left')
 
         # Further recompression instants n*P_t (case_B only), n>=2.
         for t_rc in tim.recompression_times_ns[1:]:
-            if x0 <= t_rc <= x1:
-                ax.axvline(t_rc, color='darkviolet', linestyle=':', linewidth=1.2, alpha=0.5, zorder=5)
+            t_rc_abs = t_rc
+            if x0 <= t_rc_abs <= x1:
+                ax.axvline(t_rc_abs, color='darkviolet', linestyle=':', linewidth=1.2, alpha=0.5, zorder=5)
+
+        # Interface reverberation recompression (all regimes): the free-surface
+        # release rarefaction goes DOWN to the flyer interface at cH_t, reflects,
+        # and returns UP at the bulk C0_t to reload the free surface -- the origin
+        # of the observed recompression bump after the pullback. Drawn as a teal
+        # marker; further reverberations (period 2 h_t/C0_t) are faint ticks.
+        t_rc_i = tim.interface_recompression_ns
+        if t_rc_i is not None and np.isfinite(t_rc_i):
+            t_rc_i_abs = t_rc_i
+            if x0 <= t_rc_i_abs <= x1:
+                col_i = 'teal'
+                ax.axvline(t_rc_i_abs, color=col_i, linestyle='-.', linewidth=1.8, alpha=0.9, zorder=6,
+                           label=f'Interface recompression  ≈{t_rc_i:.0f} ns')
+                ax.annotate(f'recomp≈{t_rc_i:.0f} ns', xy=(t_rc_i_abs, tim.u_fs_peak * 0.72),
+                            xytext=(3, 0), textcoords='offset points', fontsize=8,
+                            color=col_i, fontweight='bold', rotation=90, va='top', ha='left')
+            for t_rc in tim.interface_recompression_times_ns[1:]:
+                t_rc_abs = t_rc
+                if x0 <= t_rc_abs <= x1:
+                    ax.axvline(t_rc_abs, color=col_i, linestyle=':', linewidth=1.0, alpha=0.45, zorder=5)
 
     def _overlay_hybrid_segments(self, ax, time_window, lines_info, intersections):
         """Overlay 5-segment hybrid model lines and key points on the velocity plot.
