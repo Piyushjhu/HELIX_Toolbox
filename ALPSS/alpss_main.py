@@ -2513,11 +2513,11 @@ def velocity_calculation(
     # Crop the time array.
     time_f = time[time_start_idx:time_end_idx]
 
-    # Explicitly zero the velocity baseline from pre-trigger data.  The final
-    # part of the pre-trigger window can already contain a weak precursor or an
-    # onset-timing error, so exclude it with a guard interval.  The same scalar
-    # is removed from the padded array, keeping the raw, smoothed, and saved
-    # traces on one calibrated velocity reference.
+    # Explicitly zero the velocity baseline from pre-trigger data.  Use the
+    # earliest half of the user-selected pre-trigger duration (t_before), and
+    # reserve its latter half as a guard against a weak precursor or an
+    # onset-timing error.  The same scalar is removed from the padded array,
+    # keeping the raw, smoothed, and saved traces on one calibrated reference.
     baseline_enabled = inputs.get("zero_pretrigger_velocity", True)
     if isinstance(baseline_enabled, str):
         baseline_enabled = baseline_enabled.strip().lower() in {"1", "true", "yes", "on"}
@@ -2530,7 +2530,8 @@ def velocity_calculation(
 
     if baseline_enabled:
         try:
-            guard_ns = max(0.0, float(inputs.get("pretrigger_baseline_guard_ns", 10.0)))
+            pretrigger_duration_ns = max(0.0, float(inputs.get("t_before", 0.0)) * 1e9)
+            guard_ns = 0.5 * pretrigger_duration_ns
             min_samples = max(1, int(inputs.get("pretrigger_baseline_min_samples", 20)))
             baseline_method = str(inputs.get("pretrigger_baseline_method", "median")).strip().lower()
             if baseline_method not in {"median", "mean"}:

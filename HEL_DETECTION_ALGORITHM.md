@@ -2,11 +2,11 @@
 
 ## Overview
 
-The HEL detection algorithm identifies the Hugoniot Elastic Limit in velocity-time traces from PDV (Photonic Doppler Velocimetry) data. The algorithm uses a **RDP+Linear Hybrid Method** that combines geometric simplification (Ramer-Douglas-Peucker algorithm) with linear regression on raw data to robustly detect the elastic-plastic transition.
+The HEL detection algorithm identifies the Hugoniot Elastic Limit in velocity-time traces from PDV (Photonic Doppler Velocimetry) data. The algorithm uses a **RDP+Linear Hybrid Method** that applies a configurable Savitzky-Golay filter once to the HEL window (6 ns by default), then combines geometric simplification (Ramer-Douglas-Peucker algorithm) with linear regression on the filtered input samples to robustly detect the elastic-plastic transition.
 
 **Key Innovation**: Instead of relying on gradient-based detection (which is sensitive to noise), the algorithm:
 1. Uses RDP to identify candidate "knee" points (geometric simplification)
-2. Performs linear regression on **raw data segments** to verify slopes
+2. Performs linear regression on filtered input segments to verify slopes
 3. Validates physics-based criteria (rise must be positive, plateau must be significantly flatter)
 
 This approach is more robust to noise and handles ramping plateaus correctly.
@@ -71,20 +71,35 @@ This approach is more robust to noise and handles ramping plateaus correctly.
 
 ---
 
-### Step 3 & 4: RDP+Linear Hybrid HEL Detection
+### Step 3: HEL Pre-Detection Filter
+
+**Purpose**: Remove small noise fluctuations before the RDP+Linear detector sees the HEL window.
+
+**Process**:
+1. Convert `hel_savgol_window_ns` from physical nanoseconds to an odd number of samples using the median HEL-window time spacing.
+2. Apply `savgol_filter` exactly once when the window is positive, using `hel_savgol_polyorder` (default `3`).
+3. Set `hel_savgol_window_ns: 0` to pass the ALPSS trace through unchanged.
+
+This filter is independent of `spall_smoothing_sigma_ns`. It changes only the HEL-window detection input; the full-trace plot remains the ALPSS output.
+
+---
+
+### Step 4 & 5: RDP+Linear Hybrid HEL Detection
 
 **Purpose**: Detect the elastic-plastic transition using geometric simplification (RDP) and linear regression verification.
 
 **Overview**: This is a two-stage approach:
 - **Stage 1 (RDP - The Scout)**: Use Ramer-Douglas-Peucker algorithm to simplify the velocity trace and identify candidate "knee" points
-- **Stage 2 (Linear Regression - The Verifier)**: Extract raw data segments around candidate knees, fit lines, and verify physics-based criteria
+- **Stage 2 (Linear Regression - The Verifier)**: Extract filtered input segments around candidate knees, fit lines, and verify physics-based criteria
 
 **Parameters** (from config):
+- `hel_savgol_window_ns`: Savitzky-Golay window applied once before detection (default: 6.0 ns; `0` disables it)
+- `hel_savgol_polyorder`: Savitzky-Golay polynomial order (default: 3)
 - `hel_rdp_epsilon`: RDP tolerance (default: 3.0 m/s)
 - `hel_slope_drop_ratio`: Minimum slope drop ratio (default: 0.2)
 - `hel_min_plateau_duration`: Minimum plateau duration (default: 2.0 ns)
 
-#### Step 3.1: RDP Simplification (The Scout)
+#### Step 4.1: RDP Simplification (The Scout)
 
 **Process**:
 1. Apply Ramer-Douglas-Peucker algorithm to the velocity trace:
@@ -104,7 +119,7 @@ This approach is more robust to noise and handles ramping plateaus correctly.
 
 **Code Location**: Lines 6275-6279, Function `ramer_douglas_peucker_indices()` (lines 6136-6210)
 
-#### Step 3.2: Candidate Segment Iteration
+#### Step 4.2: Candidate Segment Iteration
 
 **Process**:
 1. Iterate through RDP vertices in groups of three: `(start, knee, end)`
@@ -115,10 +130,10 @@ This approach is more robust to noise and handles ramping plateaus correctly.
 
 **Code Location**: Lines 6288-6292
 
-#### Step 3.3: Extract Raw Data Segments
+#### Step 4.3: Extract Filtered Input Segments
 
 **Process**:
-1. Extract **raw data** (not RDP simplified) for each segment:
+1. Extract the filtered detector input (not RDP simplified) for each segment:
    ```python
    # Rise segment: from start to knee
    t_rise = time[idx_start : idx_knee + 1]
@@ -129,14 +144,14 @@ This approach is more robust to noise and handles ramping plateaus correctly.
    v_plat = velocity[idx_knee : idx_end + 1]
    ```
 
-**Why Raw Data?**: 
+**Why Input Samples Rather Than RDP Vertices?**:
 - RDP simplification introduces errors based on `epsilon`
-- Linear regression on raw data gives accurate slopes without RDP artifacts
-- This is the "hybrid" aspect: RDP finds candidates, raw data verifies them
+- Linear regression on the once-filtered input gives slopes without RDP artifacts
+- This is the "hybrid" aspect: RDP finds candidates, input samples verify them
 
 **Code Location**: Lines 6294-6301
 
-#### Step 3.4: Duration Check (Fast Filter)
+#### Step 4.4: Duration Check (Fast Filter)
 
 **Process**:
 1. Calculate plateau duration: `duration_plat = t_plat[-1] - t_plat[0]`
@@ -145,7 +160,7 @@ This approach is more robust to noise and handles ramping plateaus correctly.
 
 **Code Location**: Lines 6303-6308
 
-#### Step 3.5: Linear Regression on Raw Data (The Verifier)
+#### Step 4.5: Linear Regression on Filtered Input (The Verifier)
 
 **Process**:
 1. Fit linear models to both segments using `np.polyfit`:
@@ -163,7 +178,7 @@ This approach is more robust to noise and handles ramping plateaus correctly.
 
 **Code Location**: Lines 6310-6324
 
-#### Step 3.6: Physics-Based Verification
+#### Step 4.6: Physics-Based Verification
 
 **Validation Rules**:
 
@@ -186,22 +201,22 @@ This approach is more robust to noise and handles ramping plateaus correctly.
 
 **Why This Works**:
 - RDP identifies geometric "knees" (candidate transitions)
-- Linear regression on raw data gives accurate slopes
+- Linear regression on the filtered input gives accurate slopes without RDP artifacts
 - Physics rules ensure we detect the correct transition (elastic → plastic)
 - Works for both flat and ramping plateaus
 
 **Code Location**: Lines 6326-6336
 
-#### Step 3.7: HEL Detection Success
+#### Step 4.7: HEL Detection Success
 
 **Process**:
 1. If all validation rules pass, HEL is detected
-2. Calculate mean plateau velocity from raw data: `mean_plateau_velocity = np.mean(v_plat)`
+2. Calculate mean plateau velocity from the filtered input: `mean_plateau_velocity = np.mean(v_plat)`
 3. Store detection results:
    - `hel_time_detection = time[idx_knee]` (RDP knee point time)
    - `free_surface_velocity = mean_plateau_velocity` (mean of raw plateau data)
    - `rise_slope`, `plateau_slope`, `rise_intercept`, `plateau_intercept` (for plotting)
-   - `t_rise`, `v_rise`, `t_plat`, `v_plat` (raw data segments for plotting)
+   - `t_rise`, `v_rise`, `t_plat`, `v_plat` (filtered input segments for plotting)
    - `rdp_points` (RDP simplified points for plotting)
 
 **Code Location**: Lines 6338-6362
@@ -304,6 +319,8 @@ All parameters are defined in `helix_master_config.json` under the `spade_params
 | `experiment_hel_detection` | `false` | Alternative flag for HEL detection |
 | `hel_start_time_ns` | `0.0` | Start of HEL detection window (ns, relative to t=0) |
 | `hel_end_time_ns` | `25.0` | End of HEL detection window (ns, relative to t=0) |
+| `hel_savgol_window_ns` | `6.0` | Savitzky-Golay window applied once to the HEL window before RDP+Linear detection (ns; `0` disables it) |
+| `hel_savgol_polyorder` | `3` | Savitzky-Golay polynomial order |
 | `hel_rdp_epsilon` | `3.0` | RDP tolerance (m/s) - controls simplification level |
 | `hel_slope_drop_ratio` | `0.2` | Minimum slope drop ratio - plateau must be < 20% of rise slope |
 | `hel_min_plateau_duration` | `2.0` | Minimum plateau duration (ns) - filters short features |
@@ -316,6 +333,11 @@ All parameters are defined in `helix_master_config.json` under the `spade_params
 - **Too high** (e.g., > 10 m/s): May miss subtle transitions, too much simplification
 - **Too low** (e.g., < 1 m/s): May include noise, too many vertices
 - **Recommended**: 2.0 - 5.0 m/s for most materials
+
+**`hel_savgol_window_ns` (ns)**:
+- **0**: Disable the second filter and use the ALPSS trace as-is
+- **Too high**: Rounds the elastic-plastic knee and can bias its timing or velocity
+- **Recommended**: Start at the default 6.0 ns, then reduce it for narrow features
 
 **`hel_slope_drop_ratio` (dimensionless)**:
 - **Too high** (e.g., > 0.5): Allows plateaus with high slopes, may detect false positives
@@ -347,8 +369,8 @@ All parameters are defined in `helix_master_config.json` under the `spade_params
 - `plateau_slope`: Linear fit slope of plateau segment (m/s per ns)
 - `rise_intercept`: Linear fit intercept of rise segment (m/s)
 - `plateau_intercept`: Linear fit intercept of plateau segment (m/s)
-- `t_rise`, `v_rise`: Raw data points for rise segment
-- `t_plat`, `v_plat`: Raw data points for plateau segment
+- `t_rise`, `v_rise`: Filtered input points for rise segment
+- `t_plat`, `v_plat`: Filtered input points for plateau segment
 
 ### Time Alignment:
 - `hel_t0`: Time zero point (ns, original time scale)
@@ -368,31 +390,34 @@ All parameters are defined in `helix_master_config.json` under the `spade_params
    └─> Filter by relative uncertainty (< 100%)
        └─> Extract HEL window
 
-3. RDP Simplification (The Scout)
+3. HEL Pre-Detection Filter
+   └─> Apply Savitzky-Golay once using hel_savgol_window_ns
+
+4. RDP Simplification (The Scout)
    └─> Apply Ramer-Douglas-Peucker algorithm
        └─> Get simplified vertices (candidate knees)
            └─> Extract RDP points for visualization
 
-4. Candidate Iteration
+5. Candidate Iteration
    └─> For each (start, knee, end) triplet:
-       ├─> Extract raw data segments (rise, plateau)
+       ├─> Extract filtered input segments (rise, plateau)
        ├─> Check minimum plateau duration
-       ├─> Fit linear models to raw data
+       ├─> Fit linear models to filtered input
        ├─> Verify: rise slope > 0
        └─> Verify: plateau slope < (rise_slope × drop_ratio)
            └─> If all pass: HEL detected!
 
-5. HEL Strength Calculation
+6. HEL Strength Calculation
    └─> σ_HEL = 0.5 × ρ × c × |U_HEL| / 1e9
 
-6. Validation
+7. Validation
    └─> Check minimum velocity threshold
        └─> Calculate strain rate
            └─> Reject if strain rate < 0
 
-7. Output
+8. Output
    └─> Save results and generate plots (if enabled)
-       └─> Plot includes: RDP simplified line, RDP vertices, raw data segments, linear fits
+       └─> Plot includes: RDP simplified line, RDP vertices, filtered input segments, linear fits
 ```
 
 ---
@@ -412,9 +437,9 @@ When `plot_individual = true`, the HEL plots show:
 - **Red line**: RDP simplified line (geometric simplification)
 - **Red circles**: RDP vertices (key points from simplification)
 - **Green star**: HEL detection point (if detected)
-- **Cyan dots**: Raw data points for rise segment
+- **Cyan dots**: Filtered input points for rise segment
 - **Cyan dashed line**: Linear fit to rise segment with slope annotation
-- **Magenta dots**: Raw data points for plateau segment
+- **Magenta dots**: Filtered input points for plateau segment
 - **Magenta dashed line**: Linear fit to plateau segment with slope annotation
 - **"NO HEL" label**: Red box if HEL not detected
 
@@ -428,7 +453,7 @@ When `plot_individual = true`, the HEL plots show:
 ## Advantages of RDP+Linear Hybrid Method
 
 1. **Robust to Noise**: RDP simplification filters noise while preserving important features
-2. **Accurate Slopes**: Linear regression on raw data gives precise slopes without RDP artifacts
+2. **Accurate Slopes**: Linear regression on the filtered input gives precise slopes without RDP artifacts
 3. **Handles Ramping Plateaus**: Works for both flat and ramping plateaus (positive but small plateau slope)
 4. **Physics-Based**: Validation rules ensure correct elastic-plastic transition
 5. **Visualizable**: RDP points and linear fits can be plotted for verification

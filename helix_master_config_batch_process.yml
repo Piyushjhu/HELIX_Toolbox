@@ -117,18 +117,17 @@ alpss_config:
   time_to_take: 6.0e-06
 
   # Time window before the detected IQ start to include in the output (s).
-  t_before: 2.0e-08
+  # Velocity zeroing uses its earliest half; the latter half is the guard.
+  t_before: 1.0e-07
 
   # Time window after the detected IQ start to include in the output (s).
   t_after: 2.0e-07
 
   # ── Velocity baseline calibration ──────────────────────────────────────────
-  # Subtract the robust pre-trigger baseline before smoothing/saving.  Exclude
-  # the final 10 ns before t=0 to protect the estimate from onset-timing error
-  # or a weak precursor rise.
+  # Subtract the robust early pre-trigger baseline before smoothing/saving.
+  # The baseline and guard are each half of the user-selected t_before window.
   zero_pretrigger_velocity: true
   pretrigger_baseline_method: "median"   # median (robust) | mean
-  pretrigger_baseline_guard_ns: 10.0
   pretrigger_baseline_min_samples: 20
 
   # ── IQ (signal-onset) detection ─────────────────────────────────────────────
@@ -262,6 +261,13 @@ spade_config:
   hel_start_time_ns: 0
   hel_end_time_ns: 15
 
+  # Savitzky-Golay smoothing applied ONCE to the HEL analysis window before the
+  # RDP+Linear detection algorithm. Separate from ALPSS smoothing and from the
+  # spall-only filter below. The physical window is in real ns and therefore
+  # sample-rate independent; set it to 0 to use the ALPSS trace as-is.
+  hel_savgol_window_ns: 6.0
+  hel_savgol_polyorder: 3
+
   # Legacy gradient-angle threshold (degrees) — fallback only.
   hel_angle_threshold_deg: 86.0
 
@@ -304,10 +310,12 @@ spade_config:
   # Signal duration to consider; "Full Signal (None)" = use the full trace.
   signal_length: "Full Signal (None)"
 
-  # ── Spall analysis window (ns, relative to aligned t=0) ──────────────────────
-  # Only data inside this window is searched for the spall signature.
+  # ── Spall display and analysis windows (ns, relative to aligned t=0) ─────────
+  # Individual spall plots display [-spall_pre_time_ns, spall_end_time_ns].
+  # Only [spall_start_time_ns, spall_end_time_ns] is searched/fitted for spall.
+  spall_pre_time_ns: 20.0
   spall_start_time_ns: 0.0
-  spall_end_time_ns: 80.0
+  spall_end_time_ns: 100.0
 
   # Velocity threshold (m/s) used to identify shock arrival (t=0 alignment).
   # Decrease if weak shocks are being missed; increase if noise triggers falsely.
@@ -318,8 +326,8 @@ spade_config:
   # ═══════════════════════════════════════════════════════════════════════════
   # Control how the pullback minimum (P3) and recompression peak (P4) are found,
   # and whether a trace counts as a real spall. Applied to the spall window
-  # only — HEL detection is NOT affected (it runs on the lightly-smoothed ALPSS
-  # Savitzky-Golay trace). Listed in the order the algorithm uses them.
+  # only; HEL detection has its own independent Savitzky-Golay filter above. Listed
+  # in the order the spall algorithm uses them.
 
   # ── 1. Smoothing (Gaussian, applied ONCE before detection) ───────────────────
   # A Gaussian kernel of this sigma (ns of REAL time, so it is independent of

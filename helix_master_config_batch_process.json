@@ -82,6 +82,8 @@
     "experiment_hel_detection": true,
     "hel_start_time_ns": 0,
     "hel_end_time_ns": 15,
+    "hel_savgol_window_ns": 6.0,
+    "hel_savgol_polyorder": 3,
     "hel_angle_threshold_deg": 86.0,
     "hel_detection_min_points": 5,
     "minimum_HEL_velocity_expected": 25.0,

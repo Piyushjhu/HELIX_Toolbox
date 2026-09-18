@@ -160,6 +160,8 @@ def build_param_spec():
              group="spade_spall", values=[2, 5, 8, 12, 20]),
 
         # ---- SPADE: HEL detection ----
+        dict(id="hel_savgol_window_ns", section="spade_config", keys=["hel_savgol_window_ns"],
+             group="spade_hel", values=[0.0, 2.0, 4.0, 6.0, 8.0, 10.0]),
         dict(id="hel_end_time_ns", section="spade_config", keys=["hel_end_time_ns"],
              group="spade_hel", values=[10, 15, 20, 30, 40]),
         dict(id="minimum_HEL_velocity_expected", section="spade_config", keys=["minimum_HEL_velocity_expected"],

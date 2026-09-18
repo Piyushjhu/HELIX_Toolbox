@@ -104,7 +104,7 @@ Both modes share identical analysis logic and produce the same outputs, from raw
 - **Consolidated data summary**: results now save to `<prefix>-Data_Summary.csv` (IGSN-prefixed from the parent folder of the output directory), replacing `enhanced_spall_summary.csv`
 - **Run traceability**: every run saves a `<prefix>-Run_Config.json` next to the summary CSV recording all ALPSS/SPADE parameters and material properties used
 - **First-local-minimum spall pullback (P3) detection**: prominence-based detection of the true pullback dip; traces with no qualifying valley, or with `P3 <= 0 m/s`, are classified DNS
-- **RDP + Linear Hybrid HEL detection**: Robust elastic-plastic transition detection using Ramer–Douglas–Peucker simplification combined with linear regression on raw segments (see [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md))
+- **RDP + Linear Hybrid HEL detection**: Robust elastic-plastic transition detection using a 6 ns Savitzky–Golay HEL-window filter, Ramer–Douglas–Peucker simplification, and linear regression on filtered input segments (see [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md))
 - **Horizontal-plateau 5-segment spall analysis**: Direct plateau → pullback → recompression qualification, with 5-segment fits for diagnostic plots and derived quantities
 - **Paper-quality plotting suite**: `helix_paper_plots.py` (library, used at runtime by the GUI) plus standalone post-processing scripts in [`supplementary/paper_plots/`](supplementary/paper_plots/)
 - **Robust IQ start-time detection**: New `use_robust_iq_detection` pipeline with configurable smoothing and persistence windows
@@ -553,6 +553,8 @@ The master config file (`helix_master_config.json`) contains three main sections
         "min_recomp_time_ns": 2.5,
         "hel_start_time_ns": 0,
         "hel_end_time_ns": 20,
+        "hel_savgol_window_ns": 6.0,
+        "hel_savgol_polyorder": 3,
         "minimum_HEL_velocity_expected": 40.0,
         "hel_detection_min_points": 10,
         "hel_rdp_epsilon": 1.25,
@@ -629,6 +631,8 @@ uses its internal P3-search defaults (`prominence_factor=0.01` and
 
 **HEL detection**
 - `hel_start_time_ns`, `hel_end_time_ns`: HEL analysis window (ns, relative to aligned t=0)
+- `hel_savgol_window_ns`: Savitzky–Golay window applied once inside the HEL window before RDP+Linear detection (ns; default `6.0`, set `0` to disable)
+- `hel_savgol_polyorder`: Savitzky–Golay polynomial order (default `3`)
 - `minimum_HEL_velocity_expected`: Minimum HEL velocity to accept (m/s)
 - `hel_detection_min_points`: Minimum consecutive raw-data points in the plateau segment
 - `hel_rdp_epsilon`: RDP simplification tolerance for knee detection (m/s)
@@ -976,7 +980,7 @@ When `save_all_plots: "subfolder"` is enabled, ALPSS creates a subfolder `{filen
 
 ## HEL Detection
 
-HEL (Hugoniot Elastic Limit) detection uses an **RDP + Linear Hybrid** method that combines geometric simplification with linear regression on raw data for a noise-robust detection of the elastic–plastic transition.
+HEL (Hugoniot Elastic Limit) detection uses an **RDP + Linear Hybrid** method that combines geometric simplification with linear regression on a once-filtered HEL-window trace for a noise-robust detection of the elastic–plastic transition.
 
 > **Full algorithm reference:** [HEL_DETECTION_ALGORITHM.md](HEL_DETECTION_ALGORITHM.md)
 
@@ -985,15 +989,16 @@ HEL (Hugoniot Elastic Limit) detection uses an **RDP + Linear Hybrid** method th
 1. **Time-Zero Alignment**: Find the first point where velocity > 0 and sustained/increasing over a configurable window to establish `t=0` (`hel_t0_method: "signal_start"`, with velocity-threshold fallback).
 2. **Uncertainty Filtering**: Exclude points where `relative_uncertainty >= 1.0`.
 3. **Window Extraction**: Clip data to `[hel_start_time_ns, hel_end_time_ns]`.
-4. **RDP Simplification**: Apply Ramer–Douglas–Peucker with `hel_rdp_epsilon` to extract candidate knee points.
-5. **Linear Regression on Raw Segments**: For each candidate knee, fit linear regressions to the rise segment (before the knee) and plateau segment (after the knee) using the **raw data**, not the RDP vertices.
-6. **Physics Validation**:
+4. **HEL Pre-Detection Filter**: Apply Savitzky–Golay once with a 6 ns `hel_savgol_window_ns` (in physical ns; set `0` to disable). The full plotted trace remains the ALPSS output.
+5. **RDP Simplification**: Apply Ramer–Douglas–Peucker with `hel_rdp_epsilon` to extract candidate knee points.
+6. **Linear Regression on Filtered Input Segments**: For each candidate knee, fit linear regressions to the rise segment (before the knee) and plateau segment (after the knee) using the filtered input samples, not the RDP vertices.
+7. **Physics Validation**:
    - Rise slope must be positive and significantly larger than plateau slope (`hel_slope_drop_ratio`, default 0.9 → plateau slope < 10% of rise slope).
    - Plateau must last at least `hel_min_plateau_duration` ns.
    - Detected velocity must exceed `minimum_HEL_velocity_expected`.
    - Elastic strain rate must be positive.
-7. **HEL Plateau Velocity**: Mean velocity of the validated plateau segment.
-8. **HEL Strength**: `σ_HEL = 0.5 × ρ × c_b × |free_surface_velocity| / 1e9` (GPa)
+8. **HEL Plateau Velocity**: Mean velocity of the validated plateau segment.
+9. **HEL Strength**: `σ_HEL = 0.5 × ρ × c_b × |free_surface_velocity| / 1e9` (GPa)
 
 ### Elastic Shock Strain Rate
 
@@ -1011,6 +1016,8 @@ In `spade_config`:
     "experiment_hel_detection": true,
     "hel_start_time_ns": 0,
     "hel_end_time_ns": 20,
+    "hel_savgol_window_ns": 6.0,
+    "hel_savgol_polyorder": 3,
     "minimum_HEL_velocity_expected": 40.0,
     "hel_detection_min_points": 10,
     "hel_rdp_epsilon": 1.25,

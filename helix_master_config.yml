@@ -30,8 +30,7 @@ cli_settings:
   # *** EDIT THIS *** — replace with the absolute path to your raw PDV data folder.
   # Example (macOS/Linux): /Users/you/experiments/shot_2026_04/raw_csv
   # Example (Windows):     C:/Users/you/experiments/shot_2026_04/raw_csv
-  input_dir: /path/to/your/raw_pdv_data
-
+  input_dir: /Users/piyushwanchoo/Documents/Post_Doc/Papers_at_JHU/Al-Mg/Test-outputs/pdv_trace
   # Explicit list of files to process.  Set to null to use input_dir + input_pattern.
   # Example:  input_files: [file1.csv, file2.csv]
   input_files: null
@@ -43,14 +42,14 @@ cli_settings:
   #   <output_dir>/ALPSS_output/   → ALPSS results
   #   <output_dir>/SPADE_analysis/ → SPADE results and plots
   # *** EDIT THIS *** — replace with the absolute path where you want results saved.
-  output_dir: /path/to/your/output
+  output_dir: /Users/piyushwanchoo/Documents/Post_Doc/Papers_at_JHU/Al-Mg/Test-outputs/Output
 
   # Folder containing experiment parameter files (CSV/Excel).
   # Must have a column matching PDV filenames so metadata (material, laser
   # energy, waveplate angle, row/column …) is attached to each trace.
   # Set to null to skip parameter enrichment.
   # *** EDIT THIS *** — replace with your parameter folder, or set to: null
-  param_folder: /path/to/your/parameters
+  param_folder: /Users/piyushwanchoo/Documents/Post_Doc/Papers_at_JHU/Al-Mg/Test-outputs/Parameters
 
   # Analysis mode:
   #   both       — run ALPSS then SPADE (full pipeline, default)
@@ -107,19 +106,18 @@ alpss_config:
   # Time window before the detected IQ start to include in the output (s).
   # NOTE: this must be large enough to include FLAT baseline ahead of the elastic
   # precursor, or HEL t=0 (foot-of-rise) detection has nothing to anchor to.
-  # 2.0e-08 (20 ns) was too tight — the whole pre-window was already the precursor rise.
-  t_before: 2.0e-08
+  # Velocity zeroing uses the earliest half of this interval and reserves the
+  # latter half as its guard. At 100 ns, the baseline is -100 to -50 ns.
+  t_before: 1.0e-07
 
   # Time window after the detected IQ start to include in the output (s).
   t_after: 0.5e-06
 
   # ── Velocity baseline calibration ──────────────────────────────────────────
-  # Subtract the robust pre-trigger baseline before smoothing/saving.  Exclude
-  # the final 10 ns before t=0 to protect the estimate from onset-timing error
-  # or a weak precursor rise.
+  # Subtract the robust early pre-trigger baseline before smoothing/saving.
+  # The baseline and guard are each half of the user-selected t_before window.
   zero_pretrigger_velocity: true
   pretrigger_baseline_method: "median"   # median (robust) | mean
-  pretrigger_baseline_guard_ns: 10.0
   pretrigger_baseline_min_samples: 20
 
   # ── IQ (signal-onset) detection ─────────────────────────────────────────────
@@ -161,7 +159,7 @@ alpss_config:
 
   # Window length in nanoseconds (takes precedence over smoothing_window if set).
   # The code converts this to samples using sample_rate.  Recommended: 5–10 ns.
-  smoothing_window_ns: 10
+  smoothing_window_ns: 1
 
   # Window length in samples (used only when smoothing_window_ns is null).
   smoothing_window: null
@@ -237,10 +235,12 @@ spade_config:
   # recorded as "Mat not found" in the summary CSVs instead of being computed
   # with a guessed density/velocity.
 
-  # ── Spall analysis window (ns, relative to aligned t=0) ──────────────────────
-  # Only data inside this window is searched for the spall signature.
+  # ── Spall display and analysis windows (ns, relative to aligned t=0) ─────────
+  # Individual spall plots display [-spall_pre_time_ns, spall_end_time_ns].
+  # Only [spall_start_time_ns, spall_end_time_ns] is searched/fitted for spall.
+  spall_pre_time_ns: 20.0
   spall_start_time_ns: 0.0
-  spall_end_time_ns: 100.0
+  spall_end_time_ns: 300.0
 
   # Velocity threshold (m/s) used to identify shock arrival (t=0 alignment).
   # Decrease if weak shocks are being missed; increase if noise triggers falsely.
@@ -255,12 +255,13 @@ spade_config:
   # ═══════════════════════════════════════════════════════════════════════════
   # Control how the pullback minimum (P3) and recompression peak (P4) are found,
   # and whether a trace counts as a real spall. Applied to the spall window
-  # only — HEL detection is NOT affected (it runs on the lightly-smoothed ALPSS
-  # Savitzky-Golay trace). Listed in the order the algorithm uses them.
+  # only. HEL detection has its own independent Savitzky-Golay filter below. Listed
+  # in the order the spall algorithm uses them.
 
   # ── 1. Smoothing (Gaussian, applied ONCE before detection) ───────────────────
-  # SCOPE: this Gaussian is applied to the SPALL trace ONLY. HEL detection and
-  # the plotted trace use the ALPSS Savitzky-Golay output as-is (no extra filter).
+  # SCOPE: this Gaussian is applied to the SPALL trace ONLY. HEL detection uses
+  # its separate hel_savgol_window_ns filter below; the full plotted trace
+  # always keeps the ALPSS Savitzky-Golay output as-is.
   # NOTE: the input trace is ALREADY Savitzky-Golay smoothed by ALPSS, so this is
   # a deliberate SECOND filter on the spall path — kept because spall feature
   # detection needs a broader kernel than Sav-Gol leaves. (Future versions will
@@ -273,7 +274,7 @@ spade_config:
   # valley width). Set 0 to run on the ALPSS trace as-is.
   #   Example: 128 GS/s Ti, ~4-5 ns plateau -> sigma 1.0-1.5 ns (FWHM 2.4-3.5 ns).
   #   Raise toward 3 ns only for very noisy, broad-feature traces.
-  spall_smoothing_sigma_ns: 1.0
+  spall_smoothing_sigma_ns: 1.5
 
   # ── 2. Valley detection: prominence ──────────────────────────────────────────
   # How deep a velocity dip must be — as a FRACTION of the plateau velocity — to
@@ -338,6 +339,14 @@ spade_config:
   # Time window (ns, relative to t=0) searched for the elastic precursor plateau.
   hel_start_time_ns: 0
   hel_end_time_ns: 20
+
+  # Savitzky-Golay smoothing applied ONCE to the HEL analysis window before the
+  # RDP+Linear detection algorithm. This is separate from ALPSS smoothing and
+  # spall_smoothing_sigma_ns. The physical window is in real ns, so it is
+  # independent of sample rate. Set the window to 0 to use the ALPSS trace
+  # as-is. The default 6 ns / cubic fit preserves the elastic-plastic knee.
+  hel_savgol_window_ns: 6.0
+  hel_savgol_polyorder: 3
 
   # Minimum plateau velocity to accept as a valid HEL (m/s).
   # Increase if spurious low-velocity detections occur.

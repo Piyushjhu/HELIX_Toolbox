@@ -1305,15 +1305,21 @@ class AnalysisThread(QThread):
             vel_window = vel_clean[window_mask]
             uncert_window = uncertainty[window_mask]
 
-            # Keep the spall-fitting window unchanged, but retain ALPSS's
-            # configured pre-trigger baseline for the individual spall plot.
-            # t_before is stored in seconds; plot times are aligned nanoseconds.
+            # Keep the spall-fitting window unchanged, but show a separate,
+            # explicitly configured pre-trigger span on individual spall plots.
+            # This display-only range never changes detection or fitting.
             try:
-                plot_t_before_ns = max(0.0, float(self.alpss_params.get('t_before', 0.0)) * 1e9)
+                plot_pre_time_ns = max(
+                    0.0,
+                    float(spade_kwargs.get(
+                        'spall_pre_time_ns',
+                        self.spade_params.get('spall_pre_time_ns', 20.0),
+                    )),
+                )
             except (TypeError, ValueError):
-                plot_t_before_ns = 0.0
+                plot_pre_time_ns = 20.0
             plot_mask = ((~np.isnan(vel_clean)) &
-                         (t_aligned_ns >= -plot_t_before_ns) &
+                         (t_aligned_ns >= -plot_pre_time_ns) &
                          (t_aligned_ns <= spall_end_time))
             if np.any(plot_mask):
                 time_plot = t_aligned_ns[plot_mask]
@@ -1637,10 +1643,8 @@ class AnalysisThread(QThread):
                     # marker, directly to the experimental trace's aligned t=0.
                     # Do not register the model to P1 or the measured trace apex:
                     # those are post-shot feature locations, not model inputs.
-                    _t_start = float(np.nanmin(time_plot)) if len(time_plot) else 0.0
-                    if not np.isfinite(_t_start):
-                        _t_start = 0.0
-                    _t_end = float(np.nanmax(time_window)) if len(time_window) else None
+                    _t_start = -plot_pre_time_ns
+                    _t_end = float(spall_end_time)
                     _tp, _vp = build_idealized_profile(
                         _tim,
                         t_anchor_ns=0.0,
@@ -1694,6 +1698,7 @@ class AnalysisThread(QThread):
                         display_time=time_plot,
                         display_velocity=vel_plot,
                         display_uncertainty=uncert_plot,
+                        display_x_limits=(-plot_pre_time_ns, float(spall_end_time)),
                     )
                     # Verify plot was actually created
                     if os.path.exists(effective_plot_path):
@@ -1724,13 +1729,15 @@ class AnalysisThread(QThread):
                                      analysis_model='max_min', lines_info=None, intersections=None,
                                      vel_smooth=None, predicted_overlay=None,
                                      display_time=None, display_velocity=None,
-                                     display_uncertainty=None):
+                                     display_uncertainty=None, display_x_limits=None):
         """Generate generic spall analysis plot for any analysis model.
 
         vel_smooth, when given, is the Gaussian-smoothed trace the spall
         detection actually ran on; it is overlaid only over the fitting window.
         The optional display arrays may include the configured ALPSS pre-trigger
         baseline and affect plotting only, never spall detection or fitting.
+        display_x_limits, when supplied, fixes the individual plot to the
+        configured display interval.
         """
         try:
             import matplotlib.pyplot as plt
@@ -1838,6 +1845,15 @@ class AnalysisThread(QThread):
                 )
             
             plt.tight_layout()
+            # Apply the configured display interval after layout.  Matplotlib's
+            # layout pass can restore an autoscaled x-range otherwise.
+            if display_x_limits is not None:
+                try:
+                    x_min, x_max = map(float, display_x_limits)
+                    if np.isfinite(x_min) and np.isfinite(x_max) and x_min < x_max:
+                        ax.set_xlim(x_min, x_max)
+                except (TypeError, ValueError):
+                    pass
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             plt.close(fig)
             self.progress_signal.emit(f"  Saved spall plot: {os.path.basename(plot_path)}")
@@ -3454,6 +3470,7 @@ class AnalysisThread(QThread):
                 if hel_detection_enabled:
                     try:
                         from scipy.ndimage import uniform_filter1d
+                        from scipy.signal import savgol_filter
                         
                         hel_start = self.spade_params.get('hel_start_time_ns', 0.0)
                         hel_end = self.spade_params.get('hel_end_time_ns', None)
@@ -3466,7 +3483,8 @@ class AnalysisThread(QThread):
                         hel_msg = (f"  [HEL] Using RDP+Linear hybrid method: time window=[{hel_start:.1f}, {hel_end if hel_end is not None else 'None'}] ns "
                                   f"(aligned via t0_method='{t0_method_msg}'), min_velocity={min_hel_velocity:.1f} m/s, "
                                   f"rdp_epsilon={hel_rdp_epsilon:.1f} m/s, slope_drop_ratio={hel_slope_drop_ratio:.2f}, "
-                                  f"min_plateau_duration={hel_min_plateau_duration:.1f} ns")
+                                  f"min_plateau_duration={hel_min_plateau_duration:.1f} ns, "
+                                  f"savgol_window={float(self.spade_params.get('hel_savgol_window_ns', 6.0)):.1f} ns")
                         self.progress_signal.emit(hel_msg)
                         print(hel_msg)  # Also print to terminal
                         
@@ -3498,6 +3516,57 @@ class AnalysisThread(QThread):
                             hel_time_window = hel_time_clean[search_mask]
                             hel_velocity_window = hel_velocity_clean[search_mask]
                             hel_unc_window = hel_unc_clean[search_mask]
+
+                            # Apply the HEL-specific Savitzky-Golay filter exactly once
+                            # before RDP+Linear detection. This keeps the HEL filter
+                            # separate from the Gaussian spall path while preserving the
+                            # sharp elastic-plastic knee. The full trace remains the
+                            # ALPSS output; only this HEL analysis window is filtered.
+                            # The window is in physical ns, so behavior is independent of
+                            # oscilloscope sample rate. Set it to 0 to use the ALPSS
+                            # trace as-is.
+                            hel_savgol_window_ns = float(
+                                self.spade_params.get('hel_savgol_window_ns', 6.0)
+                            )
+                            hel_savgol_polyorder = max(
+                                1, int(self.spade_params.get('hel_savgol_polyorder', 3))
+                            )
+                            hel_dt_ns = (
+                                float(np.median(np.diff(hel_time_window)))
+                                if len(hel_time_window) > 1 else 0.0
+                            )
+                            hel_velocity_window = hel_velocity_window.astype(float)
+                            if hel_savgol_window_ns > 0 and hel_dt_ns > 0:
+                                hel_window_samples = max(
+                                    hel_savgol_polyorder + 2,
+                                    int(round(hel_savgol_window_ns / hel_dt_ns)),
+                                )
+                                if hel_window_samples % 2 == 0:
+                                    hel_window_samples += 1
+                                max_window_samples = len(hel_velocity_window)
+                                if max_window_samples % 2 == 0:
+                                    max_window_samples -= 1
+                                if hel_window_samples <= max_window_samples:
+                                    hel_velocity_window = savgol_filter(
+                                        hel_velocity_window,
+                                        window_length=hel_window_samples,
+                                        polyorder=min(
+                                            hel_savgol_polyorder,
+                                            hel_window_samples - 1,
+                                        ),
+                                    )
+                                    self.progress_signal.emit(
+                                        f"  [HEL-SMOOTH] {base_name}: Savitzky-Golay "
+                                        f"window={hel_savgol_window_ns:.1f} ns "
+                                        f"({hel_window_samples} samples, "
+                                        f"polyorder={hel_savgol_polyorder}) applied before HEL detection"
+                                    )
+                                else:
+                                    self.progress_signal.emit(
+                                        f"  [HEL-SMOOTH] {base_name}: skipped Savitzky-Golay "
+                                        f"window ({hel_window_samples} samples requested, "
+                                        f"{len(hel_velocity_window)} available)"
+                                    )
                             
                             if len(hel_time_window) < 10:
                                 self.progress_signal.emit(f"HEL: Insufficient data points in window for {base_name}")
@@ -3562,7 +3631,8 @@ class AnalysisThread(QThread):
                                             f"Warning: Could not create HEL plot for {base_name}: {str(plot_error)[:50]}")
                             else:
                                 # Step 3 & 4: RDP+Linear Hybrid HEL Detection (Replaces gradient/angle method)
-                                # RDP identifies candidate segments, then linear regression on raw data verifies slopes
+                                # RDP identifies candidate segments, then linear regression
+                                # verifies slopes on the once-filtered HEL trace.
                                 # Prepare configuration for RDP detection
                                 rdp_config = {
                                     'hel_rdp_epsilon': self.spade_params.get('hel_rdp_epsilon', 3.0),
@@ -7909,7 +7979,7 @@ class AnalysisThread(QThread):
     def ramer_douglas_peucker_indices(self, time, velocity, epsilon):
         """
         Ramer-Douglas-Peucker algorithm that returns INDICES of simplified points.
-        This is used for the hybrid approach to map back to raw data.
+        This is used by the hybrid approach to map back to its input samples.
         
         Parameters
         ----------
@@ -8490,7 +8560,8 @@ class AnalysisThread(QThread):
         """
         Hybrid HEL Detection: RDP for segmentation (The Scout), Linear Regression for verification (The Verifier).
         
-        This approach uses RDP to identify candidate corners, then goes back to raw data
+        This approach uses RDP to identify candidate corners, then goes back to the
+        input samples
         to fit lines and verify slopes using linear regression. This eliminates errors
         introduced by RDP epsilon parameter and handles ramping plateaus robustly.
         
@@ -8587,7 +8658,7 @@ class AnalysisThread(QThread):
             idx_knee = int(rdp_indices[i + 1])   # Potential HEL point
             idx_end = int(rdp_indices[i + 2])
 
-            # Step 3: Extract raw data segments
+            # Step 3: Extract input-data segments
             t_rise = time[idx_start : idx_knee + 1]
             v_rise = velocity[idx_start : idx_knee + 1]
             t_plat = time[idx_knee : idx_end + 1]
@@ -8923,12 +8994,12 @@ class AnalysisThread(QThread):
                                fontsize=8, color='darkred', weight='bold',
                                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8, edgecolor='darkred', linewidth=1.5))
         
-        # Linear Regression Fits on Raw Data (Hybrid Method - RDP+Linear)
+        # Linear Regression Fits on the HEL Detection Input (Hybrid Method - RDP+Linear)
         if (t_rise is not None and v_rise is not None and len(t_rise) > 0 and 
             rise_slope_fit is not None and np.isfinite(rise_slope_fit)):
-            # Plot raw rise segment data points
+            # Plot the filtered rise-segment input samples
             ax2.plot(t_rise, v_rise, 'c.', markersize=4, alpha=0.5, 
-                    label='Rise Segment (raw)', zorder=2)
+                    label='Rise Segment (filtered)', zorder=2)
             
             # Plot linear fit on rise segment
             if len(t_rise) > 1:
@@ -8946,9 +9017,9 @@ class AnalysisThread(QThread):
         
         if (t_plat is not None and v_plat is not None and len(t_plat) > 0 and 
             plateau_slope_fit is not None and np.isfinite(plateau_slope_fit)):
-            # Plot raw plateau segment data points
+            # Plot the filtered plateau-segment input samples
             ax2.plot(t_plat, v_plat, 'm.', markersize=4, alpha=0.5, 
-                    label='Plateau Segment (raw)', zorder=2)
+                    label='Plateau Segment (filtered)', zorder=2)
             
             # Plot linear fit on plateau segment
             if len(t_plat) > 1:
@@ -8974,7 +9045,7 @@ class AnalysisThread(QThread):
             if hel_segment_end is not None and hel_segment_end < len(hel_time_clean):
                 plateau_end_time = hel_time_clean[hel_segment_end]
             elif t_plat is not None and len(t_plat) > 0:
-                # Use end of plateau raw data segment
+                # Use end of plateau input-data segment
                 plateau_end_time = t_plat[-1]
             else:
                 # Fallback: use hel_segment_end if available
@@ -9069,7 +9140,7 @@ class AnalysisThread(QThread):
             if hel_segment_end is not None and hel_segment_end < len(hel_time_clean):
                 plateau_end_time = hel_time_clean[hel_segment_end]
             elif t_plat is not None and len(t_plat) > 0:
-                # Use end of plateau raw data segment
+                # Use end of plateau input-data segment
                 plateau_end_time = t_plat[-1]
             else:
                 # Fallback: use hel_segment_end if available
@@ -9206,9 +9277,9 @@ class AnalysisThread(QThread):
                 else:
                     explanations.append('No candidate triplet found')
         
-        # Condition 2: Rise slope > 0 (from raw data fit)
+        # Condition 2: Rise slope > 0 (from input-data fit)
         if rise_slope_fit is not None and np.isfinite(rise_slope_fit):
-            conditions.append('Rise slope > 0 (from raw data fit)')
+            conditions.append('Rise slope > 0 (from input-data fit)')
             if rise_slope_fit > 0:
                 statuses.append('✓')
                 explanations.append(f'Rise slope: {rise_slope_fit:.2f} m/s/ns (positive)')
@@ -9216,7 +9287,7 @@ class AnalysisThread(QThread):
                 statuses.append('✗')
                 explanations.append(f'Rise slope: {rise_slope_fit:.2f} m/s/ns (not positive)')
         else:
-            conditions.append('Rise slope > 0 (from raw data fit)')
+            conditions.append('Rise slope > 0 (from input-data fit)')
             statuses.append('?')
             explanations.append('No candidate triplet found to test')
         
@@ -9246,7 +9317,7 @@ class AnalysisThread(QThread):
         # Get RDP segment duration (this is what we check)
         duration_rdp = duration_plat_rdp  # Use parameter passed to function
         
-        # Also get raw data duration for reference
+        # Also get input-data duration for reference
         duration_raw = None
         if t_plat is not None and len(t_plat) > 1:
             duration_raw = t_plat[-1] - t_plat[0]
@@ -9256,13 +9327,13 @@ class AnalysisThread(QThread):
             if duration_rdp >= min_plateau_duration:
                 statuses.append('✓')
                 if duration_raw is not None and np.isfinite(duration_raw):
-                    explanations.append(f'RDP segment: {duration_rdp:.2f} ns (raw data: {duration_raw:.2f} ns) - meets minimum')
+                    explanations.append(f'RDP segment: {duration_rdp:.2f} ns (input data: {duration_raw:.2f} ns) - meets minimum')
                 else:
                     explanations.append(f'RDP segment: {duration_rdp:.2f} ns (meets minimum)')
             else:
                 statuses.append('✗')
                 if duration_raw is not None and np.isfinite(duration_raw):
-                    explanations.append(f'RDP segment: {duration_rdp:.2f} ns < {min_plateau_duration:.1f} ns (raw data: {duration_raw:.2f} ns)')
+                    explanations.append(f'RDP segment: {duration_rdp:.2f} ns < {min_plateau_duration:.1f} ns (input data: {duration_raw:.2f} ns)')
                 else:
                     explanations.append(f'RDP segment: {duration_rdp:.2f} ns < {min_plateau_duration:.1f} ns (too short)')
         else:
@@ -14448,7 +14519,11 @@ class HELIXAnalysisToolbox(QMainWindow):
         time_layout.addWidget(QLabel("t_before (s):"), 1, 0)
         self.t_before = ScientificSpinBox()
         self.t_before.setRange(1e-12, 1e-6)
-        self.t_before.setValue(10e-9)
+        self.t_before.setValue(100e-9)
+        self.t_before.setToolTip(
+            "Pre-trigger duration retained by ALPSS. Velocity zeroing uses "
+            "the earliest half; the latter half is automatically guarded."
+        )
         time_layout.addWidget(self.t_before, 1, 1)
         
         time_layout.addWidget(QLabel("t_after (s):"), 1, 2)
@@ -15178,7 +15253,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.spall_start_time_ns = QDoubleSpinBox()
         self.spall_start_time_ns.setRange(-1000.0, 10000.0)
         self.spall_start_time_ns.setDecimals(2)
-        self.spall_start_time_ns.setValue(10.0)
+        self.spall_start_time_ns.setValue(0.0)
         self.spall_start_time_ns.setToolTip("Lower bound of the velocity window (relative to t=0) for spall fitting.")
         spall_layout.addWidget(self.spall_start_time_ns, 0, 1)
 
@@ -15197,6 +15272,17 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.threshold_velocity_ms.setValue(10.0)
         self.threshold_velocity_ms.setToolTip("Minimum velocity required before searching for spall peaks (also used for alignment warnings).")
         spall_layout.addWidget(self.threshold_velocity_ms, 1, 1)
+
+        spall_layout.addWidget(QLabel("Spall Pre-Plot Time (ns):"), 1, 2)
+        self.spall_pre_time_ns = QDoubleSpinBox()
+        self.spall_pre_time_ns.setRange(0.0, 10000.0)
+        self.spall_pre_time_ns.setDecimals(2)
+        self.spall_pre_time_ns.setValue(20.0)
+        self.spall_pre_time_ns.setToolTip(
+            "Pre-trigger span shown on individual spall plots. "
+            "It does not change the spall fitting window."
+        )
+        spall_layout.addWidget(self.spall_pre_time_ns, 1, 3)
 
         layout.addWidget(spall_group)
         
@@ -16060,6 +16146,8 @@ Output Files:
             self.hel_detection_min_points.setValue(int(config_dict['hel_detection_min_points']))
 
         # Spall window parameters
+        if 'spall_pre_time_ns' in config_dict:
+            self.spall_pre_time_ns.setValue(config_dict['spall_pre_time_ns'])
         if 'spall_start_time_ns' in config_dict:
             self.spall_start_time_ns.setValue(config_dict['spall_start_time_ns'])
         if 'spall_end_time_ns' in config_dict:
@@ -16556,6 +16644,7 @@ Output Files:
             'minimum_HEL_velocity_expected': self.minimum_hel_velocity.value(),
             'hel_detection_min_points': self.hel_detection_min_points.value(),
             # Spall window parameters
+            'spall_pre_time_ns': self.spall_pre_time_ns.value(),
             'spall_start_time_ns': self.spall_start_time_ns.value(),
             'spall_end_time_ns': self.spall_end_time_ns.value(),
             'threshold_velocity_ms': self.threshold_velocity_ms.value(),
@@ -16580,8 +16669,15 @@ Output Files:
 
     def _apply_runtime_spade_overrides(self, spade_params):
         """Ensure critical SPADE settings respect the current GUI selections."""
+        # Config-file mode must preserve the loaded values, including the
+        # display-only pre-trigger interval.  Only manual mode should replace
+        # them with the current widget values.
+        if self.spade_config_mode.isChecked():
+            return spade_params
+
         overrides = {
             # Note: analysis_model is no longer user-selectable - always uses hybrid approach
+            'spall_pre_time_ns': self.spall_pre_time_ns.value(),
             'spall_start_time_ns': self.spall_start_time_ns.value(),
             'spall_end_time_ns': self.spall_end_time_ns.value(),
             'threshold_velocity_ms': self.threshold_velocity_ms.value(),

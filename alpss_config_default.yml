@@ -39,19 +39,20 @@ time_to_skip: 0.0
 # Example: 4e-6 = 4 µs window.
 time_to_take: 4.0e-06
 
-# Pre-signal padding included in the output (s).
-t_before: 2.0e-08
+# Pre-signal padding included in the output (s). Velocity zeroing uses the
+# earliest half; the latter half is automatically reserved as its guard.
+# With this 100 ns default, the zero reference is -100 to -50 ns.
+t_before: 1.0e-07
 
 # Post-onset window included in the output (s).
 t_after: 2.0e-07
 
 # ── Velocity baseline calibration ────────────────────────────────────────────
 # Subtract the pre-trigger baseline from every velocity trace before smoothing
-# and saving.  The final 10 ns before the detected onset are excluded (guard),
-# because an onset-timing error or weak precursor can contaminate that region.
+# and saving. The baseline is the earliest half of t_before; its latter half is
+# excluded automatically, protecting against onset-timing error or a precursor.
 zero_pretrigger_velocity: true
 pretrigger_baseline_method: "median"   # median (robust) | mean
-pretrigger_baseline_guard_ns: 10.0
 pretrigger_baseline_min_samples: 20
 
 # ── IQ signal-onset detection ─────────────────────────────────────────────────
