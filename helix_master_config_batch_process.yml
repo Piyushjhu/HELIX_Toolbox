@@ -26,6 +26,12 @@
 # -----------------------------------------------------------------------------
 cli_settings:
 
+  # Data source: single_pdv preserves legacy behavior (also the default if omitted).
+  # mpdv processes ONLY files listed under PDV_10_FileName in param_folder.
+  # Applies to ALPSS, SPADE, plots and each batch subfolder; other probes suppressed.
+  # MPDV requires parameter files. Full multipoint demultiplexing is not implemented.
+  data_mode: single_pdv
+
   # Set true to treat input_dir as a PARENT folder containing one subfolder
   # per shot group (e.g. one subfolder per sample/plate). Each subfolder is
   # processed through the full ALPSS + SPADE pipeline independently.

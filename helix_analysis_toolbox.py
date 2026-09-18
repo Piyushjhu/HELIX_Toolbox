@@ -25,6 +25,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+from helix_data_source import (
+    MPDV_NOTE, validate_data_mode, trace_key, load_mpdv_parameters,
+    select_central_files, central_summary, mpdv_header_lines,
+)
+
 # Excel support will be checked dynamically when needed
 
 # Values that mean "no material recorded", including the "[]" empty-list
@@ -496,13 +501,18 @@ class AnalysisThread(QThread):
      analysis_mode="both",
      material_properties=None,
      igsn_material_map=None,
-     igsn_thickness_map=None):
+     igsn_thickness_map=None,
+     data_mode="single_pdv"):
         super().__init__()
         self.alpss_params = alpss_params
         self.spade_params = spade_params
         self.input_files = input_files
         self.output_dir = output_dir
         self.param_data = param_data  # Parameter file data mapping
+        self.data_mode = validate_data_mode(data_mode)
+        self._mpdv_keys = set(param_data or {})
+        self._mpdv_effective_inputs = {}
+        self._mpdv_selection = {}
         self.spade_auto_mode = spade_auto_mode
         self.spade_input_files = spade_input_files
         self.analysis_mode = analysis_mode  # "alpss_only", "spade_only", or "both"
@@ -521,6 +531,41 @@ class AnalysisThread(QThread):
         # you what was actually used. Track the real per-file value here so
         # _save_run_config can report it accurately.
         self._alpss_effective_sample_rate_by_file = {}
+
+    def _prepare_data_source(self):
+        if self.data_mode != 'mpdv':
+            return
+        self.progress_signal.emit(MPDV_NOTE)
+        if not self.param_data or any(
+            row.get('selected_probe') != 'PDV_10' for row in self.param_data.values()
+        ):
+            raise ValueError('MPDV requires parameter data loaded from PDV_10_FileName.')
+        selected_keys = set()
+        if self.analysis_mode != 'spade_only':
+            original = list(self.input_files or [])
+            self.input_files = select_central_files(original, self.param_data)
+            self._mpdv_selection['raw_files_suppressed'] = len(original) - len(self.input_files)
+            selected_keys.update(trace_key(f) for f in self.input_files)
+        if self.analysis_mode == 'spade_only' or not self.spade_auto_mode and self.spade_input_files:
+            original = list(self.spade_input_files or [])
+            self.spade_input_files = select_central_files(original, self.param_data)
+            self._mpdv_selection['velocity_files_suppressed'] = len(original) - len(self.spade_input_files)
+            selected_keys.update(trace_key(f) for f in self.spade_input_files)
+        self._mpdv_keys = selected_keys
+        self.progress_signal.emit(
+            f"[MPDV] Selected {len(selected_keys)} central acquisitions; "
+            f"excluded {sum(self._mpdv_selection.values())} nonselected input files."
+        )
+
+    def _scope_files(self, files):
+        if self.data_mode != 'mpdv':
+            return files
+        return [f for f in files if trace_key(f) in self._mpdv_keys]
+
+    def _scope_summary(self, df):
+        if self.data_mode != 'mpdv':
+            return df
+        return central_summary(df, self._mpdv_keys)
 
     def _get_summary_filename(self):
         """Return the CSV filename for the consolidated data summary.
@@ -563,6 +608,13 @@ class AnalysisThread(QThread):
                 # this records what was actually detected/used per input file.
                 'alpss_effective_sample_rate_by_file': self._alpss_effective_sample_rate_by_file,
             }
+            if self.data_mode == 'mpdv':
+                config_snapshot.update({
+                    'data_mode': 'mpdv', 'selected_probe': 'PDV_10',
+                    'probe_selection_note': MPDV_NOTE,
+                    'mpdv_selection': self._mpdv_selection,
+                    'mpdv_effective_inputs': self._mpdv_effective_inputs,
+                })
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(config_snapshot, f, indent=2, default=str)
             self.progress_signal.emit(f"Saved run config to: {config_path}")
@@ -600,6 +652,8 @@ class AnalysisThread(QThread):
         """
         import re
         
+        if self.data_mode == 'mpdv':
+            return (self.param_data or {}).get(trace_key(base_name), {})
         if not self.param_data:
             return {}
 
@@ -2110,6 +2164,7 @@ class AnalysisThread(QThread):
 
     def run(self):
         try:
+            self._prepare_data_source()
             # Add memory management
             import gc
             gc.collect()  # Force garbage collection before starting
@@ -2184,6 +2239,17 @@ class AnalysisThread(QThread):
                     alpss_params['filename'] = os.path.basename(input_file)
                     alpss_params['exp_data_dir'] = os.path.dirname(input_file)
                     alpss_params['out_files_dir'] = self.output_dir
+                    if self.data_mode == 'mpdv':
+                        central_info = self.get_param_data_for_file(input_file)
+                        wavelength = central_info.get('PDV_Target_Wavelength (m)')
+                        if wavelength is not None and not pd.isna(wavelength):
+                            alpss_params['lam'] = float(wavelength)
+                        alpss_params['header_lines'] = mpdv_header_lines(
+                            input_file, alpss_params['header_lines'])
+                        self._mpdv_effective_inputs[os.path.basename(input_file)] = {
+                            'lam': alpss_params['lam'],
+                            'header_lines': alpss_params['header_lines'],
+                        }
 
                     # Resolve the actual sample rate up front so alpss_params (and the
                     # eventual run-config snapshot) reflects what alpss_main will really
@@ -2213,6 +2279,8 @@ class AnalysisThread(QThread):
                             # Handle different possible column names for experiment info
                             exp_id = exp_info.get('exp_id', exp_info.get('Exp_ID', 'Unknown'))
                             sample_material = exp_info.get('sample_material', exp_info.get('Flyer_material', 'Unknown'))
+                            if self.data_mode == 'mpdv':
+                                sample_material = self.resolve_sample_material(base_name, exp_info)
                             self.progress_signal.emit(
                                 f"Linked to experiment: {exp_id} - {sample_material}")
                         else:
@@ -2882,14 +2950,14 @@ class AnalysisThread(QThread):
                     enhanced_path = os.path.join(spade_output_dir, self._get_summary_filename())
                     vs_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
                     if os.path.exists(enhanced_path):
-                        df = pd.read_csv(enhanced_path)
+                        df = self._scope_summary(pd.read_csv(enhanced_path))
                         n_rows = len(df)
                         if n_rows > 0:
                             self.total_input_traces = n_rows
                             self.traces_plotted = n_rows
                             self.progress_signal.emit(f"[INFO] Summary populated from {self._get_summary_filename()} ({n_rows} traces)")
                     elif os.path.exists(vs_path):
-                        vs_df = pd.read_csv(vs_path)
+                        vs_df = self._scope_summary(pd.read_csv(vs_path))
                         n_rows = len(vs_df)
                         if n_rows > 0:
                             self.total_input_traces = n_rows
@@ -2914,6 +2982,8 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"Total analysis run time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
             self.progress_signal.emit("=" * 70)
             
+            if self.data_mode == 'mpdv':
+                self._save_run_config(spade_output_dir)
             self.finished_signal.emit(True, "Analysis completed successfully")
         except Exception as e:
             import traceback
@@ -3228,7 +3298,7 @@ class AnalysisThread(QThread):
             else:
                 # Fallback: if successful_files not available, use glob but warn
                 self.progress_signal.emit("Warning: Using all files in output directory (successful_files not available)")
-                velocity_files = glob.glob(os.path.join(self.output_dir, '*--vel-smooth-with-uncert.csv'))
+                velocity_files = self._scope_files(glob.glob(os.path.join(self.output_dir, '*--vel-smooth-with-uncert.csv')))
         
         # Filter out empty files
         valid_velocity_files = []
@@ -3400,6 +3470,11 @@ class AnalysisThread(QThread):
                 else:
                     self.progress_signal.emit(
                         f"No parameter data found for {base_name}")
+
+                # Velocity summaries need material status even with HEL disabled
+                # or when its detection window contains too few points.
+                sample_material = self.resolve_sample_material(base_name, param_info)
+                mat_props = self.get_material_properties_from_config(sample_material)
 
                 # Create data row for velocity shots summary
                 # HEL DETECTION
@@ -3712,9 +3787,6 @@ class AnalysisThread(QThread):
                                         window_size += 1
                                     gradient_smooth = uniform_filter1d(gradient, size=window_size, mode='nearest')
                                     angles_deg = np.degrees(np.arctan(np.abs(gradient_smooth)))
-                                sample_material = self.resolve_sample_material(base_name, param_info)
-                                # Get material properties from config first, then database
-                                mat_props = self.get_material_properties_from_config(sample_material)
                                 density = param_info.get('Density_kg_m3', mat_props['density'])
                                 acoustic_velocity = param_info.get('Bulk_Wave_Speed_m_s', mat_props['bulk_wave_speed'])
                                 # Get C_L from config (longitudinal wave velocity), fallback to acoustic_velocity if not specified
@@ -4444,6 +4516,11 @@ class AnalysisThread(QThread):
             self.progress_signal.emit("Post-processing is disabled in config")
             return False
         
+        if self.data_mode == 'mpdv':
+            self.progress_signal.emit(MPDV_NOTE)
+            if not self.param_data:
+                self.progress_signal.emit('MPDV requires PDV_10 parameter mappings.')
+                return False
         spade_output_dir = post_processing_config.get('spade_output_dir', self.output_dir)
         if not os.path.exists(spade_output_dir):
             self.progress_signal.emit("\n" + "=" * 60)
@@ -4858,7 +4935,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"   Expected path: {velocity_shots_path}")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
             self.progress_signal.emit(f"   Available columns: {', '.join(df.columns.tolist()[:15])}...")
             
@@ -5029,7 +5106,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping HEL vs Peak Velocity plot")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
             
             # Check if HEL and peak velocity columns exist
@@ -5703,7 +5780,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping HEL vs HEL Strain Rate plot")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
             
             # Check if HEL and strain rate columns exist
@@ -5883,7 +5960,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit(f"   Expected path: {velocity_shots_path}")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
             self.progress_signal.emit(f"   Available columns: {', '.join(df.columns.tolist()[:15])}...")
             
@@ -6059,7 +6136,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Shock Stress vs Waveplate Angle plot")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
             
             # Look for waveplate angle column
@@ -6259,7 +6336,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Laser Energy vs Waveplate Angle plot")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
             
             # Look for waveplate angle column
@@ -6443,7 +6520,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Shock Stress vs Peak Velocity plot")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             self.progress_signal.emit(f"   Loaded velocity shots summary with {len(df)} rows")
             
             # Check for peak velocity column (max_velocity_ms)
@@ -6650,7 +6727,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping Flyer Row/Column plots")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             if df.empty:
                 self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping Flyer Row/Column plots")
                 return
@@ -6822,7 +6899,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping heatmap")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             if df.empty:
                 self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping heatmap")
                 return
@@ -7185,7 +7262,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping row/column pair plot")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             if df.empty:
                 self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping row/column pair plot")
                 return
@@ -7382,7 +7459,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping row/column pair by material plot")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             if df.empty:
                 self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping row/column pair by material plot")
                 return
@@ -7647,7 +7724,7 @@ class AnalysisThread(QThread):
                 self.progress_signal.emit("⚠ Velocity shots summary not found - skipping pattern analysis plot")
                 return
             
-            df = pd.read_csv(velocity_shots_path)
+            df = self._scope_summary(pd.read_csv(velocity_shots_path))
             if df.empty:
                 self.progress_signal.emit("⚠ Velocity shots summary is empty - skipping pattern analysis plot")
                 return
@@ -9599,14 +9676,14 @@ class AnalysisThread(QThread):
 
             pattern = os.path.join(input_path, '**/*--vel-smooth-with-uncert.csv')
             self.progress_signal.emit(f"[DEBUG] Searching for velocity files with pattern: {pattern}")
-            files = glob.glob(pattern, recursive=True)
+            files = self._scope_files(glob.glob(pattern, recursive=True))
             files = [f for f in files if os.path.getsize(f) > 0]
             self.progress_signal.emit(f"[DEBUG] Found {len(files)} velocity files matching pattern")
             if not files:
                 self.progress_signal.emit(f"⚠️ No '*--vel-smooth-with-uncert.csv' files found for all-traces plot in {input_path}")
                 # List what files are actually in the directory for debugging
                 if os.path.exists(input_path):
-                    all_csv_files = glob.glob(os.path.join(input_path, '**/*.csv'), recursive=True)
+                    all_csv_files = self._scope_files(glob.glob(os.path.join(input_path, '**/*.csv'), recursive=True))
                     self.progress_signal.emit(f"[DEBUG] Found {len(all_csv_files)} total CSV files in {input_path}")
                     if all_csv_files:
                         sample_files = [os.path.basename(f) for f in all_csv_files[:5]]
@@ -9644,6 +9721,9 @@ class AnalysisThread(QThread):
                         pdv_filename_pattern = os.path.splitext(temp_name)[0]
                         self.progress_signal.emit(f"  Using base filename for matching: {pdv_filename_pattern}")
                     
+                    if self.data_mode == 'mpdv':
+                        pdv_filename_pattern = trace_key(base_filename)
+
                     if skip_unaligned and pdv_filename_pattern in skip_unaligned:
                         traces_skipped_initial += 1
                         reason = 'Unaligned trace (from SPADE)'
@@ -10098,7 +10178,7 @@ class AnalysisThread(QThread):
             import re
 
             pattern = os.path.join(input_path, '**/*--vel-smooth-with-uncert.csv')
-            files = glob.glob(pattern, recursive=True)
+            files = self._scope_files(glob.glob(pattern, recursive=True))
             files = [f for f in files if os.path.getsize(f) > 0]
             if not files:
                 self.progress_signal.emit("No '*--vel-smooth-with-uncert.csv' files found for Zn diagnostic plot")
@@ -10118,6 +10198,9 @@ class AnalysisThread(QThread):
                         pdv_filename_pattern = re.sub(r'--.*$', '', base_filename)
                         pdv_filename_pattern = os.path.splitext(pdv_filename_pattern)[0]
                     
+                    if self.data_mode == 'mpdv':
+                        pdv_filename_pattern = trace_key(base_filename)
+
                     # Extract last 5 digits from filename
                     last_5_digits = pdv_filename_pattern[-5:] if len(pdv_filename_pattern) >= 5 else pdv_filename_pattern
                     
@@ -10138,6 +10221,9 @@ class AnalysisThread(QThread):
                                         material = material_val
                                         break
                     
+                    if self.data_mode == 'mpdv':
+                        material = self.resolve_sample_material(base_filename, self.get_param_data_for_file(base_filename))
+
                     # Only include Zn traces
                     if material.lower() in ['zn', 'zinc']:
                         zn_traces.append({
@@ -10342,7 +10428,7 @@ class AnalysisThread(QThread):
             return
 
         # Read existing spall summary
-        spall_df = pd.read_csv(spall_summary_path)
+        spall_df = self._scope_summary(pd.read_csv(spall_summary_path))
         self.progress_signal.emit(f"Found {len(spall_df)} entries in spall summary")
         
         # Debug: Check for traces with P4 <= P3 that should be DNS
@@ -10663,7 +10749,7 @@ class AnalysisThread(QThread):
             velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
             if os.path.exists(velocity_shots_path):
                 try:
-                    vel_df = pd.read_csv(velocity_shots_path)
+                    vel_df = self._scope_summary(pd.read_csv(velocity_shots_path))
                     hel_cols = [c for c in [
                         'hel_ok', 'hel_strength_gpa', 'hel_uncertainty_gpa',
                         'hel_strain_rate_s^-1', 'hel_segment_time_ns',
@@ -10734,7 +10820,7 @@ class AnalysisThread(QThread):
             velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
             if os.path.exists(velocity_shots_path) and 'Peak Shock Stress (GPa)' in enhanced_spall_df.columns:
                 try:
-                    velocity_shots_df = pd.read_csv(velocity_shots_path)
+                    velocity_shots_df = self._scope_summary(pd.read_csv(velocity_shots_path))
                     
                     # Match by filename (remove extensions and suffixes)
                     def normalize_filename(fname):
@@ -11081,7 +11167,7 @@ class AnalysisThread(QThread):
             # Continue with downstream plot generation best-effort.
 
         # 1. Find all ALPSS velocity files (raw, not smooth)
-        velocity_files = glob.glob(os.path.join(self.output_dir, '*--velocity.csv'))
+        velocity_files = self._scope_files(glob.glob(os.path.join(self.output_dir, '*--velocity.csv')))
         if velocity_files:
             # 2. Read and align all velocity files by time
             dfs = []
@@ -11200,8 +11286,8 @@ class AnalysisThread(QThread):
 
         # --- ENHANCED: Plot all smoothed velocity traces with material and waveplate angle information ---
         # Accept either classic smoothed file or the smoothed-with-uncertainty file (used in smart selection)
-        smoothed_files_velocity = glob.glob(os.path.join(self.output_dir, '*--velocity--smooth.csv'))
-        smoothed_files_uncert = glob.glob(os.path.join(self.output_dir, '*--vel-smooth-with-uncert.csv'))
+        smoothed_files_velocity = self._scope_files(glob.glob(os.path.join(self.output_dir, '*--velocity--smooth.csv')))
+        smoothed_files_uncert = self._scope_files(glob.glob(os.path.join(self.output_dir, '*--vel-smooth-with-uncert.csv')))
         smoothed_files = list(set(smoothed_files_velocity + smoothed_files_uncert))
 
         # Report combined plotting file availability
@@ -11257,7 +11343,7 @@ class AnalysisThread(QThread):
                 if 'Peak_Shock_Stress_Uncertainty_GPa_Final' in summary_df.columns:
                     summary_df['Peak Shock Stress Uncertainty (GPa)'] = summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
             elif os.path.exists(enhanced_summary_csv):
-                summary_df = pd.read_csv(enhanced_summary_csv)
+                summary_df = self._scope_summary(pd.read_csv(enhanced_summary_csv))
                 # Master CSV is written with standardized names; expose both standardized
                 # and legacy spellings in memory so the mapping below (and any GUI plot
                 # consumer) resolves regardless of which build wrote the file.
@@ -11275,7 +11361,7 @@ class AnalysisThread(QThread):
                 if 'Peak_Shock_Stress_Uncertainty_GPa_Final' in summary_df.columns:
                     summary_df['Peak Shock Stress Uncertainty (GPa)'] = summary_df['Peak_Shock_Stress_Uncertainty_GPa_Final']
             elif os.path.exists(summary_csv):
-                summary_df = pd.read_csv(summary_csv)
+                summary_df = self._scope_summary(pd.read_csv(summary_csv))
                 summary_df = self.refresh_material_column(summary_df)
             else:
                 self.progress_signal.emit(f"[WARNING] No spall summary file found (neither {self._get_summary_filename()} nor spall_summary.csv)")
@@ -11517,7 +11603,7 @@ class AnalysisThread(QThread):
                     velocity_shots_path = os.path.join(spade_output_dir, 'velocity_shots_summary.csv')
                     if os.path.exists(velocity_shots_path):
                         try:
-                            vel_df = pd.read_csv(velocity_shots_path)
+                            vel_df = self._scope_summary(pd.read_csv(velocity_shots_path))
                             hel_cols = [c for c in [
                                 'hel_ok', 'hel_strength_gpa', 'hel_uncertainty_gpa',
                                 'hel_strain_rate_s^-1', 'hel_segment_time_ns',
@@ -11746,7 +11832,7 @@ class AnalysisThread(QThread):
                 try:
                     vs_path = os.path.join(spade_output_dir, "velocity_shots_summary.csv")
                     if os.path.exists(vs_path):
-                        vs = pd.read_csv(vs_path, usecols=["file_name", "t0_ns", "aligned_ok"])
+                        vs = self._scope_summary(pd.read_csv(vs_path, usecols=["file_name", "t0_ns", "aligned_ok"]))
                         for _, r in vs.iterrows():
                             bn = str(r.get("file_name", "")).strip()
                             if not bn:
@@ -12241,7 +12327,7 @@ class AnalysisThread(QThread):
                     try:
                         vs_path = os.path.join(spade_output_dir, "velocity_shots_summary.csv")
                         if os.path.exists(vs_path):
-                            vs = pd.read_csv(vs_path, usecols=["file_name", "t0_ns", "aligned_ok"])
+                            vs = self._scope_summary(pd.read_csv(vs_path, usecols=["file_name", "t0_ns", "aligned_ok"]))
                             for _, r in vs.iterrows():
                                 bn = str(r.get("file_name", "")).strip()
                                 if not bn:
@@ -12323,11 +12409,13 @@ class PostProcessingWorker(QObject):
     progress = pyqtSignal(str)
     finished = pyqtSignal()
     
-    def __init__(self, output_dir, spade_params, param_folder):
+    def __init__(self, output_dir, spade_params, param_folder, data_mode="single_pdv", material_settings=None):
         super().__init__()
         self.output_dir = output_dir
         self.spade_params = spade_params or {}
         self.param_folder = param_folder
+        self.data_mode = validate_data_mode(data_mode)
+        self.material_settings = material_settings or {}
     
     def regenerate_plots(self, spade_params):
         """Regenerate velocity plots with current axis settings"""
@@ -12363,6 +12451,9 @@ class PostProcessingWorker(QObject):
             # Load parameter files to get material info
             self.progress.emit("Loading parameter files...")
             param_data = self._load_param_files()
+            if self.data_mode == 'mpdv':
+                self.progress.emit(MPDV_NOTE)
+                files = select_central_files(files, param_data)
             if param_data:
                 self.progress.emit(f"✓ Loaded {len(param_data)} parameter entries")
                 # Debug: show first few entries
@@ -13048,6 +13139,13 @@ class PostProcessingWorker(QObject):
     
     def _load_param_files(self):
         """Load parameter files using same logic as get_param_file_data"""
+        if self.data_mode == 'mpdv':
+            parameters = load_mpdv_parameters(self.param_folder, self.progress.emit)
+            resolver = AnalysisThread({}, {}, [], self.output_dir, param_data=parameters,
+                                      data_mode='mpdv', **self.material_settings)
+            for key, row in parameters.items():
+                row['Sample material'] = resolver.resolve_sample_material(key, row)
+            return parameters
         param_data = {}
         
         if not self.param_folder or not os.path.exists(self.param_folder):
@@ -13164,6 +13262,7 @@ class HELIXAnalysisToolbox(QMainWindow):
         self.current_theme = 'light'
         self.config_file = os.path.join(os.path.expanduser('~'), '.helix_analysis_toolbox_config.json')
         self.spade_params = {}  # Initialize spade_params dict
+        self._master_material_settings = {}
         self.init_ui()
         self.load_settings()
         
@@ -13269,8 +13368,10 @@ class HELIXAnalysisToolbox(QMainWindow):
                 },
                 'alpss_params': self.get_alpss_params() if hasattr(self, 'get_alpss_params') else {},
                 'spade_params': self.get_spade_params() if hasattr(self, 'get_spade_params') else {},
+                'master_material_settings': self._master_material_settings,
                 'ui_settings': {
                     'theme': self.current_theme,
+                    'data_mode': self.data_mode_combo.currentData(),
                     'file_mode': self.file_mode_combo.currentText() if hasattr(self, 'file_mode_combo') else 'Single File',
                     'analysis_mode': self.mode_alpss_only.isChecked() if hasattr(self, 'mode_alpss_only') else True,
                     'spade_input_mode': self.spade_auto_mode.isChecked() if hasattr(self, 'spade_auto_mode') else True
@@ -13290,6 +13391,8 @@ class HELIXAnalysisToolbox(QMainWindow):
                 with open(self.config_file, 'r', encoding="utf-8") as f:
                     settings = json.load(f)
                 
+                self._master_material_settings = settings.get('master_material_settings', {})
+
                 # Load file paths
                 if 'file_paths' in settings:
                     file_paths = settings['file_paths']
@@ -13303,6 +13406,8 @@ class HELIXAnalysisToolbox(QMainWindow):
                 # Load UI settings
                 if 'ui_settings' in settings:
                     ui_settings = settings['ui_settings']
+                    self.data_mode_combo.setCurrentIndex(max(0, self.data_mode_combo.findData(
+                        ui_settings.get('data_mode', 'single_pdv'))))
                     if 'theme' in ui_settings:
                         self.current_theme = ui_settings['theme']
                         if ui_settings['theme'] == 'dark':
@@ -13877,12 +13982,81 @@ class HELIXAnalysisToolbox(QMainWindow):
         layout.addStretch()
         self.tab_widget.addTab(tab, "File Selection")
         
+    def load_master_config(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Master Config", "", "Config Files (*.yml *.yaml *.json)")
+        if not path:
+            return
+        ok, config, message = load_config_from_file(path)
+        try:
+            if not ok:
+                raise ValueError(message)
+            self.apply_master_config(config, path)
+        except (ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Invalid Master Config", str(exc))
+
+    def apply_master_config(self, config, path):
+        """Load a single-run master config, including source and material settings."""
+        cli = config['cli_settings']
+        mode = validate_data_mode(cli.get('data_mode', 'single_pdv'))
+        if cli.get('batch_mode', False):
+            raise ValueError('Use helix_cli_runner.py --config for batch configurations. '
+                             'The GUI runs one input selection at a time.')
+        self.data_mode_combo.setCurrentIndex(self.data_mode_combo.findData(mode))
+        self._master_material_settings = {
+            key: config.get(key, {}) for key in
+            ('material_properties', 'igsn_material_map', 'igsn_thickness_map')
+        }
+        # Optional null values remain in the run config; numeric widgets cannot
+        # display None. Leave those widgets at their existing display values.
+        self.apply_alpss_config({k: v for k, v in config['alpss_config'].items() if v is not None})
+        self.apply_spade_config({k: v for k, v in config['spade_config'].items() if v is not None})
+        self.alpss_config_path.setText(path)
+        self.spade_config_path.setText(path)
+        self.alpss_config_mode.setChecked(True)
+        self.spade_config_mode.setChecked(True)
+        self.output_path.setText(cli.get('output_dir') or '')
+        self.param_folder_path.setText(cli.get('param_folder') or '')
+        files = cli.get('input_files')
+        if files:
+            self.multi_file_radio.setChecked(False)
+            self.single_file_radio.setChecked(True)
+            self.single_file_path.setText(';'.join(files))
+        elif cli.get('input_dir'):
+            self.single_file_radio.setChecked(False)
+            self.multi_file_radio.setChecked(True)
+            self.multi_file_path.setText(cli['input_dir'])
+            self.file_pattern.setText(cli.get('input_pattern', '*.csv'))
+        {'both': self.mode_both, 'alpss_only': self.mode_alpss_only,
+         'spade_only': self.mode_spade_only}[cli.get('analysis_mode', 'both')].setChecked(True)
+        self.spade_auto_radio.setChecked(cli.get('spade_mode', 'auto') == 'auto')
+        self.spade_manual_radio.setChecked(cli.get('spade_mode', 'auto') == 'manual')
+        self.spade_input_path.setText(';'.join(cli.get('spade_input_files') or [])
+                                      or cli.get('spade_input_dir') or '')
+        self.spade_file_pattern.setText(cli.get('spade_input_pattern', '*--vel-smooth-with-uncert.csv'))
+        self.load_param_folder_info()
+        self.update_file_list()
+
     def create_analysis_mode_tab(self):
         """Create analysis mode selection tab"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(10, 10, 10, 10)  # Add margins to tab layout
         
+        source_group = QGroupBox("PDV Data Type")
+        source_layout = QVBoxLayout(source_group)
+        self.data_mode_combo = QComboBox()
+        self.data_mode_combo.addItem("Single PDV", "single_pdv")
+        self.data_mode_combo.addItem("MPDV — Central probe only (PDV_10)", "mpdv")
+        source_layout.addWidget(self.data_mode_combo)
+        master_button = QPushButton("Load Master Config (YAML / JSON)")
+        master_button.clicked.connect(self.load_master_config)
+        source_layout.addWidget(master_button)
+        source_note = QLabel("MPDV requires parameter files with PDV_10_FileName. All other probes are suppressed.")
+        source_note.setWordWrap(True)
+        source_layout.addWidget(source_note)
+        layout.addWidget(source_group)
+
         # Analysis mode group
         mode_group = QGroupBox("Analysis Mode")
         mode_layout = QVBoxLayout(mode_group)
@@ -14191,7 +14365,7 @@ class HELIXAnalysisToolbox(QMainWindow):
             param_folder = self.param_folder_path.text() if hasattr(self, 'param_folder_path') else ""
             
             # Run in background thread
-            self.pp_worker = PostProcessingWorker(out_dir, self.spade_params, param_folder)
+            self.pp_worker = PostProcessingWorker(out_dir, self.spade_params, param_folder, self.data_mode_combo.currentData(), self._master_material_settings)
             self.pp_thread = QThread()
             self.pp_worker.moveToThread(self.pp_thread)
             self.pp_worker.progress.connect(self.pp_on_progress)
@@ -14222,7 +14396,7 @@ class HELIXAnalysisToolbox(QMainWindow):
             param_folder = self.param_folder_path.text() if hasattr(self, 'param_folder_path') else ""
             
             # Run in background thread (same as preview, just a label difference)
-            self.pp_worker = PostProcessingWorker(out_dir, self.spade_params, param_folder)
+            self.pp_worker = PostProcessingWorker(out_dir, self.spade_params, param_folder, self.data_mode_combo.currentData(), self._master_material_settings)
             self.pp_thread = QThread()
             self.pp_worker.moveToThread(self.pp_thread)
             self.pp_worker.progress.connect(self.pp_on_progress)
@@ -14255,6 +14429,9 @@ class HELIXAnalysisToolbox(QMainWindow):
 
         pattern = os.path.join(input_path, '**/*--vel-smooth-with-uncert.csv')
         files = glob.glob(pattern, recursive=True)
+        if self.data_mode_combo.currentData() == 'mpdv':
+            self.pp_preview.appendPlainText(MPDV_NOTE)
+            files = select_central_files(files, self.get_param_file_data())
         files = [f for f in files if os.path.getsize(f) > 0]
         if not files:
             self.pp_preview.appendPlainText("No velocity files found for regeneration")
@@ -16282,13 +16459,14 @@ Output Files:
                 info_text += f"\n{os.path.basename(file_path)}: {file_experiments} experiments"
                 
                 # Check for required columns
-                if 'PDV_FileName' in df.columns:
-                    pdv_files = df['PDV_FileName'].dropna().astype(str).tolist()
+                filename_column = 'PDV_10_FileName' if self.data_mode_combo.currentData() == 'mpdv' else 'PDV_FileName'
+                if filename_column in df.columns:
+                    pdv_files = df[filename_column].dropna().astype(str).tolist()
                     total_pdv_files += len(pdv_files)
                     all_pdv_files.extend(pdv_files)
                     info_text += f", {len(pdv_files)} PDV files"
                 else:
-                    info_text += ", no PDV_FileName column"
+                    info_text += f", no {filename_column} column"
                     
                 # Check for sample material column
                 
@@ -16421,6 +16599,8 @@ Output Files:
     def get_param_file_data(self):
         """Get parameter file data from all Excel files in the selected parameter folder"""
         folder_path = self.param_folder_path.text()
+        if self.data_mode_combo.currentData() == 'mpdv':
+            return load_mpdv_parameters(folder_path, self.progress_text.appendPlainText)
         if not folder_path or not os.path.exists(folder_path):
             return None
             
@@ -16715,6 +16895,13 @@ Output Files:
             if not success:
                 QMessageBox.critical(self, "Error", f"Failed to load ALPSS config:\n{message}")
                 return
+            if 'alpss_config' in alpss_params:
+                from helix_cli_runner import _transform_alpss_params_for_analysis
+                self._master_material_settings = {
+                    key: alpss_params.get(key, {}) for key in
+                    ('material_properties', 'igsn_material_map', 'igsn_thickness_map')
+                }
+                alpss_params = _transform_alpss_params_for_analysis(alpss_params['alpss_config'])
             self.progress_text.appendPlainText(f"✓ Using ALPSS parameters from config file: {config_path}")
         else:
             # Use GUI parameters
@@ -16732,6 +16919,13 @@ Output Files:
             if not success:
                 QMessageBox.critical(self, "Error", f"Failed to load SPADE config:\n{message}")
                 return
+            if 'spade_config' in spade_params:
+                from helix_cli_runner import _transform_spade_params_for_analysis
+                self._master_material_settings = {
+                    key: spade_params.get(key, {}) for key in
+                    ('material_properties', 'igsn_material_map', 'igsn_thickness_map')
+                }
+                spade_params = _transform_spade_params_for_analysis(spade_params['spade_config'])
             self.progress_text.appendPlainText(f"✓ Using SPADE parameters from config file: {config_path}")
         else:
             # Use GUI parameters
@@ -16742,7 +16936,11 @@ Output Files:
         self.spade_params = spade_params.copy()
         
         # Get parameter file data if available
-        param_data = self.get_param_file_data()
+        try:
+            param_data = self.get_param_file_data()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid MPDV Parameters", str(exc))
+            return
         if param_data:
             # Count parameter files (Excel/CSV) in the parameter folder
             folder_path = self.param_folder_path.text()
@@ -16783,7 +16981,8 @@ Output Files:
             self.analysis_thread = AnalysisThread(
                 alpss_params, spade_params, input_files, output_dir, param_data,
                 spade_auto_mode=False, spade_input_files=None, analysis_mode="alpss_only",
-                material_properties={}  # GUI doesn't use config material_properties, falls back to database
+                data_mode=self.data_mode_combo.currentData(),
+                **self._master_material_settings
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
             self.analysis_thread.finished_signal.connect(self.analysis_finished)
@@ -16830,7 +17029,8 @@ Output Files:
             self.analysis_thread = AnalysisThread(
                 alpss_params, spade_params, [], output_dir, param_data,
                 spade_auto_mode=False, spade_input_files=spade_input_files, analysis_mode="spade_only",
-                material_properties={}  # GUI doesn't use config material_properties, falls back to database
+                data_mode=self.data_mode_combo.currentData(),
+                **self._master_material_settings
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
             self.analysis_thread.finished_signal.connect(self.analysis_finished)
@@ -16877,7 +17077,8 @@ Output Files:
             self.analysis_thread = AnalysisThread(
                 alpss_params, spade_params, input_files, output_dir, param_data,
                 spade_auto_mode=spade_auto_mode, spade_input_files=spade_input_files, analysis_mode="both",
-                material_properties={}  # GUI doesn't use config material_properties, falls back to database
+                data_mode=self.data_mode_combo.currentData(),
+                **self._master_material_settings
             )
             self.analysis_thread.progress_signal.connect(self.update_progress)
             self.analysis_thread.finished_signal.connect(self.analysis_finished)

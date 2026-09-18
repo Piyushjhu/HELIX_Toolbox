@@ -137,6 +137,7 @@ results/
 
 # Test files (but allow test_basic.py)
 test_*.py
+!regression/test_*.py
 *_test.py
 !test_basic.py
 

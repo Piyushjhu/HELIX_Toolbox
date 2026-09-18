@@ -46,3 +46,15 @@ Options: `--rtol` (default 1e-6), `--atol` (default 1e-9), `--keep-output`.
    `history.jsonl`, so the full timeline of how the control evolved is preserved.
 
 The exit code (0 PASS / 1 FAIL) lets this gate a pre-commit hook or CI job.
+
+## MPDV input compatibility checks
+
+Run `QT_QPA_PLATFORM=offscreen helix_toolbox_env/bin/python3 regression/test_mpdv.py`
+for central-probe input/metadata filtering and GUI configuration tests. Fixtures
+are generated in temporary directories; the original experimental logs are not
+modified. This suite complements the scientific control above.
+
+The pre-MPDV working-tree control on 2026-09-18 already differed from the stored
+baseline in HEL strength, HEL strain rate, and HEL uncertainty. The MPDV change
+must preserve that pre-edit result as well as raw Single PDV extraction. Do not
+reset the scientific baseline merely to accept these pre-existing differences.

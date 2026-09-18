@@ -45,6 +45,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from helix_analysis_toolbox import AnalysisThread, load_config_from_file
+from helix_data_source import load_mpdv_parameters, validate_data_mode
 
 
 # Extensions probed (in order) when looking for a default master config next
@@ -432,6 +433,7 @@ def _run_analysis(
     material_properties: Dict,
     igsn_material_map: Dict = None,
     igsn_thickness_map: Dict = None,
+    data_mode: str = "single_pdv",
 ) -> bool:
     """Create and run one AnalysisThread; return True on success."""
     thread = AnalysisThread(
@@ -446,6 +448,7 @@ def _run_analysis(
         material_properties=material_properties,
         igsn_material_map=igsn_material_map,
         igsn_thickness_map=igsn_thickness_map,
+        data_mode=data_mode,
     )
 
     result = {"success": False}
@@ -554,13 +557,17 @@ def _normalize_pdv_filename(value: str) -> str:
     return s
 
 
-def _load_parameter_folder(folder: str, experiment_id: str = None) -> Dict[str, Dict]:
+def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: str = "single_pdv") -> Dict[str, Dict]:
     """Aggregate experiment metadata from CSV/Excel files in a folder.
 
     If experiment_id is provided (e.g. 'JHAMAL00016-013'), only files whose
     name contains that string are loaded.  If none match, all files are tried
     as a fallback so the caller never silently gets nothing.
     """
+    validate_data_mode(data_mode)
+    if data_mode == "mpdv":
+        return load_mpdv_parameters(folder)
+
     if not folder:
         return {}
 
@@ -792,6 +799,11 @@ Examples:
         help="Path to SPADE JSON config file (required if --config is not provided).",
     )
     
+    parser.add_argument(
+        "--data-mode", choices=("single_pdv", "mpdv"),
+        help="Single PDV (default) or MPDV central probe PDV_10 only; requires parameter folder.",
+    )
+
     # CLI arguments (can override config file values)
     parser.add_argument(
         "--output-dir",
@@ -944,6 +956,10 @@ def main():
         spade_input_pattern = args.spade_input_pattern if args.spade_input_pattern else "*--vel-smooth-with-uncert.csv"
         cli_settings = {}
 
+    data_mode = validate_data_mode(args.data_mode or cli_settings.get("data_mode", "single_pdv"))
+    if data_mode == "mpdv" and not param_folder:
+        raise ValueError("MPDV requires --param-folder / cli_settings.param_folder.")
+
     # ── Batch-mode settings (master config only; default to single-run) ──────
     batch_mode = _to_bool(cli_settings.get("batch_mode", False))
     subfolder_pattern = cli_settings.get("subfolder_pattern", "*")
@@ -973,7 +989,7 @@ def main():
         # Load parameter data once — shared across all subfolder runs
         if param_folder:
             print(f"\n[INFO] Loading parameter data from: {param_folder}")
-            param_data = _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir))
+            param_data = _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir or ""), data_mode=data_mode)
         else:
             param_data = None
 
@@ -1010,18 +1026,26 @@ def main():
             else:
                 run_input_files = []
 
+            run_param_data = param_data
+            if data_mode == 'mpdv' and analysis_mode == 'spade_only':
+                run_param_data = {
+                    key: row for key, row in (param_data or {}).items()
+                    if str(row.get('Sample_IGSN', '')).strip().lower() == subfolder_name.lower()
+                }
+
             success = _run_analysis(
                 alpss_params=alpss_params,
                 spade_params=spade_params,
                 resolved_input_files=run_input_files,
                 output_dir=run_output_dir,
-                param_data=param_data,
+                param_data=run_param_data,
                 spade_auto_mode=spade_auto_mode,
                 resolved_spade_input_files=resolved_spade_input_files,
                 analysis_mode=analysis_mode,
                 material_properties=material_properties,
                 igsn_material_map=igsn_material_map,
                 igsn_thickness_map=igsn_thickness_map,
+                data_mode=data_mode,
             )
             batch_results[subfolder_name] = success
 
@@ -1052,8 +1076,10 @@ def main():
         print(f"Output directory is writable: {os.access(output_dir, os.W_OK)}")
     print("=" * 70 + "\n")
 
+    mpdv_post_only = data_mode == "mpdv" and post_processing_config.get("enabled", False)
+
     # Resolve input files
-    if analysis_mode != "spade_only":
+    if analysis_mode != "spade_only" and not mpdv_post_only:
         print("\n" + "=" * 70)
         print("RESOLVING PDV INPUT FILES")
         print("=" * 70)
@@ -1088,17 +1114,17 @@ def main():
     else:
         resolved_input_files = []
         print("\n" + "=" * 70)
-        print("SPADE-ONLY MODE: Skipping ALPSS input file resolution")
+        print("Skipping ALPSS input file resolution (SPADE-only / MPDV post-processing)")
         print("=" * 70)
         print(f"analysis_mode: {analysis_mode}")
         print(f"resolved_input_files: [] (empty list)")
         print("=" * 70 + "\n")
 
-    if analysis_mode == "spade_only" and spade_mode == "auto":
+    if analysis_mode == "spade_only" and spade_mode == "auto" and not mpdv_post_only:
         raise ValueError("Auto SPADE mode requires ALPSS outputs from the same run. "
                          "Please use --analysis-mode both or switch to manual SPADE mode.")
 
-    if spade_mode == "manual":
+    if spade_mode == "manual" and not mpdv_post_only:
         resolved_spade_input_files = _resolve_file_list(
             spade_input_files,
             spade_input_dir,
@@ -1114,7 +1140,7 @@ def main():
     # Load parameter folder with progress indication
     if param_folder:
         print(f"\n[INFO] Loading parameter data from: {param_folder}")
-        param_data = _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir))
+        param_data = _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir or ""), data_mode=data_mode)
     else:
         param_data = None
     
@@ -1237,6 +1263,7 @@ def main():
             material_properties=material_properties,
             igsn_material_map=igsn_material_map,
             igsn_thickness_map=igsn_thickness_map,
+            data_mode=data_mode,
         )
         thread.progress_signal.connect(print)
         success = thread.run_post_processing(post_processing_config)
@@ -1268,6 +1295,7 @@ def main():
         material_properties=material_properties,
         igsn_material_map=igsn_material_map,
         igsn_thickness_map=igsn_thickness_map,
+        data_mode=data_mode,
     )
 
     result = {"success": False}

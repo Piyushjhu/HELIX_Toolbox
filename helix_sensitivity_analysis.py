@@ -723,6 +723,13 @@ def resolve_input_files(args, cfg):
     if not paths:
         raise SystemExit("No input traces resolved. Pass --input-file / --input-files / --input-dir.")
 
+    from helix_data_source import validate_data_mode, load_mpdv_parameters, select_central_files, MPDV_NOTE
+    settings = cfg.get("cli_settings", {})
+    if validate_data_mode(settings.get("data_mode", "single_pdv")) == "mpdv":
+        print(MPDV_NOTE)
+        parameters = load_mpdv_parameters(settings.get("param_folder"))
+        paths = select_central_files(paths, parameters)
+
     traces, seen = [], {}
     for p in paths:
         lab = trace_label(p)

@@ -1,5 +1,6 @@
 {
   "cli_settings": {
+    "data_mode": "single_pdv",
     "batch_mode": true,
     "input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016",
     "subfolder_pattern": "*",

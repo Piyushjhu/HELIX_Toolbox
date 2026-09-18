@@ -97,7 +97,8 @@ HELIX Toolbox integrates ALPSS (Automated Laser Photonic Doppler Velocimetry Sig
 
 Both modes share identical analysis logic and produce the same outputs, from raw PDV signals through to complete spall strength, strain rate, HEL, and shock-stress analysis with full uncertainty quantification.
 
-**Latest Updates (v2.1.0):**
+**Latest Updates (v2.1.0 + subsequent revisions):**
+- **MPDV central-probe mode**: opt-in PDV_10 input selection for GUI, CLI, batch, and sensitivity runs; legacy Single PDV remains the default.
 - **Batch processing mode**: process a parent directory of per-shot subfolders in one CLI run (`batch_mode` + `subfolder_pattern` in `cli_settings`; see `helix_master_config_batch_process.json`)
 - **Batch summary plotting**: `batch_summary_plot.py` aggregates spall and HEL results across all subfolders of a batch run into combined strength-vs-strain-rate figures
 - **ALPSS noise-fraction filter**: `noise_filter_enabled` / `noise_filter_threshold` replace high-noise velocity samples with linear interpolation before plotting and saving
@@ -115,6 +116,102 @@ Both modes share identical analysis logic and produce the same outputs, from raw
 - **Command-line interface** for batch processing without the GUI
 
 ---
+
+## Single PDV and MPDV central-probe processing
+
+**Single PDV remains the default.** Existing configurations without `data_mode`
+use the original input loading, parameter matching, and analysis behavior. MPDV
+is an opt-in input adapter; it reuses the existing ALPSS/SPADE scientific routines.
+Full multiplexed, multipoint analysis is not implemented in this revision.
+
+In the GUI, open **Analysis Mode → PDV Data Type** and choose **Single PDV** or
+**MPDV — Central probe only (PDV_10)**. This choice is independent of ALPSS Only,
+SPADE Only, and Combined. The GUI remembers the choice. **Load Master Config
+(YAML / JSON)** loads a single-run master file, including its data type, paths,
+analysis parameters, IGSN mappings, and material properties. Run batch master
+files through the CLI.
+
+In both `helix_master_config.yml` and `helix_master_config_batch_process.yml`
+(and their JSON equivalents), set:
+
+```yaml
+cli_settings:
+  data_mode: mpdv          # single_pdv is the default
+  param_folder: /path/to/pdv_experiment_log
+  input_dir: /path/to/pdv_trace/SAMPLE_IGSN
+  input_pattern: "*.csv"   # may include C1, C2, and C3; only logged PDV_10 files run
+  output_dir: /path/to/central_probe_results
+  analysis_mode: both
+  spade_mode: auto
+```
+
+The CLI can override the mode, including when separate ALPSS/SPADE configuration
+files are used:
+
+```bash
+python helix_cli_runner.py --config helix_master_config.yml --data-mode mpdv
+python helix_cli_runner.py --config helix_master_config_batch_process.yml --data-mode mpdv
+```
+
+For batch MPDV, set `input_dir` to the parent containing the per-sample trace
+folders, `batch_mode: true`, and `subfolder_pattern` to the desired sample folders.
+One parameter folder can contain all sample logs. Every subfolder uses the same
+PDV_10 selection rule. Batch SPADE-only/manual input is additionally scoped by the
+subfolder's exact `Sample_IGSN`; keep sample folder names equal to those IGSNs.
+Sensitivity runs inherit `cli_settings.data_mode` and exclude other probes before
+creating their per-trace sweeps. Existing-result plotting also filters filenames
+and summary rows to the central probe when MPDV is selected.
+
+MPDV input rules:
+
+- A CSV/Excel parameter folder with `PDV_10_FileName` is required. Its values,
+  rather than a hard-coded C1 assumption, identify the central waveforms. In the
+  supplied acquisition format, PDV_10 is C1; other channels are suppressed.
+- Match full acquisition basenames (with or without `.csv` or a directory prefix).
+  Keep channel, timestamp, and shot number intact. Do not match by `Exp_ID` alone:
+  skipped positions can make it differ from the filename's `shotNN` number.
+- Rows with blank central filenames are skipped. Ambiguous duplicate central
+  filenames, invalid wavelengths, and selections with no matching central files
+  fail with an explicit error. Other parameter files without the central column
+  are ignored; at least one MPDV parameter file is required.
+- Map `PDV_10_*` optical metadata to the existing `PDV_*` fields internally and
+  retain the row's `Sample_IGSN`, energy, position, and other experiment metadata.
+  The recorded central target wavelength is used for that trace; a missing value
+  retains configured `lam`. LeCroy `Time,Ampl` headers are detected in MPDV mode;
+  other layouts retain configured `header_lines`. Sample-rate detection is unchanged.
+- SPADE-only/manual runs select central velocity files by the same acquisition
+  basename. Existing noncentral output files are left on disk but excluded from
+  MPDV plots. Use a separate output directory when keeping results from multiple
+  modes, because shared summary/plot filenames can be overwritten.
+- Scope trigger timestamps are not used to match metadata: the supplied MPDV
+  exports have a known timestamp-saving discrepancy.
+
+Every MPDV execution reports:
+
+> MPDV central-probe mode: processing PDV_10 only. All other probes' data are suppressed for this MPDV run.
+
+The run configuration records `data_mode`, `selected_probe`, excluded input
+counts, and effective per-trace wavelength/header settings.
+
+Target material still resolves through `igsn_material_map` and
+`material_properties`. For example, `JHAMAL00016: Ti` applies to its children,
+with a longer matching IGSN taking precedence. Add the appropriate mappings for
+your APL sample IDs when known; the software does not infer target material from
+`Flyer_material`. Blank target material remains unresolved without a mapping, so
+material-dependent results may be unavailable. No APL material assignments are
+provided by this change.
+
+Verification:
+
+```bash
+QT_QPA_PLATFORM=offscreen helix_toolbox_env/bin/python3 regression/test_mpdv.py
+QT_QPA_PLATFORM=offscreen helix_toolbox_env/bin/python3 regression/run_control.py
+```
+
+The MPDV tests cover exact shot matching, blank and duplicate records, channel
+suppression, CSV/Excel parameters, material lookup, GUI selection, and legacy
+Single PDV defaults. See [regression/README.md](regression/README.md) for the
+scientific control and its baseline policy.
 
 ## Features
 

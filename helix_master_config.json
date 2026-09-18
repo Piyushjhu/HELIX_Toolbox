@@ -1,5 +1,6 @@
 {
   "cli_settings": {
+    "data_mode": "single_pdv",
     "input_dir": "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016/JHAMAL00016-004",
     "input_files": null,
     "input_pattern": "*.csv",

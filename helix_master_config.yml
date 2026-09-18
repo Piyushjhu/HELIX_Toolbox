@@ -26,6 +26,12 @@
 # -----------------------------------------------------------------------------
 cli_settings:
 
+  # Data source: single_pdv preserves legacy behavior (also the default if omitted).
+  # mpdv processes ONLY files listed under PDV_10_FileName in param_folder.
+  # Applies to ALPSS, SPADE, plots and each batch subfolder; other probes suppressed.
+  # MPDV requires parameter files. Full multipoint demultiplexing is not implemented.
+  data_mode: single_pdv
+
   # Directory containing raw PDV oscilloscope CSV files (used in ALPSS step).
   # *** EDIT THIS *** — replace with the absolute path to your raw PDV data folder.
   # Example (macOS/Linux): /Users/you/experiments/shot_2026_04/raw_csv
