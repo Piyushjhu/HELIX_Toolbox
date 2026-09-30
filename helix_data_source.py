@@ -6,6 +6,8 @@ import re
 
 import pandas as pd
 
+from helix_file_io import read_parameter_table
+
 
 MPDV_NOTE = (
     "MPDV central-probe mode: processing PDV_10 only. "
@@ -127,8 +129,12 @@ class MixedParameters(dict):
                     raise ValueError(f'Ambiguous PDV_10 input: more than one file for {key}')
                 seen.add(key)
             selected.append(path)
-        for central in sorted(encountered - seen):
-            emit(f'[Mixed PDV] Missing PDV_10 input: {central or "blank parameter mapping"}; acquisition skipped.')
+        missing = encountered - seen - {''}
+        if missing:
+            raise ValueError('Missing PDV_10 input(s); run stopped to avoid an incomplete dataset: ' +
+                             ', '.join(sorted(missing)))
+        if '' in encountered:
+            emit('[Mixed PDV] Blank PDV_10 mapping; noncentral files excluded.')
         if files and not selected:
             raise ValueError('No eligible inputs remain after MPDV probe-10 selection.')
         return selected
@@ -150,7 +156,7 @@ def load_mpdv_parameters(folder, emit=print):
         if name.startswith('~$') or not name.lower().endswith(('.csv', '.xlsx', '.xls')):
             continue
         path = os.path.join(folder, name)
-        df = pd.read_csv(path) if name.lower().endswith('.csv') else pd.read_excel(path)
+        df = read_parameter_table(path)
         df.columns = [str(c).strip() for c in df.columns]
         if 'PDV_10_FileName' not in df.columns:
             emit(f'[MPDV] Ignoring {name}: no PDV_10_FileName column.')

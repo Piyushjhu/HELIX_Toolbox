@@ -142,8 +142,8 @@ manual SPADE velocity inputs, and summary/post-processing filters.
   acquisition filename to classify. Files with no identifiable MPDV mapping
   retain ordinary single-point behavior.
 - Missing central inputs are reported for MPDV acquisitions encountered in the
-  input selection. Other eligible inputs continue; an entirely excluded input
-  selection fails clearly. Duplicate central mappings/inputs are errors.
+  input selection, and stop the run to avoid an incomplete dataset.
+  Duplicate central mappings/inputs are errors.
 - Probe-10 wavelength and detected LeCroy headers apply only to MPDV inputs.
   Run snapshots record the mode, exclusions, and effective MPDV settings.
 - Existing noncentral MPDV outputs are filtered from summaries and plots;
@@ -238,6 +238,42 @@ The MPDV tests cover exact shot matching, blank and duplicate records, channel
 suppression, CSV/Excel parameters, material lookup, GUI selection, and legacy
 Single PDV defaults. See [regression/README.md](regression/README.md) for the
 scientific control and its baseline policy.
+
+## OneDrive availability and dataset completeness
+
+A filename visible in Finder may still be an online-only placeholder. In Finder,
+mark the dataset folder **Always Keep on This Device**, wait for OneDrive to
+finish downloading/syncing, and check sync errors. For reproducible analysis,
+copy the downloaded inputs and parameter logs to a local folder outside OneDrive
+and run there; keep the cloud originals intact.
+
+The CLI stops on unavailable parameter logs, missing explicitly listed inputs,
+and cloud-only/missing/empty selected waveforms. Parameter read errors/timeouts
+are fatal rather than silently dropping metadata. A failed ALPSS pipeline cannot
+reuse old outputs as evidence of success. If any ALPSS trace fails, the run is
+incomplete, `failed_data_files.csv` records the failures, and downstream summaries
+are not regenerated. Existing summaries may therefore belong to an earlier run.
+The parameter directory is excluded from batch sample directories.
+
+Audit expected filenames before rerunning a complete dataset:
+
+```bash
+helix_toolbox_env/bin/python3 helix_input_audit.py \
+  --config helix_master_config_batch_process.yml \
+  --report output/input_availability_audit.json
+```
+
+This read-only audit compares nonblank logged `PDV_FileName` / `PDV_10_FileName`
+values with the selected input files. It reports missing, cloud-only, empty,
+duplicate/ambiguous, and unmapped files separately from intentionally excluded
+MPDV sibling channels. Blank filename rows are reported separately; they do not
+prove a successful acquisition. Use matching input and parameter folder scopes.
+If any parameter log is unavailable, expected-shot reconciliation is explicitly
+incomplete. Exit 0 means the logged filenames reconcile and the relevant files
+are locally present; exit 1 means further investigation/download is needed.
+Local availability checks flags and size, not full file contents or signal quality.
+Repeat the audit and rerun the analysis after sync completes; a previous partial
+analysis must not be used as evidence that all acquired shots were processed.
 
 ## Features
 

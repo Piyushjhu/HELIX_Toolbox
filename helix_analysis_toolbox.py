@@ -25,6 +25,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+from helix_file_io import require_local_files
+
 from helix_data_source import (
     MPDV_NOTE, MixedParameters, validate_data_mode, trace_key, load_mpdv_parameters,
     select_central_files, central_summary, mpdv_header_lines,
@@ -2213,6 +2215,9 @@ class AnalysisThread(QThread):
     def run(self):
         try:
             self._prepare_data_source()
+            require_local_files(self.input_files if self.analysis_mode != 'spade_only' else [])
+            if self.analysis_mode == 'spade_only' or not self.spade_auto_mode:
+                require_local_files(self.spade_input_files or [])
             # Add memory management
             import gc
             gc.collect()  # Force garbage collection before starting
@@ -2354,7 +2359,8 @@ class AnalysisThread(QThread):
                         alpss_params['save_noise_csv'] = self.alpss_params.get('save_noise_csv', True)
 
                     try:
-                        alpss_main(**alpss_params)
+                        if alpss_main(**alpss_params) is False:
+                            raise RuntimeError('ALPSS pipeline failed; existing output files are not evidence of success.')
 
                         # Check if required files were generated based on analysis mode
                         base_name = os.path.splitext(
@@ -2456,6 +2462,11 @@ class AnalysisThread(QThread):
                         self.progress_signal.emit(f"Saved failed files list to: {failed_files_path}")
                     except Exception as e:
                         self.progress_signal.emit(f"Warning: Could not save failed files list: {str(e)}")
+
+                if failed_files:
+                    raise RuntimeError(
+                        f'Incomplete ALPSS run: {len(failed_files)} of {len(files_to_process)} '
+                        'inputs failed. See failed_data_files.csv; summaries were not regenerated.')
 
             # Run SPADE analysis if not ALPSS-only mode
             if self.analysis_mode != "alpss_only":

@@ -86,12 +86,10 @@ class MixedPDVTests(unittest.TestCase):
         self.assertEqual(self.load().select([CENTRAL, UNLISTED, OTHER, LEGACY], lambda _: None),
                          [UNLISTED, LEGACY])
 
-    def test_missing_central_reports_and_never_uses_sibling(self):
-        messages = []
-        self.assertEqual(self.load().select([UNLISTED, OTHER, LEGACY], messages.append), [LEGACY])
-        self.assertTrue(any('Missing PDV_10 input' in m and CENTRAL in m for m in messages))
-        with self.assertRaisesRegex(ValueError, 'No eligible inputs'):
-            self.load().select([UNLISTED], lambda _: None)
+    def test_missing_central_stops_instead_of_using_sibling(self):
+        for inputs in ([UNLISTED, OTHER, LEGACY], [UNLISTED]):
+            with self.assertRaisesRegex(ValueError, 'Missing PDV_10 input'):
+                self.load().select(inputs, lambda _: None)
 
     def test_blank_central_keeps_peripheral_membership(self):
         self.rows['PDV_10_FileName'] = None

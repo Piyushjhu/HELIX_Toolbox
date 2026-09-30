@@ -46,6 +46,7 @@ if REPO_ROOT not in sys.path:
 
 from helix_analysis_toolbox import AnalysisThread, load_config_from_file
 from helix_data_source import MixedParameters, load_mpdv_parameters, validate_data_mode
+from helix_file_io import read_parameter_table, require_local_files
 
 
 # Extensions probed (in order) when looking for a default master config next
@@ -350,9 +351,8 @@ def _resolve_file_list(
         existing_files = [os.path.abspath(path) for path in explicit_files if os.path.exists(path)]
         missing_files = [os.path.abspath(path) for path in explicit_files if not os.path.exists(path)]
         if missing_files:
-            print("[WARN] Some explicit input files do not exist:")
-            for f in missing_files:
-                print(f"  - {f}")
+            raise FileNotFoundError("Explicit input files are missing; run stopped:\n" +
+                                    "\n".join(missing_files))
         return existing_files
 
     if directory:
@@ -574,9 +574,7 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
 
     folder = os.path.abspath(folder)
     if not os.path.isdir(folder):
-        print(f"[WARN] Parameter folder not found: {folder}")
-        print(f"[WARN] Continuing without parameter data — material color-coding will be skipped.")
-        return {}
+        raise ValueError(f"Parameter folder not found: {folder}. Run stopped; metadata was not skipped.")
 
     param_data: Dict[str, Dict] = MixedParameters()
     all_entries = os.listdir(folder)
@@ -601,39 +599,11 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
     legacy_param_files = set(param_files)
     # Inspect every schema: a batch parent name must not hide MPDV logs.
     param_files = sorted(e for e in all_param_files if not e.startswith("~$"))
+    require_local_files([os.path.join(folder, name) for name in param_files])
     for idx, entry in enumerate(param_files, 1):
         print(f"[INFO] Processing parameter file {idx}/{len(param_files)}: {entry}")
         file_path = os.path.join(folder, entry)
-        try:
-            import concurrent.futures as _cf
-            _read_timeout = 30  # seconds — cloud-only OneDrive files can hang indefinitely
-
-            def _read_file():
-                if entry.lower().endswith(".csv"):
-                    return pd.read_csv(file_path)
-                try:
-                    return pd.read_excel(file_path)
-                except ImportError as exc:
-                    raise ImportError(
-                        "openpyxl is required to read Excel parameter files."
-                    ) from exc
-
-            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                _future = _pool.submit(_read_file)
-                try:
-                    df = _future.result(timeout=_read_timeout)
-                except _cf.TimeoutError:
-                    _future.cancel()
-                    print(
-                        f"[WARN] Skipping parameter file {entry}: read timed out after "
-                        f"{_read_timeout}s. File may be a cloud-only OneDrive placeholder "
-                        f"that has not been downloaded. In Finder, right-click the file "
-                        f"and choose 'Keep on This Device' to download it."
-                    )
-                    continue
-        except Exception as exc:  # pragma: no cover - best-effort loader
-            print(f"[WARN] Skipping parameter file {entry}: {exc}")
-            continue
+        df = read_parameter_table(file_path)
 
         if df.empty:
             print(f"[WARN] Parameter file {entry} is empty, skipping")
@@ -1008,6 +978,8 @@ def main():
             param_data = None
 
         subfolders = _get_subfolders(input_dir, subfolder_pattern)
+        if param_folder:
+            subfolders = [p for p in subfolders if not (os.path.exists(param_folder) and os.path.samefile(p, param_folder))]
         if not subfolders:
             raise RuntimeError(
                 f"No subfolders found under batch input directory: {os.path.abspath(input_dir)}"

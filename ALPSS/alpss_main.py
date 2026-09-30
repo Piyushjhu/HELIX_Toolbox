@@ -81,6 +81,7 @@ def alpss_main(**inputs):
 
     # detect the sample rate from the data file before it is used anywhere else;
     # the configured value is only kept as a fallback if detection fails
+    pipeline_failed = False
     try:
         detected_rate = detect_sample_rate(**inputs)
         configured_rate = inputs.get("sample_rate")
@@ -325,10 +326,20 @@ def alpss_main(**inputs):
         )
 
     # in case the program throws an error
-    except Exception:
+    except Exception as pipeline_error:
+        pipeline_failed = True
 
         # print the traceback for the error
         print(f"[{datetime.now()}] ERROR: Exception in main pipeline:\n{traceback.format_exc()}")
+
+        # A failed file read is not a bad signal. Do not reopen the same cloud
+        # file for an error plot or let old output files masquerade as success.
+        cause = pipeline_error
+        while cause is not None:
+            if isinstance(cause, OSError):
+                os.chdir(cwd)
+                return False
+            cause = cause.__cause__ or cause.__context__
 
         # attempt to plot the voltage signal from the imported data
         try:
@@ -393,6 +404,7 @@ def alpss_main(**inputs):
     # move back to the original working directory
     os.chdir(cwd)
     print(f"[{datetime.now()}] DEBUG: alpss_main function completed")
+    return not pipeline_failed
 
 
 # function to filter out the carrier frequency
