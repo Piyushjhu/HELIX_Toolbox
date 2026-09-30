@@ -168,7 +168,7 @@ class MixedPDVTests(unittest.TestCase):
             folder = parent / group
             folder.mkdir(parents=True)
             for stem in stems:
-                (folder / (stem + '.csv')).touch()
+                (folder / (stem + '.csv')).write_text('Time,Ampl\n0,1\n')
         for batch in (False, True):
             cfg = {'cli_settings': {'batch_mode': batch, 'data_mode': 'single_pdv',
                    'input_dir': str(parent if batch else parent / 'mixed'),

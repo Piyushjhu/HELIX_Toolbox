@@ -191,7 +191,7 @@ class MPDVTests(unittest.TestCase):
             central = f'C1--{sample}_shot01--00000'
             other = central.replace('C1--', 'C3--')
             for name in (central, other):
-                (directory / (name + '.csv')).touch()
+                (directory / (name + '.csv')).write_text('Time,Ampl\n0,1\n')
             records.append({'Sample_IGSN': sample, 'PDV_10_FileName': central})
         pd.DataFrame(records).to_csv(self.folder / 'log.csv', index=False)
         cfg = {'cli_settings': {'batch_mode': True, 'data_mode': 'mpdv',

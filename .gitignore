@@ -164,3 +164,6 @@ SPADE/spall_analysis_release/executables/
 # Examples — keep notebooks and figures/README but ignore generated outputs
 examples/figures/example_*/
 examples/**/*_output/
+
+# Verified local input copies (never commit experimental data)
+.helix_input_cache/

@@ -239,23 +239,60 @@ suppression, CSV/Excel parameters, material lookup, GUI selection, and legacy
 Single PDV defaults. See [regression/README.md](regression/README.md) for the
 scientific control and its baseline policy.
 
-## OneDrive availability and dataset completeness
+## Download and verify before running
 
-A filename visible in Finder may still be an online-only placeholder. In Finder,
-mark the dataset folder **Always Keep on This Device**, wait for OneDrive to
-finish downloading/syncing, and check sync errors. For reproducible analysis,
-copy the downloaded inputs and parameter logs to a local folder outside OneDrive
-and run there; keep the cloud originals intact.
+The CLI automatically prepares inputs before **any** sample begins analysis:
 
-The CLI stops on unavailable parameter logs, missing explicitly listed inputs,
-and cloud-only/missing/empty selected waveforms. Parameter read errors/timeouts
-are fatal rather than silently dropping metadata. A failed ALPSS pipeline cannot
-reuse old outputs as evidence of success. If any ALPSS trace fails, the run is
-incomplete, `failed_data_files.csv` records the failures, and downstream summaries
-are not regenerated. Existing summaries may therefore belong to an earlier run.
-The parameter directory is excluded from batch sample directories.
+1. Request full reads of all required parameter logs (this triggers cloud downloads).
+2. Load the verified logs and select ordinary PDV / MPDV probe-10 files.
+3. Check logged filenames within the selected sample folders for missing traces.
+   Single-point logs may omit the LeCroy `C#--...--00000` wrapper; this is
+   accepted only when one file matches the entire logged name. MPDV remains exact.
+4. Download/read every selected waveform and manual SPADE input into a local cache.
+5. Start analysis only after all required files have passed verification.
 
-Audit expected filenames before rerunning a complete dataset:
+On macOS, the runner requests OneDrive app startup when OneDrive placeholders
+are encountered. Each file gets bounded retries, with progress every ten seconds.
+Verification reads the entire file, checks its size and source modification time,
+and records its SHA-256 checksum. Analysis uses the verified **local copies** so
+OneDrive eviction cannot interrupt processing. A stale cache never counts as a
+successful new read. Original input files are not modified or deleted.
+
+Use the same preflight without starting analysis:
+
+```bash
+helix_toolbox_env/bin/python3 helix_cli_runner.py \
+  --config helix_master_config_batch_process.yml --prepare-only
+```
+
+Optional master-config settings under `cli_settings`:
+
+```yaml
+input_preparation:
+  cache_dir: /path/to/local/HELIX_cache  # outside OneDrive/CloudStorage
+  timeout_seconds: 120                 # per file, per attempt
+  attempts: 3
+  workers: 4
+  retry_delay_seconds: 5
+```
+
+By default the cache is `.helix_input_cache/` beside the runner (ignored by Git).
+Each run has its own directory, with separate parameter and trace download
+manifests recording original paths, cached paths, bytes, checksums, status, and
+errors. Allow enough local disk space; completed run caches remain until you
+remove them. If a download fails or times out, analysis does not start. Inspect
+the manifest and OneDrive sync status, resolve connectivity/sign-in/storage
+issues, and retry. Marking the dataset **Always Keep on This Device** in Finder
+also requests persistent offline availability.
+
+A failed ALPSS pipeline cannot reuse old outputs as evidence of success. If any
+ALPSS trace fails, the run is incomplete, `failed_data_files.csv` records the
+failures, and downstream summaries are not regenerated. Existing summaries may
+therefore belong to an earlier run. Parameter folders are excluded from batch
+sample directories. Post-processing existing summaries does not run the raw-input
+preparation step.
+
+For a separate read-only filename/availability inventory:
 
 ```bash
 helix_toolbox_env/bin/python3 helix_input_audit.py \
@@ -263,17 +300,11 @@ helix_toolbox_env/bin/python3 helix_input_audit.py \
   --report output/input_availability_audit.json
 ```
 
-This read-only audit compares nonblank logged `PDV_FileName` / `PDV_10_FileName`
-values with the selected input files. It reports missing, cloud-only, empty,
-duplicate/ambiguous, and unmapped files separately from intentionally excluded
-MPDV sibling channels. Blank filename rows are reported separately; they do not
-prove a successful acquisition. Use matching input and parameter folder scopes.
-If any parameter log is unavailable, expected-shot reconciliation is explicitly
-incomplete. Exit 0 means the logged filenames reconcile and the relevant files
-are locally present; exit 1 means further investigation/download is needed.
-Local availability checks flags and size, not full file contents or signal quality.
-Repeat the audit and rerun the analysis after sync completes; a previous partial
-analysis must not be used as evidence that all acquired shots were processed.
+This inventory compares nonblank logged filenames against the selected inputs,
+reporting unavailable, missing, ambiguous, and unmapped files separately from
+intentionally excluded MPDV sibling channels. Use matching parameter/input scopes.
+Unavailable logs make reconciliation incomplete. This inventory checks filesystem
+flags/size; the runner's preflight additionally verifies full file reads.
 
 ## Features
 

@@ -3,13 +3,13 @@
 Uses metadata-only file checks for cloud placeholders; never downloads data.
 """
 import argparse
-from collections import Counter, defaultdict
+from collections import Counter
 import json
 import os
 from pathlib import Path
 import re
 
-from helix_data_source import MixedParameters, trace_key
+from helix_data_source import MixedParameters, match_logged_files, trace_key
 from helix_file_io import file_availability, read_parameter_table
 
 
@@ -25,9 +25,6 @@ def audit_inputs(settings, emit=print):
     paths = ([Path(p).absolute() for p in explicit] if explicit and not settings.get('batch_mode') else
              [p.absolute() for d in directories for p in sorted(d.glob(pattern)) if p.is_file()])
     files = [{'path': str(p), 'availability': file_availability(p)} for p in paths]
-    index = defaultdict(list)
-    for item in files:
-        index[trace_key(item['path'])].append(item)
     params = []
     expected = []
     blank_rows = 0
@@ -66,12 +63,13 @@ def audit_inputs(settings, emit=print):
     complete = bool(params) and all(p['availability'] == 'local' for p in params) and not metadata_errors
     counts = Counter(row['filename'] for row in expected)
     for row in expected:
-        matches = index.get(row['filename'], [])
+        matching_paths = match_logged_files(row['filename'], [f['path'] for f in files], row['probe'])
+        matches = [f for f in files if f['path'] in matching_paths]
         row['matches'] = [m['path'] for m in matches]
         row['status'] = ('duplicate_mapping' if counts[row['filename']] > 1 else
                          'missing' if not matches else 'ambiguous' if len(matches) > 1 else
                          matches[0]['availability'])
-    expected_keys = set(counts)
+    expected_keys = {trace_key(p) for row in expected for p in row['matches']}
     for item in files:
         key = trace_key(item['path'])
         item['role'] = ('expected' if key in expected_keys else

@@ -45,8 +45,11 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from helix_analysis_toolbox import AnalysisThread, load_config_from_file
-from helix_data_source import MixedParameters, load_mpdv_parameters, validate_data_mode
-from helix_file_io import read_parameter_table, require_local_files
+from helix_data_source import (
+    MixedParameters, load_mpdv_parameters, match_logged_files,
+    select_central_files, trace_key, validate_data_mode,
+)
+from helix_file_io import download_and_verify, read_parameter_table, require_local_files
 
 
 # Extensions probed (in order) when looking for a default master config next
@@ -557,6 +560,95 @@ def _normalize_pdv_filename(value: str) -> str:
     return s
 
 
+def _prepare_run_sources(*, input_dir, input_files, input_pattern, param_folder,
+                         data_mode, batch_mode, subfolder_pattern, analysis_mode,
+                         spade_mode, spade_input_files, spade_input_dir,
+                         spade_input_pattern, options):
+    """Download and fully read all selected sources before starting any analysis."""
+    import uuid
+    cache_base = options.get('cache_dir') or os.path.join(REPO_ROOT, '.helix_input_cache')
+    cache = os.path.join(os.path.abspath(cache_base), uuid.uuid4().hex)
+    download_options = dict(timeout=float(options.get('timeout_seconds', 120)),
+                            attempts=int(options.get('attempts', 3)),
+                            workers=int(options.get('workers', 4)),
+                            retry_delay=float(options.get('retry_delay_seconds', 5)),
+                            emit=lambda message: print(message, flush=True))
+    print(f"[Preflight] Downloading and verifying inputs. Local cache: {cache}", flush=True)
+    parameters = None
+    if param_folder:
+        if not os.path.isdir(param_folder):
+            raise ValueError(f'Parameter folder not found: {param_folder}')
+        logs = [os.path.join(param_folder, n) for n in sorted(os.listdir(param_folder))
+                if n.lower().endswith(('.csv', '.xlsx', '.xls')) and not n.startswith('~$')]
+        if not logs:
+            raise ValueError(f'No parameter files found: {param_folder}')
+        downloaded = download_and_verify(logs, os.path.join(cache, 'parameters'), **download_options)
+        local_folder = os.path.dirname(next(iter(downloaded.values())))
+        parameters = _load_parameter_folder(local_folder,
+                                            experiment_id=os.path.basename(input_dir or ''),
+                                            data_mode=data_mode)
+
+    def select(files):
+        if data_mode == 'mpdv':
+            return select_central_files(files, parameters or {})
+        if isinstance(parameters, MixedParameters) and parameters.has_mpdv:
+            return parameters.select(files)
+        return files
+
+    groups = {}
+    if batch_mode and not input_dir:
+        raise ValueError('batch_mode requires input_dir.')
+    if analysis_mode != 'spade_only':
+        if batch_mode:
+            for folder in _get_subfolders(input_dir, subfolder_pattern):
+                if param_folder and os.path.samefile(folder, param_folder):
+                    continue
+                files = _resolve_file_list(None, folder, input_pattern)
+                groups[folder] = select(files) if files else []
+        else:
+            groups['single'] = select(_resolve_file_list(input_files, input_dir, input_pattern))
+        if not any(groups.values()):
+            raise ValueError('No eligible PDV inputs found during download preflight.')
+        # In a folder run, require all logged traces belonging to its sample
+        # folders. Explicit file lists intentionally select a subset.
+        if parameters and not input_files:
+            scope_names = [os.path.basename(p) for p in groups if p != 'single']
+            if not batch_mode:
+                scope_names = [os.path.basename(os.path.normpath(input_dir or ''))]
+            selected_paths = [p for files in groups.values() for p in files]
+            missing = []
+            aliases = {}
+            for key, row in list(parameters.items()):
+                if not any(name and (str(row.get('Sample_IGSN', '')).lower() == name.lower()
+                                     or name in str(key)) for name in scope_names):
+                    continue
+                matches = match_logged_files(key, selected_paths, row.get('selected_probe', 'single_pdv'))
+                if not matches:
+                    missing.append(key)
+                elif len(matches) > 1:
+                    raise ValueError(f'Ambiguous input for logged shot {key}: {matches}')
+                elif trace_key(matches[0]) != trace_key(key):
+                    actual_key = trace_key(matches[0])
+                    aliases[actual_key] = dict(row, PDV_FileName=actual_key, PDV_Logged_FileName=key)
+                    print(f'[Preflight] Matched legacy export: {key} -> {actual_key}', flush=True)
+            if missing:
+                raise ValueError('Logged shot files are missing from the input selection; analysis stopped:\n' +
+                                 '\n'.join(sorted(missing)))
+            parameters.update(aliases)
+
+    manual = []
+    if spade_mode == 'manual':
+        manual = select(_resolve_file_list(spade_input_files, spade_input_dir, spade_input_pattern))
+        if not manual:
+            raise ValueError('No eligible manual SPADE inputs found during download preflight.')
+    sources = [p for files in groups.values() for p in files] + manual
+    prepared = download_and_verify(sources, os.path.join(cache, 'traces'), **download_options)
+    groups = {key: [prepared[os.path.abspath(p)] for p in files] for key, files in groups.items()}
+    manual = [prepared[os.path.abspath(p)] for p in manual]
+    print('[Preflight] READY: all selected inputs have verified local copies. Analysis may start.', flush=True)
+    return parameters, groups, manual
+
+
 def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: str = "single_pdv") -> Dict[str, Dict]:
     """Aggregate experiment metadata from CSV/Excel files in a folder.
 
@@ -773,6 +865,9 @@ Examples:
         help="Path to master config file (contains cli_settings, alpss_config, spade_config). If provided, all settings come from this file (can be overridden by CLI args).",
     )
     
+    parser.add_argument('--prepare-only', action='store_true',
+                        help='Download, reconcile, and verify inputs without running analysis.')
+
     # Separate config files (required only if --config is not provided)
     parser.add_argument(
         "--alpss-config",
@@ -950,6 +1045,24 @@ def main():
     output_subdir_name = cli_settings.get("output_subdir_name", "Output")
     combined_output_dir = cli_settings.get("combined_output_dir") or None
 
+    prepared_parameters = None
+    prepared_groups = {}
+    prepared_manual = []
+    prepare_inputs = batch_mode or not post_processing_config.get('enabled', False)
+    if prepare_inputs:
+        prepared_parameters, prepared_groups, prepared_manual = _prepare_run_sources(
+            input_dir=input_dir, input_files=input_files, input_pattern=input_pattern,
+            param_folder=param_folder, data_mode=data_mode, batch_mode=batch_mode,
+            subfolder_pattern=subfolder_pattern, analysis_mode=analysis_mode,
+            spade_mode=spade_mode, spade_input_files=spade_input_files,
+            spade_input_dir=spade_input_dir, spade_input_pattern=spade_input_pattern,
+            options=cli_settings.get('input_preparation', {}))
+        if args.prepare_only:
+            print('Input preparation complete; analysis was not started.')
+            sys.exit(0)
+    elif args.prepare_only:
+        raise ValueError('--prepare-only applies to analysis inputs, not post-processing mode.')
+
     if batch_mode:
         # input_dir is the parent folder containing one subfolder per shot group.
         if not input_dir:
@@ -960,9 +1073,7 @@ def main():
                 "Use analysis_mode=both or spade_mode=manual in batch mode."
             )
         if spade_mode == "manual":
-            resolved_spade_input_files = _resolve_file_list(
-                spade_input_files, spade_input_dir, spade_input_pattern
-            )
+            resolved_spade_input_files = prepared_manual
             if not resolved_spade_input_files:
                 raise RuntimeError("Manual SPADE mode requires spade_input_files or spade_input_dir.")
             spade_auto_mode = False
@@ -973,7 +1084,7 @@ def main():
         # Load parameter data once — shared across all subfolder runs
         if param_folder:
             print(f"\n[INFO] Loading parameter data from: {param_folder}")
-            param_data = _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir or ""), data_mode=data_mode)
+            param_data = prepared_parameters
         else:
             param_data = None
 
@@ -1004,7 +1115,7 @@ def main():
             os.makedirs(run_output_dir, exist_ok=True)
 
             if analysis_mode != "spade_only":
-                run_input_files = _resolve_file_list(None, subfolder, input_pattern)
+                run_input_files = prepared_groups.get(subfolder, [])
                 if not run_input_files:
                     print(f"[WARN] No files matched '{input_pattern}' in {subfolder_name} — skipping.")
                     batch_results[subfolder_name] = False
@@ -1078,7 +1189,8 @@ def main():
             print("ERROR: No input files or input directory specified!")
         print("=" * 70 + "\n")
         
-        resolved_input_files = _resolve_file_list(input_files, input_dir, input_pattern)
+        resolved_input_files = (prepared_groups.get('single', []) if prepare_inputs else
+                                _resolve_file_list(input_files, input_dir, input_pattern))
         if not resolved_input_files:
             error_msg = "No PDV input files found for ALPSS processing.\n\n"
             if input_files:
@@ -1111,11 +1223,8 @@ def main():
                          "Please use --analysis-mode both or switch to manual SPADE mode.")
 
     if spade_mode == "manual" and not mpdv_post_only:
-        resolved_spade_input_files = _resolve_file_list(
-            spade_input_files,
-            spade_input_dir,
-            spade_input_pattern,
-        )
+        resolved_spade_input_files = (prepared_manual if prepare_inputs else
+                                      _resolve_file_list(spade_input_files, spade_input_dir, spade_input_pattern))
         if not resolved_spade_input_files:
             raise RuntimeError("Manual SPADE mode requires --spade-input-files or --spade-input-dir.")
         spade_auto_mode = False
@@ -1126,7 +1235,8 @@ def main():
     # Load parameter folder with progress indication
     if param_folder:
         print(f"\n[INFO] Loading parameter data from: {param_folder}")
-        param_data = _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir or ""), data_mode=data_mode)
+        param_data = (prepared_parameters if prepare_inputs else
+                      _load_parameter_folder(param_folder, experiment_id=os.path.basename(input_dir or ""), data_mode=data_mode))
     else:
         param_data = None
     

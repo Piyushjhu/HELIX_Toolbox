@@ -47,6 +47,20 @@ def acquisition_key(value):
     return re.sub(r'^C\d+--', '', trace_key(value))
 
 
+def match_logged_files(logged_name, files, probe='single_pdv'):
+    """Match exact names; support an unambiguous legacy LeCroy wrapper only.
+
+    Some single-point logs omit C#-- and --00000, while the exported trace
+    includes them. Never remove channel identity from explicit MPDV mappings.
+    """
+    key = trace_key(logged_name)
+    exact = [p for p in files if trace_key(p) == key]
+    if exact or probe == 'PDV_10' or re.match(r'^C\d+--', key):
+        return exact
+    wrapper = re.compile(r'^C\d+--' + re.escape(key) + r'--\d{5}$')
+    return [p for p in files if wrapper.fullmatch(trace_key(p))]
+
+
 def mpdv_record(row, source):
     """Adapt one central-probe row to the ordinary PDV metadata fields."""
     info = {k: v for k, v in row.items() if not pd.isna(v)}
