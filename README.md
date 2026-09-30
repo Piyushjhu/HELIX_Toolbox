@@ -120,9 +120,35 @@ Both modes share identical analysis logic and produce the same outputs, from raw
 ## Single PDV and MPDV central-probe processing
 
 **Single PDV remains the default.** Existing configurations without `data_mode`
-use the original input loading, parameter matching, and analysis behavior. MPDV
-is an opt-in input adapter; it reuses the existing ALPSS/SPADE scientific routines.
+retain ordinary single-point processing. In the **CLI runner**, supplying a
+parameter folder also enables automatic mixed-input handling: ordinary PDV
+records are processed normally, while MPDV acquisitions use only the exact
+`PDV_10_FileName` mapping. The ALPSS/SPADE scientific routines are shared.
 Full multiplexed, multipoint analysis is not implemented in this revision.
+
+For mixed CLI runs, keep `cli_settings.data_mode: single_pdv` and set
+`cli_settings.param_folder` (or pass `--param-folder`) to the CSV/Excel logs.
+No new flag is required. This works for individual and batch runs, raw traces,
+manual SPADE velocity inputs, and summary/post-processing filters.
+
+- MPDV schemas are recognized by numbered `PDV_<probe>_FileName` columns;
+  `PDV_10_FileName` is required regardless of column order.
+- For a recognized acquisition, only the logged probe-10 filename is eligible.
+  Sibling `C<number>--` channels are grouped by the remaining exact filename,
+  including timestamp and shot ID. This also excludes unlisted channels such as
+  C2 when the log maps probe 10 to C1. C1 is not assumed to be probe 10.
+- Blank central filenames are skipped; other logged probes still identify
+  acquisitions to exclude. If all probe filenames are blank, there is no
+  acquisition filename to classify. Files with no identifiable MPDV mapping
+  retain ordinary single-point behavior.
+- Missing central inputs are reported for MPDV acquisitions encountered in the
+  input selection. Other eligible inputs continue; an entirely excluded input
+  selection fails clearly. Duplicate central mappings/inputs are errors.
+- Probe-10 wavelength and detected LeCroy headers apply only to MPDV inputs.
+  Run snapshots record the mode, exclusions, and effective MPDV settings.
+- Existing noncentral MPDV outputs are filtered from summaries and plots;
+  files on disk are not deleted. Without parameter logs the runner cannot infer
+  which acquisitions are MPDV.
 
 In the GUI, open **Analysis Mode → PDV Data Type** and choose **Single PDV** or
 **MPDV — Central probe only (PDV_10)**. This choice is independent of ALPSS Only,
@@ -204,7 +230,7 @@ provided by this change.
 Verification:
 
 ```bash
-QT_QPA_PLATFORM=offscreen helix_toolbox_env/bin/python3 regression/test_mpdv.py
+QT_QPA_PLATFORM=offscreen helix_toolbox_env/bin/python3 -m unittest regression.test_mpdv regression.test_mixed_pdv
 QT_QPA_PLATFORM=offscreen helix_toolbox_env/bin/python3 regression/run_control.py
 ```
 

@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 from helix_data_source import (
-    MPDV_NOTE, validate_data_mode, trace_key, load_mpdv_parameters,
+    MPDV_NOTE, MixedParameters, validate_data_mode, trace_key, load_mpdv_parameters,
     select_central_files, central_summary, mpdv_header_lines,
 )
 
@@ -510,6 +510,8 @@ class AnalysisThread(QThread):
         self.output_dir = output_dir
         self.param_data = param_data  # Parameter file data mapping
         self.data_mode = validate_data_mode(data_mode)
+        self._mixed_parameters = param_data if isinstance(param_data, MixedParameters) else MixedParameters()
+        self._mixed_selection_active = self.data_mode == 'single_pdv' and self._mixed_parameters.has_mpdv
         self._mpdv_keys = set(param_data or {})
         self._mpdv_effective_inputs = {}
         self._mpdv_selection = {}
@@ -533,6 +535,22 @@ class AnalysisThread(QThread):
         self._alpss_effective_sample_rate_by_file = {}
 
     def _prepare_data_source(self):
+        if self._mixed_selection_active:
+            for attribute, counter, enabled in (
+                ('input_files', 'raw_files_suppressed', self.analysis_mode != 'spade_only'),
+                ('spade_input_files', 'velocity_files_suppressed',
+                 self.analysis_mode == 'spade_only' or not self.spade_auto_mode),
+            ):
+                if not enabled:
+                    continue
+                original = list(getattr(self, attribute) or [])
+                selected = self._mixed_parameters.select(original, self.progress_signal.emit)
+                setattr(self, attribute, selected)
+                self._mpdv_selection[counter] = len(original) - len(selected)
+                self.progress_signal.emit(
+                    f'[Mixed PDV] {attribute}: selected {len(selected)} files; '
+                    f'excluded {len(original) - len(selected)} noncentral MPDV files.')
+            return
         if self.data_mode != 'mpdv':
             return
         self.progress_signal.emit(MPDV_NOTE)
@@ -558,14 +576,37 @@ class AnalysisThread(QThread):
         )
 
     def _scope_files(self, files):
+        if self._mixed_selection_active:
+            return [f for f in files if self._mixed_parameters.allows(f)]
         if self.data_mode != 'mpdv':
             return files
         return [f for f in files if trace_key(f) in self._mpdv_keys]
 
     def _scope_summary(self, df):
+        if self._mixed_selection_active:
+            for column in ('file_name', 'Filename', 'filename', 'PDV_FileName'):
+                if column in df.columns:
+                    return df.loc[df[column].map(self._mixed_parameters.allows)].copy()
+            raise ValueError('Cannot filter mixed PDV summary: no filename column.')
         if self.data_mode != 'mpdv':
             return df
         return central_summary(df, self._mpdv_keys)
+
+    def _is_mpdv_file(self, filename):
+        return self.data_mode == 'mpdv' or (
+            self._mixed_selection_active and self._mixed_parameters.is_mpdv(filename))
+
+    def _apply_mpdv_input_settings(self, input_file, alpss_params):
+        if not self._is_mpdv_file(input_file):
+            return
+        info = self.get_param_data_for_file(input_file)
+        wavelength = info.get('PDV_Target_Wavelength (m)')
+        if wavelength is not None and not pd.isna(wavelength):
+            alpss_params['lam'] = float(wavelength)
+        alpss_params['header_lines'] = mpdv_header_lines(input_file, alpss_params['header_lines'])
+        self._mpdv_effective_inputs[os.path.basename(input_file)] = {
+            'lam': alpss_params['lam'], 'header_lines': alpss_params['header_lines'],
+        }
 
     def _get_summary_filename(self):
         """Return the CSV filename for the consolidated data summary.
@@ -608,10 +649,11 @@ class AnalysisThread(QThread):
                 # this records what was actually detected/used per input file.
                 'alpss_effective_sample_rate_by_file': self._alpss_effective_sample_rate_by_file,
             }
-            if self.data_mode == 'mpdv':
+            if self.data_mode == 'mpdv' or self._mixed_selection_active:
                 config_snapshot.update({
-                    'data_mode': 'mpdv', 'selected_probe': 'PDV_10',
-                    'probe_selection_note': MPDV_NOTE,
+                    'data_mode': self.data_mode, 'selected_probe': 'PDV_10',
+                    'probe_selection_note': (MPDV_NOTE if self.data_mode == 'mpdv' else
+                                             'Mixed inputs: ordinary PDV and mapped MPDV PDV_10 only.'),
                     'mpdv_selection': self._mpdv_selection,
                     'mpdv_effective_inputs': self._mpdv_effective_inputs,
                 })
@@ -652,7 +694,7 @@ class AnalysisThread(QThread):
         """
         import re
         
-        if self.data_mode == 'mpdv':
+        if self._is_mpdv_file(base_name):
             return (self.param_data or {}).get(trace_key(base_name), {})
         if not self.param_data:
             return {}
@@ -705,6 +747,8 @@ class AnalysisThread(QThread):
         if pdv_pattern:
             pdv_filename = pdv_pattern.group(1)
             for key, param_entry in self.param_data.items():
+                if isinstance(param_entry, dict) and param_entry.get('selected_probe') == 'PDV_10':
+                    continue
                 if isinstance(param_entry, dict):
                     param_pdv = _pdv_basename(param_entry.get('PDV_FileName', ''))
                     if param_pdv == pdv_filename or _pdv_basename(key) == pdv_filename:
@@ -718,6 +762,8 @@ class AnalysisThread(QThread):
             exp_id = exp_id_pattern.group(1)
             # Search PDV_FileName column for any entry with this Exp_ID
             for key, param_entry in self.param_data.items():
+                if isinstance(param_entry, dict) and param_entry.get('selected_probe') == 'PDV_10':
+                    continue
                 if isinstance(param_entry, dict):
                     param_pdv = _pdv_basename(param_entry.get('PDV_FileName', ''))
                     # Check if PDV_FileName contains the Exp_ID
@@ -732,6 +778,8 @@ class AnalysisThread(QThread):
 
         # Strategy 4: Partial match on key (use normalised basenames on both sides)
         for key in self.param_data.keys():
+            if self.param_data[key].get('selected_probe') == 'PDV_10':
+                continue
             key_base = _pdv_basename(key)
             if base_name_norm and key_base and (base_name_norm in key_base or key_base in base_name_norm):
                 self.progress_signal.emit(f"Key partial match: {base_name} -> {key_base}")
@@ -2239,17 +2287,7 @@ class AnalysisThread(QThread):
                     alpss_params['filename'] = os.path.basename(input_file)
                     alpss_params['exp_data_dir'] = os.path.dirname(input_file)
                     alpss_params['out_files_dir'] = self.output_dir
-                    if self.data_mode == 'mpdv':
-                        central_info = self.get_param_data_for_file(input_file)
-                        wavelength = central_info.get('PDV_Target_Wavelength (m)')
-                        if wavelength is not None and not pd.isna(wavelength):
-                            alpss_params['lam'] = float(wavelength)
-                        alpss_params['header_lines'] = mpdv_header_lines(
-                            input_file, alpss_params['header_lines'])
-                        self._mpdv_effective_inputs[os.path.basename(input_file)] = {
-                            'lam': alpss_params['lam'],
-                            'header_lines': alpss_params['header_lines'],
-                        }
+                    self._apply_mpdv_input_settings(input_file, alpss_params)
 
                     # Resolve the actual sample rate up front so alpss_params (and the
                     # eventual run-config snapshot) reflects what alpss_main will really
@@ -2279,7 +2317,7 @@ class AnalysisThread(QThread):
                             # Handle different possible column names for experiment info
                             exp_id = exp_info.get('exp_id', exp_info.get('Exp_ID', 'Unknown'))
                             sample_material = exp_info.get('sample_material', exp_info.get('Flyer_material', 'Unknown'))
-                            if self.data_mode == 'mpdv':
+                            if self._is_mpdv_file(base_name):
                                 sample_material = self.resolve_sample_material(base_name, exp_info)
                             self.progress_signal.emit(
                                 f"Linked to experiment: {exp_id} - {sample_material}")
@@ -2982,7 +3020,7 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"Total analysis run time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
             self.progress_signal.emit("=" * 70)
             
-            if self.data_mode == 'mpdv':
+            if self.data_mode == 'mpdv' or self._mixed_selection_active:
                 self._save_run_config(spade_output_dir)
             self.finished_signal.emit(True, "Analysis completed successfully")
         except Exception as e:
@@ -9721,7 +9759,7 @@ class AnalysisThread(QThread):
                         pdv_filename_pattern = os.path.splitext(temp_name)[0]
                         self.progress_signal.emit(f"  Using base filename for matching: {pdv_filename_pattern}")
                     
-                    if self.data_mode == 'mpdv':
+                    if self._is_mpdv_file(base_filename):
                         pdv_filename_pattern = trace_key(base_filename)
 
                     if skip_unaligned and pdv_filename_pattern in skip_unaligned:
@@ -10198,7 +10236,7 @@ class AnalysisThread(QThread):
                         pdv_filename_pattern = re.sub(r'--.*$', '', base_filename)
                         pdv_filename_pattern = os.path.splitext(pdv_filename_pattern)[0]
                     
-                    if self.data_mode == 'mpdv':
+                    if self._is_mpdv_file(base_filename):
                         pdv_filename_pattern = trace_key(base_filename)
 
                     # Extract last 5 digits from filename
@@ -10221,7 +10259,7 @@ class AnalysisThread(QThread):
                                         material = material_val
                                         break
                     
-                    if self.data_mode == 'mpdv':
+                    if self._is_mpdv_file(base_filename):
                         material = self.resolve_sample_material(base_filename, self.get_param_data_for_file(base_filename))
 
                     # Only include Zn traces

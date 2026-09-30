@@ -1,7 +1,8 @@
-"""MPDV input adaptation; the legacy single-PDV loaders remain unchanged."""
+"""Explicit probe selection and metadata adaptation for PDV inputs."""
 
 import math
 import os
+import re
 
 import pandas as pd
 
@@ -39,6 +40,100 @@ def trace_key(value):
     return name
 
 
+def acquisition_key(value):
+    """Group scope channels, retaining every other acquisition-name token."""
+    return re.sub(r'^C\d+--', '', trace_key(value))
+
+
+def mpdv_record(row, source):
+    """Adapt one central-probe row to the ordinary PDV metadata fields."""
+    info = {k: v for k, v in row.items() if not pd.isna(v)}
+    for column, value in row.items():
+        if column.startswith('PDV_10_') and not pd.isna(value):
+            info['PDV_' + column[len('PDV_10_'):]] = value
+    info['PDV_FileName'] = trace_key(row['PDV_10_FileName'])
+    info['data_mode'] = 'mpdv'
+    info['selected_probe'] = 'PDV_10'
+    wavelength = info.get('PDV_Target_Wavelength (m)')
+    if wavelength is not None:
+        wavelength = float(wavelength)
+        if not math.isfinite(wavelength) or wavelength <= 0:
+            raise ValueError(f'Invalid PDV_10 target wavelength in {source}')
+        info['PDV_Target_Wavelength (m)'] = wavelength
+    return info
+
+
+class MixedParameters(dict):
+    """PDV metadata plus MPDV membership, including rows without probe 10.
+
+    Membership is separate from processable records so blank central mappings
+    cannot let a peripheral trace through as an ordinary single-point input.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.mpdv_acquisitions = {}
+        self.mpdv_sources = {}
+        self.has_mpdv = False
+
+    def add_mpdv_frame(self, df, name, emit=print):
+        self.has_mpdv = True
+        if 'PDV_10_FileName' not in df.columns:
+            raise ValueError(f'MPDV parameter file {name} has no PDV_10_FileName column.')
+        columns = [c for c in df.columns if re.fullmatch(r'PDV_\d+_FileName', c)]
+        skipped = 0
+        for index, row in df.iterrows():
+            source = f'{name}, row {index + 2}'
+            central = trace_key(row['PDV_10_FileName'])
+            for column in columns:
+                key = trace_key(row[column])
+                if not key:
+                    continue
+                acquisition = acquisition_key(key)
+                if acquisition in self.mpdv_acquisitions and self.mpdv_acquisitions[acquisition] != central:
+                    raise ValueError(f'Ambiguous MPDV acquisition {acquisition} in {source}')
+                self.mpdv_acquisitions[acquisition] = central
+            if not central:
+                skipped += 1
+                continue
+            if central in self:
+                previous = self.mpdv_sources.get(central, 'single-PDV metadata')
+                raise ValueError(f'Ambiguous PDV_10 filename {central}: {previous} and {source}')
+            self[central] = mpdv_record(row, source)
+            self.mpdv_sources[central] = source
+        emit(f'[Mixed PDV] {name}: skipped {skipped} rows with blank PDV_10 filenames.')
+
+    def is_mpdv(self, path):
+        return acquisition_key(path) in self.mpdv_acquisitions
+
+    def allows(self, path):
+        acquisition = acquisition_key(path)
+        return (acquisition not in self.mpdv_acquisitions
+                or trace_key(path) == self.mpdv_acquisitions[acquisition])
+
+    def select(self, files, emit=print):
+        selected = []
+        seen = set()
+        encountered = set()
+        for path in files or []:
+            if self.is_mpdv(path):
+                central = self.mpdv_acquisitions[acquisition_key(path)]
+                encountered.add(central)
+                if not self.allows(path):
+                    emit(f'[Mixed PDV] Excluding noncentral MPDV input: {os.path.basename(path)}')
+                    continue
+                key = trace_key(path)
+                if key in seen:
+                    raise ValueError(f'Ambiguous PDV_10 input: more than one file for {key}')
+                seen.add(key)
+            selected.append(path)
+        for central in sorted(encountered - seen):
+            emit(f'[Mixed PDV] Missing PDV_10 input: {central or "blank parameter mapping"}; acquisition skipped.')
+        if files and not selected:
+            raise ValueError('No eligible inputs remain after MPDV probe-10 selection.')
+        return selected
+
+
 def load_mpdv_parameters(folder, emit=print):
     """Read explicit PDV_10 mappings from CSV/Excel without guessing a channel.
 
@@ -69,20 +164,7 @@ def load_mpdv_parameters(folder, emit=print):
             source = f'{name}, row {index + 2}'
             if key in result:
                 raise ValueError(f'Ambiguous PDV_10 filename {key}: {sources[key]} and {source}')
-            info = {k: v for k, v in row.items() if not pd.isna(v)}
-            for column, value in row.items():
-                if column.startswith('PDV_10_'):
-                    info['PDV_' + column[len('PDV_10_'):]] = value
-            info['PDV_FileName'] = key
-            info['data_mode'] = 'mpdv'
-            info['selected_probe'] = 'PDV_10'
-            wavelength = info.get('PDV_Target_Wavelength (m)')
-            if wavelength is not None and not pd.isna(wavelength):
-                wavelength = float(wavelength)
-                if not math.isfinite(wavelength) or wavelength <= 0:
-                    raise ValueError(f'Invalid PDV_10 target wavelength in {source}')
-                info['PDV_Target_Wavelength (m)'] = wavelength
-            result[key] = info
+            result[key] = mpdv_record(row, source)
             sources[key] = source
     if not matched_files:
         raise ValueError('MPDV parameter folder has no PDV_10_FileName column.')

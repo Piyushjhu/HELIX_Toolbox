@@ -45,7 +45,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from helix_analysis_toolbox import AnalysisThread, load_config_from_file
-from helix_data_source import load_mpdv_parameters, validate_data_mode
+from helix_data_source import MixedParameters, load_mpdv_parameters, validate_data_mode
 
 
 # Extensions probed (in order) when looking for a default master config next
@@ -562,7 +562,8 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
 
     If experiment_id is provided (e.g. 'JHAMAL00016-013'), only files whose
     name contains that string are loaded.  If none match, all files are tried
-    as a fallback so the caller never silently gets nothing.
+    as a fallback so the caller never silently gets nothing. MPDV schemas are
+    always inspected, independently of the legacy experiment-name filter.
     """
     validate_data_mode(data_mode)
     if data_mode == "mpdv":
@@ -577,7 +578,7 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
         print(f"[WARN] Continuing without parameter data — material color-coding will be skipped.")
         return {}
 
-    param_data: Dict[str, Dict] = {}
+    param_data: Dict[str, Dict] = MixedParameters()
     all_entries = os.listdir(folder)
     all_param_files = [e for e in all_entries if e.lower().endswith((".csv", ".xlsx", ".xls"))]
 
@@ -597,6 +598,9 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
 
     print(f"[INFO] Found {len(param_files)} parameter file(s) to process")
     
+    legacy_param_files = set(param_files)
+    # Inspect every schema: a batch parent name must not hide MPDV logs.
+    param_files = sorted(e for e in all_param_files if not e.startswith("~$"))
     for idx, entry in enumerate(param_files, 1):
         print(f"[INFO] Processing parameter file {idx}/{len(param_files)}: {entry}")
         file_path = os.path.join(folder, entry)
@@ -633,6 +637,13 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
 
         if df.empty:
             print(f"[WARN] Parameter file {entry} is empty, skipping")
+            continue
+
+        df.columns = [str(c).strip() for c in df.columns]
+        if any(re.fullmatch(r"PDV_\d+_FileName", c) for c in df.columns):
+            param_data.add_mpdv_frame(df, entry)
+            continue
+        if entry not in legacy_param_files:
             continue
 
         pdv_col = _detect_pdv_column(list(df.columns))
@@ -690,6 +701,8 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
                     row_dict['Sample material'] = None
             
             # Store by PDV filename (from detected column, which should be PDV_FileName)
+            if pdv_name in param_data.mpdv_sources:
+                raise ValueError(f"Ambiguous single-PDV/MPDV filename {pdv_name} in {entry}")
             param_data[pdv_name] = row_dict
             
             # Also store by PDV_FileName column value if it exists and differs from pdv_col
@@ -698,6 +711,8 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
                 pdv_file_name_value = _normalize_pdv_filename(row_dict.get('PDV_FileName'))
                 if pdv_file_name_value and pdv_file_name_value != pdv_name:
                     # Store additional entry keyed by PDV_FileName column value
+                    if pdv_file_name_value in param_data.mpdv_sources:
+                        raise ValueError(f"Ambiguous single-PDV/MPDV filename {pdv_file_name_value} in {entry}")
                     param_data[pdv_file_name_value] = row_dict
             
             rows_loaded += 1
@@ -724,7 +739,6 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
                 pdv_file = entry.get('PDV_FileName', '')
                 if pdv_file:
                     # Extract Exp_ID from PDV_FileName
-                    import re
                     exp_id_match = re.search(r'([A-Z]+\d+-\d+)', str(pdv_file))
                     if exp_id_match:
                         exp_id = exp_id_match.group(1)
@@ -801,7 +815,7 @@ Examples:
     
     parser.add_argument(
         "--data-mode", choices=("single_pdv", "mpdv"),
-        help="Single PDV (default) or MPDV central probe PDV_10 only; requires parameter folder.",
+        help="Single PDV (default; mixed MPDV inputs use mapped PDV_10) or MPDV-only; MPDV selection requires parameter folder.",
     )
 
     # CLI arguments (can override config file values)
