@@ -1512,3 +1512,23 @@ For questions, issues, or feature requests, please:
 ---
 
 **HELIX Toolbox** - Advancing single point PDV data analysis for shock physics research across all platforms. 🖥️💻📱
+
+### Combined-channel oscilloscope CSV exports
+
+In `single_pdv` mode, ALPSS automatically recognizes combined scope CSV files
+with a `Time Tags (...)` header and selects the column labeled `Channel 1`
+(PDV probe 10). The time column is in seconds and channel voltage is in volts.
+The metadata preamble length is detected automatically; `header_lines` remains
+the fallback for legacy two-column exports. Sample-rate detection, analysis,
+and diagnostic plots all use the same selected channel. Channels 2 and above
+are not analyzed. No manual CSV splitting is needed.
+
+Use the experiment log folder as `cli_settings.param_folder`; logs with
+`PDV_10_FileName` supply the central probe's metadata and optical wavelength,
+including when all probe filename fields refer to the same combined CSV.
+Set `cli_settings.input_files` to the waveform CSV (or keep waveform files in a
+separate `input_dir` from parameter logs).
+
+**Pending:** multiplexed probe demultiplexing for `mpdv` mode, including the
+other channels in combined CSV exports. Current MPDV support remains limited
+to the central probe; this change does not implement multiplexed analysis.

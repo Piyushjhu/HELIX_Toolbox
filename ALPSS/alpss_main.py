@@ -1,4 +1,5 @@
 # %%
+import csv
 from datetime import datetime
 import traceback
 import matplotlib
@@ -51,6 +52,33 @@ def _resolve_plot_location(inputs):
     return bool(save_subfolder_raw)
 
 
+def read_scope_trace(filepath, header_lines, sample_offset=0, nrows=None):
+    """Read legacy two-column traces or combined scope CSV channel 1 (PDV_10).
+
+    Combined exports have a labeled ``Time Tags (...)`` table after the scope
+    metadata. Other channels may contain multiplexed probes and are not read.
+    Keep the configured pandas header behavior for legacy exports.
+    """
+    with open(filepath, encoding="utf-8-sig", newline="") as stream:
+        for index, row in zip(range(100), csv.reader(stream)):
+            labels = [cell.strip().lower() for cell in row]
+            if labels and labels[0].startswith("time tags ("):
+                if labels.count("channel 1") != 1:
+                    raise ValueError("Combined scope CSV must contain exactly one Channel 1 column")
+                channel = labels.index("channel 1")
+                data = pd.read_csv(
+                    filepath, skiprows=index + 1 + int(sample_offset),
+                    header=None, usecols=[0, channel], nrows=nrows,
+                )
+                data.columns = ["Time", "Ampl"]
+                return data
+    data = pd.read_csv(
+        filepath, skiprows=int(header_lines) + int(sample_offset), nrows=nrows,
+    )
+    data.columns = ["Time", "Ampl"]
+    return data
+
+
 # detect the true sample rate directly from the experimental data file so that files
 # recorded on scopes with different framing rates (e.g. 80 GS/s vs 128 GS/s) can be
 # batch processed without editing the configured sample_rate
@@ -58,9 +86,7 @@ def detect_sample_rate(**inputs):
     filepath = os.path.join(inputs["exp_data_dir"], inputs["filename"])
     # read a small sample of rows just past the header, matching the read style used
     # in spall_doi_finder (the first non-skipped row is consumed as the column header)
-    sample = pd.read_csv(
-        filepath, skiprows=int(inputs["header_lines"]), nrows=1000
-    )
+    sample = read_scope_trace(filepath, inputs["header_lines"], nrows=1000)
     sample.columns = ["Time", "Ampl"]
     time = sample["Time"].to_numpy(dtype=float)
     if len(time) < 2:
@@ -353,8 +379,10 @@ def alpss_main(**inputs):
 
             # change directory to where the data is stored
             os.chdir(inputs["exp_data_dir"])
-            data = pd.read_csv(
-                inputs["filename"], skiprows=int(rows_to_skip), nrows=int(nrows)
+            data = read_scope_trace(
+                inputs["filename"], inputs["header_lines"],
+                sample_offset=int(rows_to_skip) - int(inputs["header_lines"]),
+                nrows=int(nrows),
             )
 
             # rename the columns of the data
@@ -1873,7 +1901,10 @@ def spall_doi_finder(**inputs):
 
     # change directory to where the data is stored
     os.chdir(inputs["exp_data_dir"])
-    data = pd.read_csv(inputs["filename"], skiprows=int(rows_to_skip), nrows=int(nrows))
+    data = read_scope_trace(
+        inputs["filename"], inputs["header_lines"],
+        sample_offset=int(rows_to_skip) - int(inputs["header_lines"]), nrows=int(nrows),
+    )
 
     # rename the columns of the data
     data.columns = ["Time", "Ampl"]
