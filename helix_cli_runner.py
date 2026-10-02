@@ -56,10 +56,10 @@ from helix_file_io import download_and_verify, read_parameter_table, require_loc
 # to the repo. YAML takes precedence over JSON so users can migrate simply by
 # dropping a commented .yml next to the existing .json.
 _DEFAULT_CONFIG_BASENAMES = (
-    "helix_master_config.yml",
+    #"helix_master_config.yml",
     #"helix_master_config.yaml",
     #"helix_master_config.json",
-    #"helix_master_config_batch_process.yml",
+    "helix_master_config_batch_process.yml",
 )
 
 

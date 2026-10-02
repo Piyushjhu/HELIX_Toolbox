@@ -167,3 +167,6 @@ examples/**/*_output/
 
 # Verified local input copies (never commit experimental data)
 .helix_input_cache/
+
+# Local sensitivity-analysis research outputs
+/sensitivity_analysis/

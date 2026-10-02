@@ -2,7 +2,7 @@
 """
 Aggregate batch SPADE results and produce combined Spall and HEL strength plots.
 
-Reads helix_master_config_batch_process.json to locate the batch input directory,
+Reads helix_master_config_batch_process.yml to locate the batch input directory,
 collects enhanced_spall_summary.csv and velocity_shots_summary.csv from each
 subfolder's SPADE_analysis output, then saves a two-panel figure to input_dir:
   Left panel  — Spall Strength (GPa) vs Spall Strain Rate (s⁻¹)
@@ -13,7 +13,6 @@ Strength distributions; Spall Strength points are colour-coded by Peak Shock
 Stress (GPa).
 """
 import glob
-import json
 import os
 import sys
 
@@ -27,14 +26,21 @@ import numpy as np
 import pandas as pd
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-BATCH_CONFIG = os.path.join(REPO_ROOT, "helix_master_config_batch_process.json")
+BATCH_CONFIG = os.path.join(REPO_ROOT, "helix_master_config_batch_process.yml")
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def _load_batch_settings():
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError(
+            "YAML support requires PyYAML. Install it with "
+            "`python -m pip install PyYAML`."
+        ) from exc
     with open(BATCH_CONFIG, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+        cfg = yaml.safe_load(f)
     cs = cfg["cli_settings"]
     return {
         "input_dir":         cs["input_dir"],

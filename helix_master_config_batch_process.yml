@@ -26,10 +26,13 @@
 # -----------------------------------------------------------------------------
 cli_settings:
 
-  # Data source: single_pdv preserves legacy behavior (also the default if omitted).
-  # mpdv processes ONLY files listed under PDV_10_FileName in param_folder.
-  # Applies to ALPSS, SPADE, plots and each batch subfolder; other probes suppressed.
-  # MPDV requires parameter files. Full multipoint demultiplexing is not implemented.
+  # Data source mode (case-sensitive; use lowercase only): single_pdv or mpdv.
+  # single_pdv preserves legacy behavior and is the default when this key is omitted.
+  # mpdv processes ONLY traces whose basename exactly matches a PDV_10_FileName
+  # entry in param_folder; it does not infer the central probe from C1/C2/C3.
+  # The selection applies to ALPSS, SPADE, plots, and every batch subfolder;
+  # all other probe traces are suppressed. mpdv requires parameter files with
+  # a PDV_10_FileName column. Full multipoint demultiplexing is not implemented.
   data_mode: single_pdv
 
   # Set true to treat input_dir as a PARENT folder containing one subfolder
@@ -40,8 +43,7 @@ cli_settings:
   # Parent directory containing the per-shot subfolders (only used when
   # batch_mode: true). Each subfolder is scanned for files matching
   # input_pattern.
-  input_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016
-
+  input_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/CuTi_PA_20260218
   # Glob pattern applied to input_dir to select which subfolders to process.
   # "*" = every subfolder.
   subfolder_pattern: "*"
@@ -59,7 +61,7 @@ cli_settings:
 
   # Name of the output folder created inside each subfolder (batch mode only).
   # Ignored if combined_output_dir is set.
-  output_subdir_name: "Output"
+  output_subdir_name: "Output_new"
 
   # Optionally route ALL subfolders' outputs into one shared directory instead
   # of writing separate outputs per subfolder. Set to null to keep outputs
@@ -71,8 +73,7 @@ cli_settings:
   # column matching PDV filenames so metadata (material, laser energy,
   # waveplate angle, row/column …) is attached to each trace.
   # Set to null to skip parameter enrichment.
-  param_folder: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/Ti_alloys/JHAMAL00016/Parameters
-
+  param_folder: "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/CuTi_PA_20260218/Parameters"
   # Analysis mode:
   #   both       — run ALPSS then SPADE (full pipeline, default)
   #   alpss_only — stop after ALPSS velocity extraction
@@ -177,7 +178,7 @@ alpss_config:
 
   # Window length in nanoseconds (takes precedence over smoothing_window if set).
   # The code converts this to samples using sample_rate. Recommended: 5–10 ns.
-  smoothing_window_ns: 6.0
+  smoothing_window_ns: 10.0
 
   # Window length in samples (used only when smoothing_window_ns is null).
   smoothing_window: null
@@ -606,6 +607,33 @@ material_properties:
     C0: 4490.0
     C_L: 5770.0
     S: 1.24   # Hugoniot slope (Us = 4.49 + 1.24*up)
+  # Ti-6Al-4V ELI (Grade 23) sources:
+  # - Density and elastic properties: United Performance Metals Grade 23 datasheet
+  #   https://www.upmet.com/sites/default/files/datasheets/ti-6al-4v-eli.pdf
+  # - C0 and S: Ti-6Al-4V Mie-Gruneisen EOS parameter table
+  #   https://doczz.net/doc/7330612/shock-wave-and-high-strain-rate-phenomena-in-matter
+  # - ELI validation: the ELI and conventional Ti-6Al-4V Hugoniots are nearly identical
+  #   https://www.sciencedirect.com/science/article/pii/S0921509313004711
+  Ti64ELI:  # Ti-6Al-4V ELI, Grade 23
+    density: 4420.0          # kg/m^3
+    bulk_wave_speed: 5130.0  # m/s; HELIX treats this as Hugoniot C0
+    C0: 5130.0               # m/s
+    C_L: 6130.0              # m/s; longitudinal elastic-wave speed
+    S: 1.028                 # Us = 5.130 + 1.028*up, velocities in km/s
+
+  Ti-6Al-4V-ELI:
+    density: 4420.0
+    bulk_wave_speed: 5130.0
+    C0: 5130.0
+    C_L: 6130.0
+    S: 1.028
+
+  Ti_Grade23:
+    density: 4420.0
+    bulk_wave_speed: 5130.0
+    C0: 5130.0
+    C_L: 6130.0
+    S: 1.028
 
 # -----------------------------------------------------------------------------
 # 6. IGSN → MATERIAL MAPPING
@@ -626,3 +654,6 @@ igsn_material_map:
 
   # All JHAMAL00016 children (JHAMAL00016-004, -005, …) are CP-Titanium.
   JHAMAL00016: Ti
+  APLMAL00007: Ti64ELI
+  APLMAL00006: Ti64ELI
+  APLMAL00003: Ti64

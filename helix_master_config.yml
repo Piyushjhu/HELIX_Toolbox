@@ -26,17 +26,20 @@
 # -----------------------------------------------------------------------------
 cli_settings:
 
-  # Data source: single_pdv preserves legacy behavior (also the default if omitted).
-  # mpdv processes ONLY files listed under PDV_10_FileName in param_folder.
-  # Applies to ALPSS, SPADE, plots and each batch subfolder; other probes suppressed.
-  # MPDV requires parameter files. Full multipoint demultiplexing is not implemented.
-  data_mode: single_pdv
+  # Data source mode (case-sensitive; use lowercase only): single_pdv or mpdv.
+  # single_pdv preserves legacy behavior and is the default when this key is omitted.
+  # mpdv processes ONLY traces whose basename exactly matches a PDV_10_FileName
+  # entry in param_folder; it does not infer the central probe from C1/C2/C3.
+  # The selection applies to ALPSS, SPADE, plots, and every batch subfolder;
+  # all other probe traces are suppressed. mpdv requires parameter files with
+  # a PDV_10_FileName column. Full multipoint demultiplexing is not implemented.
+  data_mode: mpdv
 
   # Directory containing raw PDV oscilloscope CSV files (used in ALPSS step).
   # *** EDIT THIS *** — replace with the absolute path to your raw PDV data folder.
   # Example (macOS/Linux): /Users/you/experiments/shot_2026_04/raw_csv
   # Example (Windows):     C:/Users/you/experiments/shot_2026_04/raw_csv
-  input_dir: /Users/piyushwanchoo/Documents/Post_Doc/Papers_at_JHU/Al-Mg/Test-outputs/pdv_trace
+  input_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/CuTi_OA_20260205/JHAMAC00003-S7R6C3
   # Explicit list of files to process.  Set to null to use input_dir + input_pattern.
   # Example:  input_files: [file1.csv, file2.csv]
   input_files: null
@@ -48,14 +51,14 @@ cli_settings:
   #   <output_dir>/ALPSS_output/   → ALPSS results
   #   <output_dir>/SPADE_analysis/ → SPADE results and plots
   # *** EDIT THIS *** — replace with the absolute path where you want results saved.
-  output_dir: /Users/piyushwanchoo/Documents/Post_Doc/Papers_at_JHU/Al-Mg/Test-outputs/Output
+  output_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/CuTi_OA_20260205/JHAMAC00003-S7R6C3/Output
 
   # Folder containing experiment parameter files (CSV/Excel).
   # Must have a column matching PDV filenames so metadata (material, laser
   # energy, waveplate angle, row/column …) is attached to each trace.
   # Set to null to skip parameter enrichment.
   # *** EDIT THIS *** — replace with your parameter folder, or set to: null
-  param_folder: /Users/piyushwanchoo/Documents/Post_Doc/Papers_at_JHU/Al-Mg/Test-outputs/Parameters
+  param_folder: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/CuTi_OA_20260205/Parameters
 
   # Analysis mode:
   #   both       — run ALPSS then SPADE (full pipeline, default)
@@ -89,7 +92,7 @@ alpss_config:
   #   no         — no plots saved, period
   #   subfolder  — save enabled plots to <output>/<file>_plots/ subdirectory (recommended)
   #   main_dir   — save enabled plots alongside CSVs in the main output directory
-  save_all_plots: "no"
+  save_all_plots: "main_dir"
   spall_calculation: "no"   # Run ALPSS built-in spall calculation (use SPADE instead)
 
   # ── Input file format ───────────────────────────────────────────────────────
@@ -103,21 +106,21 @@ alpss_config:
   start_time_correction: 0
 
   # Time to skip from the beginning of the trace before extracting signal (s).
-  time_to_skip: 0.0
+  time_to_skip: 0e-06
 
   # Duration of signal to extract starting from the detected start time (s).
   # 4e-6 = 4 µs, for example.
-  time_to_take: 6.0e-06
+  time_to_take: 4e-06
 
   # Time window before the detected IQ start to include in the output (s).
   # NOTE: this must be large enough to include FLAT baseline ahead of the elastic
   # precursor, or HEL t=0 (foot-of-rise) detection has nothing to anchor to.
   # Velocity zeroing uses the earliest half of this interval and reserves the
   # latter half as its guard. At 100 ns, the baseline is -100 to -50 ns.
-  t_before: 1.0e-07
+  t_before: 4.0e-08
 
   # Time window after the detected IQ start to include in the output (s).
-  t_after: 0.5e-06
+  t_after: 1.2e-07
 
   # ── Velocity baseline calibration ──────────────────────────────────────────
   # Subtract the robust early pre-trigger baseline before smoothing/saving.
@@ -129,7 +132,7 @@ alpss_config:
   # ── IQ (signal-onset) detection ─────────────────────────────────────────────
   # IQ detection threshold relative to the peak signal amplitude.
   # Lower values → earlier start detected; raise if false triggers occur.
-  iq_threshold_factor: 0.8
+  iq_threshold_factor: 0.6
 
   # ── Frequency / spectrogram ─────────────────────────────────────────────────
   freq_min: 1200000000.0    # Lower edge of the frequency band of interest (Hz)
@@ -161,11 +164,11 @@ alpss_config:
   # Smoothing algorithm applied to the raw extracted velocity:
   #   savgol   — Savitzky-Golay (best for noise + derivative preservation)
   #   gaussian — Gaussian convolution (smooth but loses sharp features)
-  smoothing_type: "savgol"
+  smoothing_type: "gaussian"
 
   # Window length in nanoseconds (takes precedence over smoothing_window if set).
   # The code converts this to samples using sample_rate.  Recommended: 5–10 ns.
-  smoothing_window_ns: 1
+  smoothing_window_ns: 4
 
   # Window length in samples (used only when smoothing_window_ns is null).
   smoothing_window: null
@@ -188,9 +191,9 @@ alpss_config:
   # ── Carrier removal (Gaussian notch filter) ─────────────────────────────────
   # If the oscilloscope signal contains a strong carrier tone, enable this notch
   # filter to remove it before IQ extraction.
-  use_notch_filter: false
+  use_notch_filter: true
   order: 6                   # Butterworth filter order
-  wid: 1500000000.0          # Notch half-width (Hz); adjust to match carrier width
+  wid: 150000000.0          # Notch half-width (Hz); adjust to match carrier width
 
   # ── Uncertainty parameters ──────────────────────────────────────────────────
   uncert_mult: 10.0     # Multiplier applied to raw velocity uncertainty estimate.
@@ -246,7 +249,7 @@ spade_config:
   # Only [spall_start_time_ns, spall_end_time_ns] is searched/fitted for spall.
   spall_pre_time_ns: 20.0
   spall_start_time_ns: 0.0
-  spall_end_time_ns: 300.0
+  spall_end_time_ns: 100.0
 
   # Velocity threshold (m/s) used to identify shock arrival (t=0 alignment).
   # Decrease if weak shocks are being missed; increase if noise triggers falsely.
@@ -344,14 +347,14 @@ spade_config:
   # ── HEL detection ─────────────────────────────────────────────────────────────
   # Time window (ns, relative to t=0) searched for the elastic precursor plateau.
   hel_start_time_ns: 0
-  hel_end_time_ns: 20
+  hel_end_time_ns: 10
 
   # Savitzky-Golay smoothing applied ONCE to the HEL analysis window before the
   # RDP+Linear detection algorithm. This is separate from ALPSS smoothing and
   # spall_smoothing_sigma_ns. The physical window is in real ns, so it is
   # independent of sample rate. Set the window to 0 to use the ALPSS trace
   # as-is. The default 6 ns / cubic fit preserves the elastic-plastic knee.
-  hel_savgol_window_ns: 6.0
+  hel_savgol_window_ns: 8.0
   hel_savgol_polyorder: 3
 
   # Minimum plateau velocity to accept as a valid HEL (m/s).
@@ -579,6 +582,34 @@ material_properties:
     C0: 5130.0
     C_L: 6130.0
     S: 1.028   # Hugoniot slope (Ti-6Al-4V: Us = 5.13 + 1.028*up)
+
+  # Ti-6Al-4V ELI (Grade 23) sources:
+  # - Density and elastic properties: United Performance Metals Grade 23 datasheet
+  #   https://www.upmet.com/sites/default/files/datasheets/ti-6al-4v-eli.pdf
+  # - C0 and S: Ti-6Al-4V Mie-Gruneisen EOS parameter table
+  #   https://doczz.net/doc/7330612/shock-wave-and-high-strain-rate-phenomena-in-matter
+  # - ELI validation: the ELI and conventional Ti-6Al-4V Hugoniots are nearly identical
+  #   https://www.sciencedirect.com/science/article/pii/S0921509313004711
+  Ti64ELI:  # Ti-6Al-4V ELI, Grade 23
+    density: 4420.0          # kg/m^3
+    bulk_wave_speed: 5130.0  # m/s; HELIX treats this as Hugoniot C0
+    C0: 5130.0               # m/s
+    C_L: 6130.0              # m/s; longitudinal elastic-wave speed
+    S: 1.028                 # Us = 5.130 + 1.028*up, velocities in km/s
+
+  Ti-6Al-4V-ELI:
+    density: 4420.0
+    bulk_wave_speed: 5130.0
+    C0: 5130.0
+    C_L: 6130.0
+    S: 1.028
+
+  Ti_Grade23:
+    density: 4420.0
+    bulk_wave_speed: 5130.0
+    C0: 5130.0
+    C_L: 6130.0
+    S: 1.028
 
   V:  # Vanadium
     density: 6100.0
