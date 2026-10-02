@@ -106,11 +106,11 @@ alpss_config:
   start_time_correction: 0
 
   # Time to skip from the beginning of the trace before extracting signal (s).
-  time_to_skip: 0e-06
+  time_to_skip: 0.0e-06
 
   # Duration of signal to extract starting from the detected start time (s).
   # 4e-6 = 4 µs, for example.
-  time_to_take: 4e-06
+  time_to_take: 4.0e-06
 
   # Time window before the detected IQ start to include in the output (s).
   # NOTE: this must be large enough to include FLAT baseline ahead of the elastic

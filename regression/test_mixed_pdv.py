@@ -56,6 +56,26 @@ class MixedPDVTests(unittest.TestCase):
         self.assertEqual(data[CENTRAL]['PDV_Return_Power (dBm)'], -38.59)
         self.assertEqual(data[LEGACY]['Sample material'], 'Ti')
 
+    def test_combined_export_shared_probe_filename_uses_probe_ten(self):
+        shared = 'SAMPLE_2026-09-30_15-55-37_shot25'
+        self.rows['PDV_6_FileName'] = shared
+        self.rows['PDV_10_FileName'] = shared
+        self.rows['PDV_6_Target_Wavelength (m)'] = 1.53e-6
+        self.write_mpdv()
+        data = self.load()
+        self.assertEqual(data.select([shared + '.csv'], lambda _: None), [shared + '.csv'])
+        self.assertEqual(data[shared]['PDV_Target_Wavelength (m)'], 1.55e-6)
+        self.assertEqual(data[shared]['selected_probe'], 'PDV_10')
+
+    def test_missing_spall_column_skips_plot_without_exception(self):
+        thread = self.thread()
+        messages = []
+        thread.progress_signal.connect(messages.append)
+        thread.generate_spall_vs_shock_stress_plot(
+            pd.DataFrame({'Filename': ['shot'], 'Spall_OK': [False]}), str(self.root))
+        self.assertTrue(any('Spall Strength column not found' in m for m in messages))
+        self.assertFalse(any('Traceback' in m for m in messages))
+
     def test_filters_raw_manual_and_existing_outputs(self):
         files = [s + '.csv' for s in (CENTRAL, UNLISTED, OTHER, LEGACY)]
         velocity = [s + '--vel-smooth-with-uncert.csv' for s in (CENTRAL, UNLISTED, OTHER, LEGACY)]

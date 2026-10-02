@@ -58,3 +58,22 @@ The pre-MPDV working-tree control on 2026-09-18 already differed from the stored
 baseline in HEL strength, HEL strain rate, and HEL uncertainty. The MPDV change
 must preserve that pre-edit result as well as raw Single PDV extraction. Do not
 reset the scientific baseline merely to accept these pre-existing differences.
+
+## File compatibility suite
+
+Run all input, metadata, GUI, and availability regressions with:
+
+```bash
+QT_QPA_PLATFORM=offscreen helix_toolbox_env/bin/python3 -m unittest discover -s regression -p 'test_*.py'
+```
+
+Coverage includes configured two-column scope exports, LeCroy `Time,Ampl`
+headers, combined `Time Tags (...)` exports selecting labeled Channel 1,
+reordered channel columns, UTF-8 BOM/CRLF/whitespace, sample offsets, CSV/Excel
+metadata, shared filenames across probe fields, mixed single/central-probe
+selection, batch selection, saved velocity inputs, and missing/cloud-only inputs.
+The bundled raw scope fixture is compared directly against the previous reader.
+Combined-format tests use synthetic values, not research data.
+
+Multiplexed MPDV demultiplexing remains pending. These checks do not promise
+support for arbitrary unlabeled multichannel tables or binary scope formats.

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `pyyaml` to `ALPSS/requirements.txt` (required for YAML config support); README troubleshooting updated accordingly
 
 ### Fixed
+- Compatibility checks now cover legacy and combined scope CSV variants and shared probe filenames. Missing spall-strength columns skip the corresponding plot without an exception; master YAML scientific-notation timing values load numerically in the GUI.
 - Velocity-only summaries now initialize material status independently of HEL detection, preventing missing summaries when HEL is disabled or its window is too short.
 - **ALPSS**: rows with unparseable/NaN values (e.g. a truncated final oscilloscope sample) are now dropped before FFT-based smoothing in IQ start-time detection. Previously a single bad row would NaN out the entire smoothed amplitude trace via FFT convolution, crashing detection for the whole file
 

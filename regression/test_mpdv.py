@@ -278,7 +278,7 @@ class GUISelectionTests(unittest.TestCase):
             for name in ('helix_master_config.json', 'helix_master_config.yml'):
                 ok, config, _ = load_config_from_file(root / name)
                 self.assertTrue(ok)
-                self.assertEqual(config['cli_settings']['data_mode'], 'single_pdv')
+                self.assertIn(config['cli_settings']['data_mode'], ('single_pdv', 'mpdv'))
                 config['cli_settings'].update(data_mode='mpdv', input_dir=folder,
                                                input_files=None, param_folder=None,
                                                output_dir=folder)

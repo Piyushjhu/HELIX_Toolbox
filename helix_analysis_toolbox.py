@@ -5560,10 +5560,10 @@ class AnalysisThread(QThread):
                     self.progress_signal.emit(f"DEBUG: ✓ Found '{spall_strength_col}' for Spall Strength")
                     # Show sample values
                     spall_values = summary_df[spall_strength_col].dropna()
-                self.progress_signal.emit(f"   - Non-null values: {len(spall_values)}")
-                if len(spall_values) > 0:
-                    self.progress_signal.emit(f"   - Sample values: {spall_values.head(5).tolist()}")
-                    self.progress_signal.emit(f"   - Min: {spall_values.min()}, Max: {spall_values.max()}")
+                    self.progress_signal.emit(f"   - Non-null values: {len(spall_values)}")
+                    if len(spall_values) > 0:
+                        self.progress_signal.emit(f"   - Sample values: {spall_values.head(5).tolist()}")
+                        self.progress_signal.emit(f"   - Min: {spall_values.min()}, Max: {spall_values.max()}")
                     break
             
             if spall_strength_col is None:
