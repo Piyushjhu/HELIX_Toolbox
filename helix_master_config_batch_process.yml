@@ -69,8 +69,9 @@ cli_settings:
   # stays independent).
   combined_output_dir: null
 
-  # Folder containing experiment parameter files (CSV/Excel). Must have a
-  # column matching PDV filenames so metadata (material, laser energy,
+  # Folder containing experiment parameter files (CSV/Excel), either directly
+  # or inside subfolders (searched recursively). Files must have a column
+  # matching PDV filenames so metadata (material, laser energy,
   # waveplate angle, row/column …) is attached to each trace.
   # Set to null to skip parameter enrichment.
   param_folder: "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/CuTi_PA_20260218/Parameters"

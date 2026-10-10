@@ -9,6 +9,19 @@ class InputUnavailableError(ValueError):
     """A required input cannot be read safely; the run is incomplete."""
 
 
+def find_parameter_files(folder):
+    """Find CSV/Excel logs in a folder and its descendants, skipping lock files."""
+    def fail(error):
+        raise error
+
+    return sorted(
+        os.path.join(root, name)
+        for root, _, files in os.walk(folder, onerror=fail)
+        for name in files
+        if name.lower().endswith(('.csv', '.xlsx', '.xls')) and not name.startswith('~$')
+    )
+
+
 def file_availability(path):
     try:
         info = os.stat(path)

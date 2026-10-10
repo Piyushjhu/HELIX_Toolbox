@@ -49,7 +49,9 @@ from helix_data_source import (
     MixedParameters, load_mpdv_parameters, match_logged_files,
     select_central_files, trace_key, validate_data_mode,
 )
-from helix_file_io import download_and_verify, read_parameter_table, require_local_files
+from helix_file_io import (
+    download_and_verify, find_parameter_files, read_parameter_table, require_local_files,
+)
 
 
 # Extensions probed (in order) when looking for a default master config next
@@ -578,12 +580,12 @@ def _prepare_run_sources(*, input_dir, input_files, input_pattern, param_folder,
     if param_folder:
         if not os.path.isdir(param_folder):
             raise ValueError(f'Parameter folder not found: {param_folder}')
-        logs = [os.path.join(param_folder, n) for n in sorted(os.listdir(param_folder))
-                if n.lower().endswith(('.csv', '.xlsx', '.xls')) and not n.startswith('~$')]
+        logs = find_parameter_files(param_folder)
         if not logs:
             raise ValueError(f'No parameter files found: {param_folder}')
-        downloaded = download_and_verify(logs, os.path.join(cache, 'parameters'), **download_options)
-        local_folder = os.path.dirname(next(iter(downloaded.values())))
+        # Cached logs from different source folders live in separate directories.
+        local_folder = os.path.join(cache, 'parameters')
+        download_and_verify(logs, local_folder, **download_options)
         parameters = _load_parameter_folder(local_folder,
                                             experiment_id=os.path.basename(input_dir or ''),
                                             data_mode=data_mode)
@@ -650,7 +652,7 @@ def _prepare_run_sources(*, input_dir, input_files, input_pattern, param_folder,
 
 
 def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: str = "single_pdv") -> Dict[str, Dict]:
-    """Aggregate experiment metadata from CSV/Excel files in a folder.
+    """Aggregate experiment metadata from CSV/Excel files in a folder tree.
 
     If experiment_id is provided (e.g. 'JHAMAL00016-013'), only files whose
     name contains that string are loaded.  If none match, all files are tried
@@ -669,12 +671,11 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
         raise ValueError(f"Parameter folder not found: {folder}. Run stopped; metadata was not skipped.")
 
     param_data: Dict[str, Dict] = MixedParameters()
-    all_entries = os.listdir(folder)
-    all_param_files = [e for e in all_entries if e.lower().endswith((".csv", ".xlsx", ".xls"))]
+    all_param_files = [os.path.relpath(path, folder) for path in find_parameter_files(folder)]
 
     # Narrow to files matching the experiment ID when one is supplied
     if experiment_id:
-        matched = [e for e in all_param_files if experiment_id in e]
+        matched = [e for e in all_param_files if experiment_id in os.path.basename(e)]
         if matched:
             print(f"[INFO] Matched {len(matched)} parameter file(s) for experiment '{experiment_id}':")
             for m in matched:
@@ -690,7 +691,7 @@ def _load_parameter_folder(folder: str, experiment_id: str = None, data_mode: st
     
     legacy_param_files = set(param_files)
     # Inspect every schema: a batch parent name must not hide MPDV logs.
-    param_files = sorted(e for e in all_param_files if not e.startswith("~$"))
+    param_files = all_param_files
     require_local_files([os.path.join(folder, name) for name in param_files])
     for idx, entry in enumerate(param_files, 1):
         print(f"[INFO] Processing parameter file {idx}/{len(param_files)}: {entry}")

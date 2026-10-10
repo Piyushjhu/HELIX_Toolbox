@@ -6,7 +6,7 @@ import re
 
 import pandas as pd
 
-from helix_file_io import read_parameter_table
+from helix_file_io import find_parameter_files, read_parameter_table
 
 
 MPDV_NOTE = (
@@ -157,8 +157,8 @@ class MixedParameters(dict):
 def load_mpdv_parameters(folder, emit=print):
     """Read explicit PDV_10 mappings from CSV/Excel without guessing a channel.
 
-    All parameter files are considered: batch parent directory names need not
-    match log names. Duplicate acquisition names are errors, never last-row wins.
+    All parameter files in the folder tree are considered: batch parent directory
+    names need not match log names. Duplicate acquisition names are errors.
     """
     if not folder or not os.path.isdir(folder):
         raise ValueError('MPDV requires a valid parameter folder with PDV_10_FileName.')
@@ -166,10 +166,8 @@ def load_mpdv_parameters(folder, emit=print):
     sources = {}
     matched_files = 0
     skipped = 0
-    for name in sorted(os.listdir(folder)):
-        if name.startswith('~$') or not name.lower().endswith(('.csv', '.xlsx', '.xls')):
-            continue
-        path = os.path.join(folder, name)
+    for path in find_parameter_files(folder):
+        name = os.path.relpath(path, folder)
         df = read_parameter_table(path)
         df.columns = [str(c).strip() for c in df.columns]
         if 'PDV_10_FileName' not in df.columns:

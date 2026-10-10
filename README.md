@@ -181,8 +181,10 @@ python helix_cli_runner.py --config helix_master_config_batch_process.yml --data
 
 For batch MPDV, set `input_dir` to the parent containing the per-sample trace
 folders, `batch_mode: true`, and `subfolder_pattern` to the desired sample folders.
-One parameter folder can contain all sample logs. Every subfolder uses the same
-PDV_10 selection rule. Batch SPADE-only/manual input is additionally scoped by the
+One parameter folder can contain all sample logs, directly or inside nested
+subfolders. The CLI searches `param_folder` recursively for CSV/Excel files;
+no extra setting is needed. Every subfolder uses the same PDV_10 selection rule.
+Batch SPADE-only/manual input is additionally scoped by the
 subfolder's exact `Sample_IGSN`; keep sample folder names equal to those IGSNs.
 Sensitivity runs inherit `cli_settings.data_mode` and exclude other probes before
 creating their per-trace sweeps. Existing-result plotting also filters filenames

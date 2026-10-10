@@ -56,6 +56,23 @@ class MixedPDVTests(unittest.TestCase):
         self.assertEqual(data[CENTRAL]['PDV_Return_Power (dBm)'], -38.59)
         self.assertEqual(data[LEGACY]['Sample material'], 'Ti')
 
+    def test_loader_combines_direct_and_nested_csv_excel_logs(self):
+        nested = self.params / 'sample' / 'logs'
+        nested.mkdir(parents=True)
+        (self.params / 'mpdv.csv').rename(nested / 'mpdv.csv')
+        extra = 'C1--20251022--00003'
+        pd.DataFrame([{'PDV_FileName': extra, 'Sample material': 'Al'}]).to_excel(
+            nested / 'legacy.XLSX', index=False)
+        (nested / '~$locked.xlsx').write_text('Excel lock file')
+        (self.params / 'directory.csv').mkdir()
+        (nested / 'notes.txt').write_text('Not a parameter file')
+
+        data = self.load()
+        self.assertEqual(set(data), {CENTRAL, LEGACY, extra})
+        self.assertEqual(data[extra]['Sample material'], 'Al')
+        self.assertEqual(set(self.load(data_mode='mpdv')), {CENTRAL})
+        self.assertEqual(set(self.load(experiment_id='legacy')), {CENTRAL, LEGACY, extra})
+
     def test_combined_export_shared_probe_filename_uses_probe_ten(self):
         shared = 'SAMPLE_2026-09-30_15-55-37_shot25'
         self.rows['PDV_6_FileName'] = shared

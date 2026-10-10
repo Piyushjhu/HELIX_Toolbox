@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 
 from helix_data_source import MixedParameters, match_logged_files, trace_key
-from helix_file_io import file_availability, read_parameter_table
+from helix_file_io import file_availability, find_parameter_files, read_parameter_table
 
 
 def audit_inputs(settings, emit=print):
@@ -30,9 +30,8 @@ def audit_inputs(settings, emit=print):
     blank_rows = 0
     mixed = MixedParameters()
     metadata_errors = []
-    for path in sorted(Path(param_folder).iterdir()) if param_folder and Path(param_folder).is_dir() else []:
-        if path.name.startswith('~$') or path.suffix.lower() not in ('.csv', '.xlsx', '.xls'):
-            continue
+    for filename in find_parameter_files(param_folder) if param_folder and Path(param_folder).is_dir() else []:
+        path = Path(filename)
         state = file_availability(path)
         params.append({'path': str(path), 'availability': state})
         if state != 'local':

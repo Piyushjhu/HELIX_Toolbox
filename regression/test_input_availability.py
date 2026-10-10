@@ -112,6 +112,17 @@ class AvailabilityTests(unittest.TestCase):
         self.assertFalse(report['ready'])
         self.assertFalse(report['reconciliation_complete'])
 
+    def test_audit_includes_nested_parameter_logs(self):
+        nested = self.params / 'sample' / 'logs'
+        nested.mkdir(parents=True)
+        pd.DataFrame([{'PDV_FileName': 'trace'}]).to_csv(nested / 'log.csv', index=False)
+        (nested / '~$locked.xlsx').write_text('Excel lock file')
+        (self.data / 'trace.csv').write_text('Time,Ampl\n0,1\n')
+        report = audit_inputs(self.settings(), emit=lambda _: None)
+        self.assertTrue(report['ready'])
+        self.assertEqual(report['summary']['parameter_files'], 1)
+        self.assertEqual(report['parameters'][0]['path'], str(nested / 'log.csv'))
+
     def test_io_failure_returns_false_and_does_not_retry_for_error_plot(self):
         with patch.object(alpss_main, 'detect_sample_rate', return_value=1e9), \
                 patch.object(alpss_main, 'spall_doi_finder', side_effect=TimeoutError('cloud read')), \
@@ -213,6 +224,44 @@ class DownloadTests(unittest.TestCase):
             (data/'C1--sample_shot02--00000.csv').unlink()
             with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'Logged shot files are missing'):
                 runner._prepare_run_sources(**options)
+
+    def test_batch_preflight_loads_all_flat_and_nested_parameter_logs(self):
+        import helix_cli_runner as runner
+        for mode in ('single_pdv', 'mpdv'):
+            for layout in ('flat', 'nested'):
+                with self.subTest(mode=mode, layout=layout), tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    params = root / 'params'
+                    params.mkdir()
+                    inputs = root / 'inputs'
+                    expected = {}
+                    for index in (1, 2):
+                        sample = f'sample-00{index}'
+                        stem = f'C1--{sample}_shot01--00000'
+                        data = inputs / sample
+                        data.mkdir(parents=True)
+                        (data / (stem + '.csv')).write_text('Time,Ampl\n0,1\n')
+                        log = params / (sample + '.csv')
+                        if layout == 'nested':
+                            log = params / sample / 'logs' / 'log.csv'
+                            log.parent.mkdir(parents=True)
+                        column = 'PDV_10_FileName' if mode == 'mpdv' else 'PDV_FileName'
+                        pd.DataFrame([{column: stem, 'Sample_IGSN': sample,
+                                       'Exp_ID': index}]).to_csv(log, index=False)
+                        expected[stem] = index
+                    options = dict(input_dir=str(inputs), input_files=None, input_pattern='*.csv',
+                                   param_folder=str(params), data_mode=mode, batch_mode=True,
+                                   subfolder_pattern='*', analysis_mode='alpss_only', spade_mode='auto',
+                                   spade_input_files=None, spade_input_dir=None, spade_input_pattern='*.csv',
+                                   options={'cache_dir': str(root / 'cache')})
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        metadata, groups, _ = runner._prepare_run_sources(**options)
+                    self.assertEqual({key: row['Exp_ID'] for key, row in metadata.items()}, expected)
+                    self.assertEqual(len(groups), 2)
+                    self.assertTrue(all(len(files) == 1 for files in groups.values()))
+                    self.assertEqual({Path(p).stem for files in groups.values() for p in files},
+                                     set(expected))
+                    self.assertTrue(all(Path(p).is_file() for files in groups.values() for p in files))
 
     def test_prepare_only_downloads_but_does_not_analyze(self):
         import helix_cli_runner as runner
