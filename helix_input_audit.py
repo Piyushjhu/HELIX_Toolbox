@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 
 from helix_data_source import MixedParameters, match_logged_files, trace_key
-from helix_file_io import file_availability, find_parameter_files, read_parameter_table
+from helix_file_io import file_availability, find_parameter_files, is_auxiliary_file, read_parameter_table
 
 
 def audit_inputs(settings, emit=print):
@@ -24,6 +24,7 @@ def audit_inputs(settings, emit=print):
                              if p.is_dir() and (not param_folder or not (Path(param_folder).exists() and p.samefile(param_folder))))
     paths = ([Path(p).absolute() for p in explicit] if explicit and not settings.get('batch_mode') else
              [p.absolute() for d in directories for p in sorted(d.glob(pattern)) if p.is_file()])
+    paths = [p for p in paths if not is_auxiliary_file(p)]
     files = [{'path': str(p), 'availability': file_availability(p)} for p in paths]
     params = []
     expected = []

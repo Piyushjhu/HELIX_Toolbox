@@ -50,7 +50,8 @@ from helix_data_source import (
     select_central_files, trace_key, validate_data_mode,
 )
 from helix_file_io import (
-    download_and_verify, find_parameter_files, read_parameter_table, require_local_files,
+    download_and_verify, find_parameter_files, is_auxiliary_file,
+    read_parameter_table, require_local_files,
 )
 
 
@@ -351,8 +352,9 @@ def _resolve_file_list(
     directory: Optional[str],
     pattern: str,
 ) -> List[str]:
-    """Resolve input files from explicit paths or directory/pattern."""
+    """Resolve input files, excluding macOS sidecars and Excel lock files."""
     if explicit_files:
+        explicit_files = [path for path in explicit_files if not is_auxiliary_file(path)]
         existing_files = [os.path.abspath(path) for path in explicit_files if os.path.exists(path)]
         missing_files = [os.path.abspath(path) for path in explicit_files if not os.path.exists(path)]
         if missing_files:
@@ -378,7 +380,8 @@ def _resolve_file_list(
         print(f"[INFO] Using pattern: {pattern}")
         print(f"[INFO] Full glob pattern: {search_glob}")
         
-        matched_files = sorted(glob.glob(search_glob))
+        matched_files = sorted(path for path in glob.glob(search_glob)
+                               if not is_auxiliary_file(path))
         
         if not matched_files:
             # Provide helpful diagnostics
@@ -386,7 +389,8 @@ def _resolve_file_list(
             # List what files actually exist in the directory
             try:
                 existing_files = os.listdir(abs_directory)
-                csv_files = [f for f in existing_files if f.lower().endswith('.csv')]
+                csv_files = [f for f in existing_files
+                             if f.lower().endswith('.csv') and not is_auxiliary_file(f)]
                 if csv_files:
                     print(f"[INFO] Found {len(csv_files)} CSV files in directory (but pattern didn't match):")
                     for f in csv_files[:10]:  # Show first 10

@@ -18,7 +18,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'ALPSS'))
-from helix_file_io import InputUnavailableError, file_availability, read_parameter_table, require_local_files, download_and_verify
+from helix_file_io import InputUnavailableError, file_availability, find_parameter_files, read_parameter_table, require_local_files, download_and_verify
 from helix_input_audit import audit_inputs
 from helix_data_source import match_logged_files
 from helix_cli_runner import _load_parameter_folder, _resolve_file_list, _transform_alpss_params_for_analysis
@@ -122,6 +122,39 @@ class AvailabilityTests(unittest.TestCase):
         self.assertTrue(report['ready'])
         self.assertEqual(report['summary']['parameter_files'], 1)
         self.assertEqual(report['parameters'][0]['path'], str(nested / 'log.csv'))
+
+    def test_appledouble_files_are_excluded_from_logs_and_audit(self):
+        nested = self.params / 'sample' / 'logs'
+        nested.mkdir(parents=True)
+        log = nested / 'log.csv'
+        pd.DataFrame([{'PDV_FileName': 'trace'}]).to_csv(log, index=False)
+        # Binary macOS metadata carries the same extension as its data file.
+        for name in ('._log.csv', '._orphan.XLSX', '~$locked.xlsx'):
+            (nested / name).write_bytes(b'\x00\x05\x16\x07\xb0')
+        (self.data / 'trace.csv').write_text('Time,Ampl\n0,1\n')
+        (self.data / '._trace.csv').write_bytes(b'\x00\x05\x16\x07\xb0')
+        self.assertEqual(find_parameter_files(self.params), [str(log)])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(set(_load_parameter_folder(str(self.params))), {'trace'})
+        for batch_mode in (True, False):
+            settings = self.settings()
+            settings['batch_mode'] = batch_mode
+            if not batch_mode:
+                settings['input_dir'] = str(self.data)
+            report = audit_inputs(settings, emit=lambda _: None)
+            self.assertTrue(report['ready'])
+            self.assertEqual(report['summary']['parameter_files'], 1)
+            self.assertEqual(report['summary']['waveform_files'], 1)
+
+    def test_explicit_and_glob_inputs_exclude_appledouble_files(self):
+        trace = self.data / '.trace.csv'
+        sidecar = self.data / '._trace.csv'
+        trace.write_text('Time,Ampl\n0,1\n')
+        sidecar.write_bytes(b'\x00\x05\x16\x07\xb0')
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(_resolve_file_list([str(trace), str(sidecar)], None, '*.csv'),
+                             [str(trace)])
+            self.assertEqual(_resolve_file_list(None, str(self.data), '.*.csv'), [str(trace)])
 
     def test_io_failure_returns_false_and_does_not_retry_for_error_plot(self):
         with patch.object(alpss_main, 'detect_sample_rate', return_value=1e9), \
@@ -248,6 +281,8 @@ class DownloadTests(unittest.TestCase):
                         column = 'PDV_10_FileName' if mode == 'mpdv' else 'PDV_FileName'
                         pd.DataFrame([{column: stem, 'Sample_IGSN': sample,
                                        'Exp_ID': index}]).to_csv(log, index=False)
+                        log.with_name('._' + log.name).write_bytes(b'\x00\x05\x16\x07\xb0')
+                        (data / ('._' + stem + '.csv')).write_bytes(b'\x00\x05\x16\x07\xb0')
                         expected[stem] = index
                     options = dict(input_dir=str(inputs), input_files=None, input_pattern='*.csv',
                                    param_folder=str(params), data_mode=mode, batch_mode=True,
@@ -262,6 +297,13 @@ class DownloadTests(unittest.TestCase):
                     self.assertEqual({Path(p).stem for files in groups.values() for p in files},
                                      set(expected))
                     self.assertTrue(all(Path(p).is_file() for files in groups.values() for p in files))
+                    manifests = list((root / 'cache').rglob('download_manifest.json'))
+                    self.assertEqual(len(manifests), 2)
+                    for manifest in manifests:
+                        records = json.loads(manifest.read_text())['files']
+                        self.assertEqual(len(records), 2)
+                        self.assertTrue(all(not Path(row['source']).name.startswith('._')
+                                            for row in records))
 
     def test_prepare_only_downloads_but_does_not_analyze(self):
         import helix_cli_runner as runner

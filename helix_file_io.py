@@ -9,8 +9,13 @@ class InputUnavailableError(ValueError):
     """A required input cannot be read safely; the run is incomplete."""
 
 
+def is_auxiliary_file(path):
+    """Identify macOS AppleDouble sidecars and temporary Excel lock files."""
+    return os.path.basename(os.fspath(path)).startswith(('._', '~$'))
+
+
 def find_parameter_files(folder):
-    """Find CSV/Excel logs in a folder and its descendants, skipping lock files."""
+    """Find CSV/Excel logs, excluding macOS sidecars and Excel lock files."""
     def fail(error):
         raise error
 
@@ -18,7 +23,7 @@ def find_parameter_files(folder):
         os.path.join(root, name)
         for root, _, files in os.walk(folder, onerror=fail)
         for name in files
-        if name.lower().endswith(('.csv', '.xlsx', '.xls')) and not name.startswith('~$')
+        if name.lower().endswith(('.csv', '.xlsx', '.xls')) and not is_auxiliary_file(name)
     )
 
 
