@@ -443,6 +443,7 @@ def _run_analysis(
     igsn_material_map: Dict = None,
     igsn_thickness_map: Dict = None,
     data_mode: str = "single_pdv",
+    run_report: Optional[Dict] = None,
 ) -> bool:
     """Create and run one AnalysisThread; return True on success."""
     thread = AnalysisThread(
@@ -468,7 +469,8 @@ def _run_analysis(
     def _on_finished(success: bool, message: str):
         result["success"] = success
         if success:
-            print("✅ Analysis completed successfully.", flush=True)
+            icon = '⚠️' if thread.failed_files else '✅'
+            print(f"{icon} {message}.", flush=True)
         else:
             print(f"❌ Analysis failed: {message}", flush=True)
 
@@ -480,6 +482,9 @@ def _run_analysis(
     except KeyboardInterrupt:
         print("Interrupted by user. Stopping analysis...", flush=True)
 
+    if run_report is not None:
+        run_report.update(successful_files=len(thread.successful_files),
+                          failed_files=len(thread.failed_files))
     return result["success"]
 
 
@@ -1107,6 +1112,7 @@ def main():
             print(f"[INFO] Combined output directory: {combined_output_dir}")
 
         batch_results: Dict[str, bool] = {}
+        batch_reports: Dict[str, Dict] = {}
         for idx, subfolder in enumerate(subfolders, 1):
             subfolder_name = os.path.basename(subfolder)
             print(f"\n{'='*70}")
@@ -1135,6 +1141,7 @@ def main():
                     if str(row.get('Sample_IGSN', '')).strip().lower() == subfolder_name.lower()
                 }
 
+            run_report = {}
             success = _run_analysis(
                 alpss_params=alpss_params,
                 spade_params=spade_params,
@@ -1148,16 +1155,26 @@ def main():
                 igsn_material_map=igsn_material_map,
                 igsn_thickness_map=igsn_thickness_map,
                 data_mode=data_mode,
+                run_report=run_report,
             )
             batch_results[subfolder_name] = success
+            batch_reports[subfolder_name] = run_report
 
         print(f"\n{'='*70}")
         print("BATCH PROCESSING SUMMARY")
         print(f"{'='*70}")
         for name, ok in batch_results.items():
-            print(f"  {'✅' if ok else '❌'} {name}")
+            report = batch_reports.get(name, {})
+            if ok and report.get('failed_files'):
+                print(f"  ⚠️ {name}: compiled {report['successful_files']} successful trace(s); "
+                      f"{report['failed_files']} failed")
+            else:
+                print(f"  {'✅' if ok else '❌'} {name}")
         n_ok = sum(batch_results.values())
-        print(f"\n{n_ok}/{len(batch_results)} subfolder(s) completed successfully.")
+        n_partial = sum(ok and bool(batch_reports.get(name, {}).get('failed_files'))
+                        for name, ok in batch_results.items())
+        print(f"\n{n_ok}/{len(batch_results)} subfolder(s) completed; "
+              f"{n_partial} with failed inputs.")
         sys.exit(0 if n_ok == len(batch_results) else 1)
 
     # ── SINGLE-RUN MODE ──────────────────────────────────────────────────────
@@ -1407,7 +1424,8 @@ def main():
     def _on_finished(success: bool, message: str):
         result["success"] = success
         if success:
-            print("✅ Analysis completed successfully.", flush=True)
+            icon = '⚠️' if thread.failed_files else '✅'
+            print(f"{icon} {message}.", flush=True)
         else:
             print(f"❌ Analysis failed: {message}", flush=True)
 

@@ -287,12 +287,15 @@ the manifest and OneDrive sync status, resolve connectivity/sign-in/storage
 issues, and retry. Marking the dataset **Always Keep on This Device** in Finder
 also requests persistent offline availability.
 
-A failed ALPSS pipeline cannot reuse old outputs as evidence of success. If any
-ALPSS trace fails, the run is incomplete, `failed_data_files.csv` records the
-failures, and downstream summaries are not regenerated. Existing summaries may
-therefore belong to an earlier run. Parameter folders are excluded from batch
-sample directories. Post-processing existing summaries does not run the raw-input
-preparation step.
+A failed ALPSS pipeline cannot reuse old outputs as evidence of success. If some
+ALPSS traces fail, `failed_data_files.csv` records the failures and SPADE, summaries,
+and plots continue using the successfully processed traces. Failed and unrelated
+older outputs are excluded from automatic compilation. The completion message and
+batch summary report the failed-input count; the run config records successful
+and failed files. If every ALPSS trace fails, the folder fails and summaries are
+not regenerated. A fully successful rerun removes an outdated failure report.
+Parameter folders are excluded from batch sample directories. Post-processing
+existing summaries does not run the raw-input preparation step.
 
 For a separate read-only filename/availability inventory:
 

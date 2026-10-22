@@ -43,7 +43,7 @@ cli_settings:
   # Parent directory containing the per-shot subfolders (only used when
   # batch_mode: true). Each subfolder is scanned for files matching
   # input_pattern.
-  input_dir: /Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/CuTi_PA_20260218
+  input_dir: /Volumes/Extreme SSD/HELIX_data/APL/2026-10-22_13-58-33/pdv_trace
   # Glob pattern applied to input_dir to select which subfolders to process.
   # "*" = every subfolder.
   subfolder_pattern: "*"
@@ -74,7 +74,7 @@ cli_settings:
   # matching PDV filenames so metadata (material, laser energy,
   # waveplate angle, row/column …) is attached to each trace.
   # Set to null to skip parameter enrichment.
-  param_folder: "/Users/piyushwanchoo/Library/CloudStorage/OneDrive-JohnsHopkins/Stieff_Scope/PDV_data/CuTi_PA_20260218/Parameters"
+  param_folder: "/Volumes/Extreme SSD/HELIX_data/APL/2026-10-22_13-58-33/pdv_experiment_log"
   # Analysis mode:
   #   both       — run ALPSS then SPADE (full pipeline, default)
   #   alpss_only — stop after ALPSS velocity extraction

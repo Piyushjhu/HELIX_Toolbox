@@ -535,6 +535,9 @@ class AnalysisThread(QThread):
         # you what was actually used. Track the real per-file value here so
         # _save_run_config can report it accurately.
         self._alpss_effective_sample_rate_by_file = {}
+        self.successful_files = []
+        self.failed_files = []
+        self._successful_alpss_keys = None
 
     def _prepare_data_source(self):
         if self._mixed_selection_active:
@@ -578,6 +581,8 @@ class AnalysisThread(QThread):
         )
 
     def _scope_files(self, files):
+        if self._successful_alpss_keys is not None:
+            files = [f for f in files if trace_key(f) in self._successful_alpss_keys]
         if self._mixed_selection_active:
             return [f for f in files if self._mixed_parameters.allows(f)]
         if self.data_mode != 'mpdv':
@@ -585,6 +590,13 @@ class AnalysisThread(QThread):
         return [f for f in files if trace_key(f) in self._mpdv_keys]
 
     def _scope_summary(self, df):
+        if self._successful_alpss_keys is not None:
+            for column in ('file_name', 'Filename', 'filename', 'PDV_FileName'):
+                if column in df.columns:
+                    df = df.loc[df[column].map(trace_key).isin(self._successful_alpss_keys)].copy()
+                    break
+            else:
+                raise ValueError('Cannot filter current-run summary: no filename column.')
         if self._mixed_selection_active:
             for column in ('file_name', 'Filename', 'filename', 'PDV_FileName'):
                 if column in df.columns:
@@ -650,6 +662,13 @@ class AnalysisThread(QThread):
                 # alpss_params['sample_rate'] is only the configured fallback;
                 # this records what was actually detected/used per input file.
                 'alpss_effective_sample_rate_by_file': self._alpss_effective_sample_rate_by_file,
+                'alpss_processing': {
+                    'successful_files': getattr(self, 'successful_files', []),
+                    'failed_files': [
+                        {'input_file_path': path, 'error_message': error}
+                        for path, error in self.failed_files
+                    ],
+                },
             }
             if self.data_mode == 'mpdv' or self._mixed_selection_active:
                 config_snapshot.update({
@@ -2257,6 +2276,8 @@ class AnalysisThread(QThread):
 
             # Initialize successful_files list for both ALPSS and SPADE modes
             self.successful_files = []
+            self.failed_files = []
+            self._successful_alpss_keys = None
             
             # Track total input files for summary
             if self.input_files:
@@ -2273,7 +2294,7 @@ class AnalysisThread(QThread):
 
                 # Process all files
                 files_to_process = self.input_files
-                failed_files = []
+                failed_files = self.failed_files
 
                 for i, input_file in enumerate(files_to_process):
                     self.progress_signal.emit(
@@ -2445,6 +2466,7 @@ class AnalysisThread(QThread):
                     f"ALPSS Analysis Summary: {len(self.successful_files)} files processed in {total_alpss_time:.2f} seconds (avg: {avg_time:.2f}s per file)")
                 
                 # Save failed files list as CSV
+                failed_files_path = os.path.join(self.output_dir, 'failed_data_files.csv')
                 if failed_files:
                     try:
                         failed_files_data = []
@@ -2457,16 +2479,28 @@ class AnalysisThread(QThread):
                             })
                         
                         failed_files_df = pd.DataFrame(failed_files_data)
-                        failed_files_path = os.path.join(self.output_dir, 'failed_data_files.csv')
                         failed_files_df.to_csv(failed_files_path, index=False)
                         self.progress_signal.emit(f"Saved failed files list to: {failed_files_path}")
                     except Exception as e:
                         self.progress_signal.emit(f"Warning: Could not save failed files list: {str(e)}")
+                elif os.path.exists(failed_files_path):
+                    os.remove(failed_files_path)
 
-                if failed_files:
+                if failed_files and not self.successful_files:
                     raise RuntimeError(
                         f'Incomplete ALPSS run: {len(failed_files)} of {len(files_to_process)} '
-                        'inputs failed. See failed_data_files.csv; summaries were not regenerated.')
+                        'inputs failed; no successful traces to compile. '
+                        'See failed_data_files.csv; summaries were not regenerated.')
+
+                # All derived-file and summary scans must use this run's successes.
+                # Manual SPADE inputs are a separate, explicitly selected dataset.
+                if self.spade_auto_mode or self.analysis_mode == 'alpss_only':
+                    self._successful_alpss_keys = {trace_key(path) for path in self.successful_files}
+                if failed_files:
+                    self.progress_signal.emit(
+                        f'⚠️ Continuing with {len(self.successful_files)} successful ALPSS inputs; '
+                        f'{len(failed_files)} failed inputs are excluded from compiled results. '
+                        'See failed_data_files.csv.')
 
             # Run SPADE analysis if not ALPSS-only mode
             if self.analysis_mode != "alpss_only":
@@ -2989,7 +3023,13 @@ class AnalysisThread(QThread):
             total_time = total_end_time - \
                 self.start_time if hasattr(self, 'start_time') else 0
 
-            self.progress_signal.emit("All analysis completed successfully!")
+            completion_message = "Analysis completed successfully"
+            if self.failed_files:
+                completion_message = (
+                    f'Analysis completed with {len(self.failed_files)} failed ALPSS input(s); '
+                    f'compiled results from {len(self.successful_files)} successful input(s). '
+                    'See failed_data_files.csv')
+            self.progress_signal.emit(completion_message if self.failed_files else "All analysis completed successfully!")
             self.progress_signal.emit(
                 f"Total processing time: {total_time:.2f} seconds")
             
@@ -3021,6 +3061,9 @@ class AnalysisThread(QThread):
             self.progress_signal.emit("ANALYSIS SUMMARY")
             self.progress_signal.emit("=" * 70)
             self.progress_signal.emit(f"Total input traces: {self.total_input_traces}")
+            if self.failed_files:
+                self.progress_signal.emit(f"ALPSS inputs successfully processed: {len(self.successful_files)}")
+                self.progress_signal.emit(f"ALPSS inputs failed: {len(self.failed_files)}")
             self.progress_signal.emit(f"Traces plotted: {self.traces_plotted}")
             self.progress_signal.emit(f"Traces rejected: {self.traces_rejected}")
             if self.rejection_reasons:
@@ -3031,9 +3074,9 @@ class AnalysisThread(QThread):
             self.progress_signal.emit(f"Total analysis run time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
             self.progress_signal.emit("=" * 70)
             
-            if self.data_mode == 'mpdv' or self._mixed_selection_active:
+            if self.failed_files or self.data_mode == 'mpdv' or self._mixed_selection_active:
                 self._save_run_config(spade_output_dir)
-            self.finished_signal.emit(True, "Analysis completed successfully")
+            self.finished_signal.emit(True, completion_message)
         except Exception as e:
             import traceback
             error_msg = str(e)
@@ -17246,8 +17289,11 @@ Output Files:
         self.spade_progress_bar.setVisible(False)
         
         if success:
-            self.progress_text.appendPlainText("Analysis completed successfully!")
-            QMessageBox.information(self, "Success", "Analysis completed successfully!")
+            self.progress_text.appendPlainText(message)
+            if self.analysis_thread.failed_files:
+                QMessageBox.warning(self, "Analysis completed with failed files", message)
+            else:
+                QMessageBox.information(self, "Success", message)
         else:
             self.progress_text.appendPlainText(f"Analysis failed: {message}")
             QMessageBox.critical(self, "Error", f"Analysis failed: {message}")
